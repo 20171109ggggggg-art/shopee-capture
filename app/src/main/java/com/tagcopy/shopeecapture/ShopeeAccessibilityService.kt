@@ -22,6 +22,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
 import java.io.File
 import java.io.FileOutputStream
@@ -234,7 +235,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
 
         // 篩選通過後，趁還在商品詳情頁時先把圖片輪播全部滑過一輪存下來（給後續生成影片用）
-        val galleryImages = captureGalleryImages(detailRoot)
+        val galleryImages = withTimeoutOrNull(15000) { captureGalleryImages(detailRoot) } ?: emptyList()
         appendDebugLog("商品：${productName ?: "未知"} | 已擷取商品圖片 ${galleryImages.size} 張")
 
         val shareNode = findNodeByDescriptors(detailRoot, matchRules.shareButtonDescriptors)
@@ -284,11 +285,14 @@ class ShopeeAccessibilityService : AccessibilityService() {
             copyInfoNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             delay(600)
             caption = readClipboard()
+            appendDebugLog("  → 複製資訊：${if (caption.isNullOrBlank()) "點擊成功但剪貼簿讀不到內容" else "成功，長度 ${caption.length} 字"}")
         } else {
             appendDebugLog("商品：${productName ?: "未知"} | 找不到「複製資訊」按鈕，文案留空")
         }
 
-        val bitmap = if (galleryImages.isEmpty() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) captureScreenshotSuspend() else null
+        val bitmap = if (galleryImages.isEmpty() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            withTimeoutOrNull(4000) { captureScreenshotSuspend() }
+        } else null
 
         // 關閉分享面板，回到商品頁，再回到列表
         performBack()
@@ -571,10 +575,19 @@ class ShopeeAccessibilityService : AccessibilityService() {
      * 只在 Android 11（API 30）以上支援截圖；抓不到輪播範圍或截圖失敗時，該張直接跳過不中斷整體流程。
      */
     private suspend fun captureGalleryImages(root: AccessibilityNodeInfo): List<Bitmap> {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return emptyList()
-        val bounds = findImageCarouselBounds(root) ?: return emptyList()
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            appendDebugLog("  → 圖片輪播擷取：系統版本低於 Android 11，不支援截圖，跳過")
+            return emptyList()
+        }
+        val bounds = findImageCarouselBounds(root)
+        if (bounds == null) {
+            appendDebugLog("  → 圖片輪播擷取：找不到輪播範圍（沒偵測到「X/N」頁碼），跳過")
+            return emptyList()
+        }
         val total = readCarouselTotal(root).coerceIn(1, 20) // 上限 20 張，避免極端情況跑太久
+        appendDebugLog("  → 圖片輪播擷取：偵測到範圍 $bounds，共 $total 張，開始逐張截圖")
         val images = mutableListOf<Bitmap>()
+        var timeoutCount = 0
 
         for (index in 1..total) {
             if (index > 1) {
@@ -582,7 +595,14 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 waitForCarouselIndex(index, 1200)
                 delay(200) // 滑動動畫緩衝
             }
-            val full = captureScreenshotSuspend() ?: continue
+            // 加上逾時保護：截圖請求萬一卡住（例如系統沒回應），最多等 4 秒就放棄這張，
+            // 不會讓整個自動擷取流程被卡死，之前就是因為沒有這層保護才整個凍結。
+            val full = withTimeoutOrNull(4000) { captureScreenshotSuspend() }
+            if (full == null) {
+                timeoutCount++
+                appendDebugLog("  → 第 $index 張截圖逾時或失敗，跳過")
+                continue
+            }
             val cropped = try {
                 val left = bounds.left.coerceIn(0, full.width)
                 val top = bounds.top.coerceIn(0, full.height)
@@ -594,6 +614,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             }
             images.add(cropped)
         }
+        appendDebugLog("  → 圖片輪播擷取完成：成功 ${images.size}/$total 張（逾時或失敗 $timeoutCount 張）")
         return images
     }
 
