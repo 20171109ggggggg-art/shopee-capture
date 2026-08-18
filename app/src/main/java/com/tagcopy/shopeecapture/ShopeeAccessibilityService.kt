@@ -208,7 +208,12 @@ class ShopeeAccessibilityService : AccessibilityService() {
 
         // 篩選檢查：讀取分潤率／價格／已售出／已推廣者，不符合就直接返回上一層跳過
         if (!config.filter.isEmpty()) {
-            val metrics = extractProductMetrics(detailRoot)
+            var metrics = extractProductMetrics(detailRoot)
+            if (!hasRequiredFields(metrics, config.filter)) {
+                // 分享按鈕出現不代表所有數字都渲染完成了（例如「已推廣者數量」有時會晚一點才出來），
+                // 這裡針對「你有設限制、但目前讀不到」的欄位再多等一下，避免因為讀取太早而誤判成不符合。
+                metrics = waitForRequiredMetrics(config.filter, 2000) ?: metrics
+            }
             if (!config.filter.matches(metrics)) {
                 onEvent(AutoCaptureEvent.Log("○ 篩選未通過，略過：${productName ?: "未知商品"}"))
                 performBack()
@@ -323,6 +328,29 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
 
         return ProductMetrics(commission, price, sold, promoter)
+    }
+
+    /** 檢查「有設篩選條件的欄位」是否都已經讀到值（null 代表那個欄位還沒渲染出來，不是真的沒有）。 */
+    private fun hasRequiredFields(metrics: ProductMetrics, filter: ProductFilterConfig): Boolean {
+        if ((filter.minCommissionPercent != null || filter.maxCommissionPercent != null) && metrics.commissionPercent == null) return false
+        if ((filter.minPrice != null || filter.maxPrice != null) && metrics.price == null) return false
+        if ((filter.minSoldCount != null || filter.maxSoldCount != null) && metrics.soldCount == null) return false
+        if ((filter.minPromoterCount != null || filter.maxPromoterCount != null) && metrics.promoterCount == null) return false
+        return true
+    }
+
+    /** 針對「有設限制但還沒讀到值」的欄位輪詢重讀，直到齊全或逾時，逾時就回傳當下讀到的結果（可能仍有欄位是 null）。 */
+    private suspend fun waitForRequiredMetrics(filter: ProductFilterConfig, timeoutMs: Long): ProductMetrics? {
+        val start = System.currentTimeMillis()
+        var last: ProductMetrics? = null
+        while (System.currentTimeMillis() - start < timeoutMs) {
+            val root = rootInActiveWindow ?: break
+            val metrics = extractProductMetrics(root)
+            last = metrics
+            if (hasRequiredFields(metrics, filter)) return metrics
+            delay(200)
+        }
+        return last
     }
 
     /** 把「10」「K」這種拆開的數字＋單位轉成整數，例如 (10, "K") -> 10000，(11.5, "M") -> 11500000。 */
