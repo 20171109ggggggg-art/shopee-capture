@@ -22,6 +22,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
@@ -440,7 +441,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
         return suspendCancellableCoroutine { cont ->
             takeScreenshotCompat { bitmap ->
-                if (cont.isActive) cont.resume(bitmap) { _, _, _ -> }
+                if (cont.isActive) cont.resume(bitmap)
             }
         }
     }
