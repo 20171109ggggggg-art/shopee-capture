@@ -274,8 +274,8 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
 
         copyLinkNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-        delay(600)
-        val link = readClipboard()
+        val link = readClipboardWithRetry()
+        appendDebugLog("  → 複製連結：${if (link.isNullOrBlank()) "點擊成功但剪貼簿讀不到內容" else "成功，長度 ${link.length} 字"}")
 
         // 「複製連結」跟「複製資訊」都是寫進同一個剪貼簿，要分開點、分開讀，
         // 不然後點的會把先點的內容蓋掉。這裡先讀完連結，再點複製資訊、讀取文案。
@@ -283,8 +283,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         val copyInfoNode = rootInActiveWindow?.let { findNodeByTexts(it, matchRules.copyInfoButtonTexts) }
         if (copyInfoNode != null) {
             copyInfoNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            delay(600)
-            caption = readClipboard()
+            caption = readClipboardWithRetry()
             appendDebugLog("  → 複製資訊：${if (caption.isNullOrBlank()) "點擊成功但剪貼簿讀不到內容" else "成功，長度 ${caption.length} 字"}")
         } else {
             appendDebugLog("商品：${productName ?: "未知"} | 找不到「複製資訊」按鈕，文案留空")
@@ -294,11 +293,21 @@ class ShopeeAccessibilityService : AccessibilityService() {
             withTimeoutOrNull(4000) { captureScreenshotSuspend() }
         } else null
 
-        // 關閉分享面板，回到商品頁，再回到列表
+        // 關閉分享面板、回到商品頁、再回到列表。
+        // 「複製資訊」點下去後，有些情況會自動把分享面板關掉（跟「複製連結」的行為不一樣），
+        // 這裡先檢查面板是否還在畫面上，需要幾次返回鍵就按幾次，避免固定按兩次導致多跳一層、
+        // 跳出商品列表甚至跳回蝦皮首頁。
+        val sheetStillVisible = matchRules.shareSheetTitleTexts.any {
+            rootInActiveWindow?.findAccessibilityNodeInfosByText(it)?.isNotEmpty() == true
+        }
+        appendDebugLog("  → 返回前檢查：分享面板${if (sheetStillVisible) "仍在畫面上，按 2 次返回" else "已經不在畫面上，只按 1 次返回"}")
         performBack()
         delay(randomDelay(config))
-        performBack()
-        delay(randomDelay(config))
+        if (sheetStillVisible) {
+            performBack()
+            delay(randomDelay(config))
+        }
+        appendDebugLog("  → 返回後目前畫面套件名稱：${getCurrentPackageName() ?: "讀不到"}")
 
         return when (val result = saveResult(productName, link, caption, galleryImages.ifEmpty { listOfNotNull(bitmap) })) {
             is CaptureResult.Success -> {
@@ -797,10 +806,54 @@ class ShopeeAccessibilityService : AccessibilityService() {
     }
 
     private fun readClipboard(): String? {
-        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        val clip = cm.primaryClip ?: return null
-        if (clip.itemCount == 0) return null
-        return clip.getItemAt(0).text?.toString()
+        return try {
+            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val clip = cm.primaryClip ?: return null
+            if (clip.itemCount == 0) return null
+            clip.getItemAt(0).text?.toString()
+        } catch (e: SecurityException) {
+            lastClipboardError = "讀取被系統拒絕（SecurityException：${e.message}），疑似手機廠牌的背景剪貼簿權限限制"
+            null
+        } catch (e: Exception) {
+            lastClipboardError = "讀取剪貼簿發生例外：${e.javaClass.simpleName} ${e.message}"
+            null
+        }
+    }
+
+    private var lastClipboardError: String? = null
+
+    /** 剪貼簿有時候不是點擊當下就馬上寫入完成，這裡輪詢重試最多 1.5 秒，取代單次固定延遲後讀取。 */
+    private suspend fun readClipboardWithRetry(timeoutMs: Long = 1500): String? {
+        val start = System.currentTimeMillis()
+        while (System.currentTimeMillis() - start < timeoutMs) {
+            val text = readClipboard()
+            if (!text.isNullOrBlank()) return text
+            delay(150)
+        }
+        val finalResult = readClipboard()
+        if (finalResult.isNullOrBlank()) {
+            // 重試逾時後仍讀不到，把詳細診斷資訊記一次（不是每次輪詢都記，避免洗版）
+            val detail = lastClipboardError ?: run {
+                try {
+                    val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    val clip = cm.primaryClip
+                    when {
+                        clip == null -> "primaryClip 是 null（系統回報完全沒有剪貼簿內容）"
+                        clip.itemCount == 0 -> "primaryClip 存在但 itemCount=0"
+                        else -> {
+                            val label = clip.description?.label
+                            val mime = if ((clip.description?.mimeTypeCount ?: 0) > 0) clip.description?.getMimeType(0) else "無"
+                            "有 clip 但文字是空的，label=$label mimeType=$mime"
+                        }
+                    }
+                } catch (e: Exception) {
+                    "診斷讀取本身也失敗：${e.javaClass.simpleName}"
+                }
+            }
+            appendDebugLog("     [剪貼簿診斷] 重試 ${timeoutMs}ms 後仍讀不到：$detail")
+            lastClipboardError = null
+        }
+        return finalResult
     }
 
     private fun takeScreenshotAndSave(
