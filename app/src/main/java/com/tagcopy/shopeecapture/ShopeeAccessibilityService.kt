@@ -233,10 +233,16 @@ class ShopeeAccessibilityService : AccessibilityService() {
             }
         }
 
+        // 篩選通過後，趁還在商品詳情頁時先把圖片輪播全部滑過一輪存下來（給後續生成影片用）
+        val galleryImages = captureGalleryImages(detailRoot)
+        appendDebugLog("商品：${productName ?: "未知"} | 已擷取商品圖片 ${galleryImages.size} 張")
+
         val shareNode = findNodeByDescriptors(detailRoot, matchRules.shareButtonDescriptors)
         if (shareNode == null) {
             onEvent(AutoCaptureEvent.Log("找不到分享按鈕，跳過此商品"))
             appendDebugLog("商品：${productName ?: "未知"} | 結果=失敗（找不到分享按鈕）")
+            appendDebugLog("  → 目前規則比對的候選字串：${matchRules.shareButtonDescriptors}")
+            dumpClickableNodesToLog(detailRoot)
             performBack()
             delay(randomDelay(config))
             return ProcessResult.FAILED
@@ -269,7 +275,20 @@ class ShopeeAccessibilityService : AccessibilityService() {
         copyLinkNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
         delay(600)
         val link = readClipboard()
-        val bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) captureScreenshotSuspend() else null
+
+        // 「複製連結」跟「複製資訊」都是寫進同一個剪貼簿，要分開點、分開讀，
+        // 不然後點的會把先點的內容蓋掉。這裡先讀完連結，再點複製資訊、讀取文案。
+        var caption: String? = null
+        val copyInfoNode = rootInActiveWindow?.let { findNodeByTexts(it, matchRules.copyInfoButtonTexts) }
+        if (copyInfoNode != null) {
+            copyInfoNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            delay(600)
+            caption = readClipboard()
+        } else {
+            appendDebugLog("商品：${productName ?: "未知"} | 找不到「複製資訊」按鈕，文案留空")
+        }
+
+        val bitmap = if (galleryImages.isEmpty() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) captureScreenshotSuspend() else null
 
         // 關閉分享面板，回到商品頁，再回到列表
         performBack()
@@ -277,10 +296,10 @@ class ShopeeAccessibilityService : AccessibilityService() {
         performBack()
         delay(randomDelay(config))
 
-        return when (val result = saveResult(productName, link, bitmap)) {
+        return when (val result = saveResult(productName, link, caption, galleryImages.ifEmpty { listOfNotNull(bitmap) })) {
             is CaptureResult.Success -> {
                 onEvent(AutoCaptureEvent.Log("✓ 已擷取：${productName ?: "未知商品"}"))
-                appendDebugLog("商品：${productName ?: "未知"} | 結果=成功 | 連結=${link ?: "null（沒讀到）"}")
+                appendDebugLog("商品：${productName ?: "未知"} | 結果=成功 | 連結=${link ?: "null（沒讀到）"} | 文案=${if (caption.isNullOrBlank()) "null（沒讀到）" else "已讀到"}")
                 ProcessResult.SUCCESS
             }
             is CaptureResult.Failure -> {
@@ -386,6 +405,29 @@ class ShopeeAccessibilityService : AccessibilityService() {
         appendDebugLog(line)
     }
 
+    /**
+     * 找不到分享按鈕時，把畫面上「所有可點擊元件」的文字／描述／resource-id 都記錄下來，
+     * 這樣不用再靠猜測，直接從 log 裡看蝦皮這個按鈕實際叫什麼名字，之後就能把正確字串加進比對規則。
+     */
+    private fun dumpClickableNodesToLog(root: AccessibilityNodeInfo) {
+        val lines = mutableListOf<String>()
+        fun walk(node: AccessibilityNodeInfo?, depth: Int) {
+            if (node == null || depth > 25 || lines.size > 40) return
+            if (node.isClickable) {
+                val text = node.text?.toString()?.trim()
+                val desc = node.contentDescription?.toString()?.trim()
+                val id = node.viewIdResourceName
+                if (!text.isNullOrEmpty() || !desc.isNullOrEmpty()) {
+                    lines.add("text=${text ?: "-"} | desc=${desc ?: "-"} | id=${id ?: "-"}")
+                }
+            }
+            for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
+        }
+        walk(root, 0)
+        appendDebugLog("  → 畫面上可點擊元件清單（前 ${lines.size} 個）：")
+        lines.forEach { appendDebugLog("     $it") }
+    }
+
     private fun appendDebugLog(line: String) {
         try {
             val dir = File(
@@ -456,6 +498,103 @@ class ShopeeAccessibilityService : AccessibilityService() {
             .addStroke(GestureDescription.StrokeDescription(path, 0, 300))
             .build()
         dispatchGesture(gesture, null, null)
+    }
+
+    /** 在圖片輪播範圍內，由右往左滑一下，切到下一張圖。 */
+    private fun swipeCarouselNext(bounds: Rect) {
+        val y = bounds.centerY().toFloat()
+        val startX = bounds.right - bounds.width() * 0.1f
+        val endX = bounds.left + bounds.width() * 0.1f
+        val path = Path().apply {
+            moveTo(startX, y)
+            lineTo(endX, y)
+        }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, 250))
+            .build()
+        dispatchGesture(gesture, null, null)
+    }
+
+    /**
+     * 找出商品圖片輪播的範圍。做法：先找到「1/8」這種頁碼指示文字的節點，
+     * 再往上找父節點，找到「寬度幾乎等於整個螢幕寬度」的那一層，判定是輪播容器本身。
+     */
+    private fun findImageCarouselBounds(root: AccessibilityNodeInfo): Rect? {
+        val screenWidth = resources.displayMetrics.widthPixels
+        var indicator: AccessibilityNodeInfo? = null
+        fun walk(node: AccessibilityNodeInfo?, depth: Int) {
+            if (node == null || indicator != null || depth > 20) return
+            val t = node.text?.toString()?.trim()
+            if (t != null && Regex("^\\d+\\s*/\\s*\\d+$").matches(t)) {
+                indicator = node
+                return
+            }
+            for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
+        }
+        walk(root, 0)
+        val start = indicator ?: return null
+        var p: AccessibilityNodeInfo? = start.parent
+        var depth = 0
+        while (p != null && depth < 10) {
+            val b = Rect()
+            p.getBoundsInScreen(b)
+            if (b.width() >= screenWidth - 20 && b.height() > 100) return b
+            p = p.parent
+            depth++
+        }
+        return null
+    }
+
+    /** 讀取目前畫面上「X/N」頁碼指示文字裡的總張數 N，讀不到就回傳 1（當作只有一張圖）。 */
+    private fun readCarouselTotal(root: AccessibilityNodeInfo): Int {
+        val texts = mutableListOf<String>()
+        collectTextNodes(root, texts, maxDepth = 20)
+        for (t in texts) {
+            val m = Regex("^(\\d+)\\s*/\\s*(\\d+)$").find(t.trim())
+            if (m != null) return m.groupValues[2].toIntOrNull() ?: 1
+        }
+        return 1
+    }
+
+    /** 等待頁碼指示文字變成「index/total」，最多等 timeoutMs，逾時就直接放棄等待（沿用目前畫面）。 */
+    private suspend fun waitForCarouselIndex(index: Int, timeoutMs: Long) {
+        val start = System.currentTimeMillis()
+        while (System.currentTimeMillis() - start < timeoutMs) {
+            val root = rootInActiveWindow
+            if (root != null && root.findAccessibilityNodeInfosByText("$index/").isNotEmpty()) return
+            delay(120)
+        }
+    }
+
+    /**
+     * 依序滑過商品圖片輪播，把每一張都截圖存下來（用於後續生成影片／文案素材）。
+     * 只在 Android 11（API 30）以上支援截圖；抓不到輪播範圍或截圖失敗時，該張直接跳過不中斷整體流程。
+     */
+    private suspend fun captureGalleryImages(root: AccessibilityNodeInfo): List<Bitmap> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return emptyList()
+        val bounds = findImageCarouselBounds(root) ?: return emptyList()
+        val total = readCarouselTotal(root).coerceIn(1, 20) // 上限 20 張，避免極端情況跑太久
+        val images = mutableListOf<Bitmap>()
+
+        for (index in 1..total) {
+            if (index > 1) {
+                swipeCarouselNext(bounds)
+                waitForCarouselIndex(index, 1200)
+                delay(200) // 滑動動畫緩衝
+            }
+            val full = captureScreenshotSuspend() ?: continue
+            val cropped = try {
+                val left = bounds.left.coerceIn(0, full.width)
+                val top = bounds.top.coerceIn(0, full.height)
+                val width = bounds.width().coerceAtMost(full.width - left)
+                val height = bounds.height().coerceAtMost(full.height - top)
+                if (width > 0 && height > 0) Bitmap.createBitmap(full, left, top, width, height) else full
+            } catch (e: Exception) {
+                full
+            }
+            images.add(cropped)
+        }
+        return images
     }
 
     /**
@@ -650,12 +789,12 @@ class ShopeeAccessibilityService : AccessibilityService() {
     ) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
             // API 30 以下沒有 takeScreenshot()，直接存純文字資料，不含圖片
-            val saved = saveResult(productName, link, bitmap = null)
+            val saved = saveResult(productName, link, caption = null, bitmaps = emptyList())
             onResult(saved)
             return
         }
         takeScreenshotCompat { bitmap ->
-            val saved = saveResult(productName, link, bitmap)
+            val saved = saveResult(productName, link, caption = null, bitmaps = listOfNotNull(bitmap))
             onResult(saved)
         }
     }
@@ -685,7 +824,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         )
     }
 
-    private fun saveResult(productName: String?, link: String?, bitmap: Bitmap?): CaptureResult {
+    private fun saveResult(productName: String?, link: String?, caption: String?, bitmaps: List<Bitmap>): CaptureResult {
         val id = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val baseDir = File(
             android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
@@ -693,14 +832,34 @@ class ShopeeAccessibilityService : AccessibilityService() {
         )
         if (!baseDir.exists()) baseDir.mkdirs()
 
-        if (bitmap != null) {
+        // 多張圖片依序存成 image_1.jpg、image_2.jpg...；只有一張的話同時存一份 image.jpg 保留舊格式相容
+        bitmaps.forEachIndexed { index, bitmap ->
             try {
-                val imgFile = File(baseDir, "image.jpg")
+                val imgFile = File(baseDir, "image_${index + 1}.jpg")
                 FileOutputStream(imgFile).use { out ->
                     bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
                 }
             } catch (e: Exception) {
-                // 圖片存檔失敗仍繼續保留文字資料
+                // 單張圖片存檔失敗不影響其他張與文字資料
+            }
+        }
+        if (bitmaps.size == 1) {
+            try {
+                val imgFile = File(baseDir, "image.jpg")
+                FileOutputStream(imgFile).use { out ->
+                    bitmaps[0].compress(Bitmap.CompressFormat.JPEG, 90, out)
+                }
+            } catch (e: Exception) {
+                // 忽略
+            }
+        }
+
+        // 文案文字另存一個純文字檔，方便直接打開複製貼上使用
+        if (!caption.isNullOrBlank()) {
+            try {
+                File(baseDir, "caption.txt").writeText(caption)
+            } catch (e: Exception) {
+                // 忽略
             }
         }
 
@@ -709,11 +868,13 @@ class ShopeeAccessibilityService : AccessibilityService() {
             put("id", id)
             put("productName", productName ?: org.json.JSONObject.NULL)
             put("promoLink", link ?: org.json.JSONObject.NULL)
+            put("caption", caption ?: org.json.JSONObject.NULL)
+            put("imageCount", bitmaps.size)
             put("capturedAt", System.currentTimeMillis())
         }
         metaFile.writeText(metaJson.toString())
 
-        val product = CapturedProduct(id, productName, link, System.currentTimeMillis())
+        val product = CapturedProduct(id, productName, link, caption, System.currentTimeMillis())
         return CaptureResult.Success(product, baseDir.absolutePath)
     }
 }

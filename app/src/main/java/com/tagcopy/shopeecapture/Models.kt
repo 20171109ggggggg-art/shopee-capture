@@ -7,6 +7,7 @@ data class CapturedProduct(
     val id: String,
     val productName: String?,
     val promoLink: String?,
+    val caption: String? = null,
     val capturedAt: Long
 )
 
@@ -46,9 +47,10 @@ enum class ShopeeRegion(
  */
 data class MatchRules(
     val copyLinkButtonTexts: List<String> = listOf("複製連結", "Copy link", "Copy Link"),
+    val copyInfoButtonTexts: List<String> = listOf("複製資訊", "Copy Info", "Copy info"),
     val productImageResourceIdKeywords: List<String> = listOf("image", "img", "photo", "cover"),
     val shareSheetTitleTexts: List<String> = listOf("分享以獲得分潤金", "Share to earn commission"),
-    val shareButtonDescriptors: List<String> = listOf("分享", "Share", "分享至", "Share to Earn"),
+    val shareButtonDescriptors: List<String> = listOf("立即推廣", "分享", "Share", "分享至", "Share to Earn"),
     val priceIndicatorPrefixes: List<String> = listOf("$", "₱", "RM", "Rp", "₫", "฿")
 ) {
     /** 把選定地區的在地語言候選字串疊加進來，不影響原本的規則。 */
