@@ -333,6 +333,32 @@ class ShopeeAccessibilityService : AccessibilityService() {
             }
         }
 
+        // 有些畫面把符號跟數字拆成不同文字元件（例如「$」跟「362.00」是兩個獨立節點、
+        // 「56」跟「位推廣者已推廣」也是兩個獨立節點），逐一比對單一節點時兩邊各自都比對不到。
+        // 這裡針對「還是讀不到」的欄位，把整頁文字接在一起再比對一次做為補救，
+        // 已經讀到的欄位不受影響，避免因為合併文字而誤配對到別的商品區塊。
+        if (commission == null || sold == null || promoter == null || price == null) {
+            val combined = texts.joinToString(" ")
+            if (commission == null) {
+                commissionRegex.find(combined)?.let { commission = it.groupValues[1].toDoubleOrNull() }
+            }
+            if (sold == null) {
+                soldRegex.find(combined)?.let { sold = it.groupValues[1].replace(",", "").toIntOrNull() }
+                if (sold == null) {
+                    soldAbbrevRegex.find(combined)?.let { sold = parseAbbreviatedNumber(it.groupValues[1], it.groupValues[2]) }
+                }
+            }
+            if (promoter == null) {
+                promoterRegex.find(combined)?.let { promoter = it.groupValues[1].replace(",", "").toIntOrNull() }
+                if (promoter == null) {
+                    promoterAbbrevRegex.find(combined)?.let { promoter = parseAbbreviatedNumber(it.groupValues[1], it.groupValues[2]) }
+                }
+            }
+            if (price == null) {
+                priceRegex.find(combined)?.let { price = it.groupValues[1].replace(",", "").toDoubleOrNull() }
+            }
+        }
+
         return ProductMetrics(commission, price, sold, promoter)
     }
 
