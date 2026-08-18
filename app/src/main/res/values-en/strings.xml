@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- Original strings (referenced by accessibility_service_config.xml; missing this breaks the build) -->
+    <string name="app_name">Shopee Capture Tool</string>
+    <string name="accessibility_service_description">Reads screen content to help auto-copy affiliate links and capture product images. Technically this permission can read any foreground app\'s screen, but this app only acts the moment you tap the floating button — it never automatically reads, logs, or uploads content from other apps.</string>
+
     <!-- MainActivity -->
     <string name="app_title">Shopee Capture Tool</string>
     <string name="app_subtitle">After reaching a Shopee affiliate product\'s share panel, tap the floating button to auto-copy the link and screenshot the product</string>
