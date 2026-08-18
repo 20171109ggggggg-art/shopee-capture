@@ -196,9 +196,9 @@ class ShopeeAccessibilityService : AccessibilityService() {
             onEvent(AutoCaptureEvent.Log("點擊商品卡片失敗，跳過"))
             return ProcessResult.FAILED
         }
-        delay(randomDelay(config))
 
-        val detailRoot = rootInActiveWindow
+        // 等待商品詳情頁真正載入完成（而不是固定延遲後就讀取），避免抓到還沒渲染完的殘缺畫面
+        val detailRoot = waitForDetailPageLoaded(3500)
         if (detailRoot == null) {
             performBack()
             return ProcessResult.FAILED
@@ -355,6 +355,25 @@ class ShopeeAccessibilityService : AccessibilityService() {
             .addStroke(GestureDescription.StrokeDescription(path, 0, 300))
             .build()
         dispatchGesture(gesture, null, null)
+    }
+
+    /**
+     * 點進商品詳情頁後，畫面不一定馬上完整渲染（圖片、分潤率、已售出等資訊可能還在載入）。
+     * 這裡改成「輪詢等待分享按鈕出現」再多留一點緩衝時間，取代原本寫死的固定延遲，
+     * 避免網路較慢時抓到還沒載完的殘缺畫面。逾時仍會回傳當下畫面（不是 null），
+     * 讓後續流程照舊判斷「找不到分享按鈕」並跳過，而不是直接當成整體失敗。
+     */
+    private suspend fun waitForDetailPageLoaded(timeoutMs: Long): AccessibilityNodeInfo? {
+        val start = System.currentTimeMillis()
+        while (System.currentTimeMillis() - start < timeoutMs) {
+            val root = rootInActiveWindow
+            if (root != null && findNodeByDescriptors(root, matchRules.shareButtonDescriptors) != null) {
+                delay(250) // 分享按鈕出現後，分潤率／價格等文字通常緊接著渲染完成，多留一點緩衝
+                return rootInActiveWindow
+            }
+            delay(150)
+        }
+        return rootInActiveWindow
     }
 
     private suspend fun waitForAnyText(texts: List<String>, timeoutMs: Long): Boolean {

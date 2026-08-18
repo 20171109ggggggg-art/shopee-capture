@@ -60,6 +60,21 @@ fun RootScreen() {
         overlayGranted = canDrawOverlays(context)
     }
 
+    // 從系統設定頁（開啟無障礙服務／懸浮視窗權限）切回這個畫面時，
+    // 重新檢查一次狀態 —— 否則「前往設定」的完成勾勾不會更新，要重啟 App 才會抓到。
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                accessibilityEnabled = isAccessibilityServiceEnabled(context)
+                overlayGranted = canDrawOverlays(context)
+                queueItems = loadQueueItems()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     LaunchedEffect(Unit) {
         accessibilityEnabled = isAccessibilityServiceEnabled(context)
         overlayGranted = canDrawOverlays(context)
