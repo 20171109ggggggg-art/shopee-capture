@@ -53,6 +53,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         get() = baseMatchRules.mergeWithRegion(RegionPrefs.getRegion(this))
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var autoJob: Job? = null
+    private var currentDebugLogFileName: String? = null
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -111,6 +112,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
         val startTime = System.currentTimeMillis()
 
+        currentDebugLogFileName = "debug_log_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.txt"
         appendDebugLog("===== 開始自動擷取，目標 ${config.targetCount} 件，篩選條件：${if (config.filter.isEmpty()) "無" else "有"} =====")
         onEvent(AutoCaptureEvent.Log("開始自動擷取，目標 ${config.targetCount} 件商品"))
         if (!config.filter.isEmpty()) {
@@ -196,12 +198,14 @@ class ShopeeAccessibilityService : AccessibilityService() {
     ): ProcessResult {
         if (!card.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
             onEvent(AutoCaptureEvent.Log("點擊商品卡片失敗，跳過"))
+            appendDebugLog("結果=失敗（點擊商品卡片失敗）")
             return ProcessResult.FAILED
         }
 
         // 等待商品詳情頁真正載入完成（而不是固定延遲後就讀取），避免抓到還沒渲染完的殘缺畫面
         val detailRoot = waitForDetailPageLoaded(3500)
         if (detailRoot == null) {
+            appendDebugLog("結果=失敗（商品詳情頁載入逾時）")
             performBack()
             return ProcessResult.FAILED
         }
@@ -222,6 +226,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             if (!config.filter.matches(metrics)) {
                 val reason = config.filter.describeMismatch(metrics) ?: "未知原因"
                 onEvent(AutoCaptureEvent.Log("○ 篩選未通過（$reason），略過：${productName ?: "未知商品"}"))
+                appendDebugLog("商品：${productName ?: "未知"} | 結果=篩選跳過（$reason）")
                 performBack()
                 delay(randomDelay(config))
                 return ProcessResult.FILTERED
@@ -231,6 +236,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         val shareNode = findNodeByDescriptors(detailRoot, matchRules.shareButtonDescriptors)
         if (shareNode == null) {
             onEvent(AutoCaptureEvent.Log("找不到分享按鈕，跳過此商品"))
+            appendDebugLog("商品：${productName ?: "未知"} | 結果=失敗（找不到分享按鈕）")
             performBack()
             delay(randomDelay(config))
             return ProcessResult.FAILED
@@ -242,6 +248,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         val sheetAppeared = waitForAnyText(matchRules.shareSheetTitleTexts, 2500)
         if (!sheetAppeared) {
             onEvent(AutoCaptureEvent.Log("分享面板未出現，跳過此商品"))
+            appendDebugLog("商品：${productName ?: "未知"} | 結果=失敗（分享面板未出現）")
             performBack()
             delay(randomDelay(config))
             return ProcessResult.FAILED
@@ -251,6 +258,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         val copyLinkNode = sheetRoot?.let { findNodeByTexts(it, matchRules.copyLinkButtonTexts) }
         if (copyLinkNode == null) {
             onEvent(AutoCaptureEvent.Log("找不到「複製連結」按鈕，跳過此商品"))
+            appendDebugLog("商品：${productName ?: "未知"} | 結果=失敗（找不到複製連結按鈕）")
             performBack()
             delay(randomDelay(config))
             performBack()
@@ -272,10 +280,12 @@ class ShopeeAccessibilityService : AccessibilityService() {
         return when (val result = saveResult(productName, link, bitmap)) {
             is CaptureResult.Success -> {
                 onEvent(AutoCaptureEvent.Log("✓ 已擷取：${productName ?: "未知商品"}"))
+                appendDebugLog("商品：${productName ?: "未知"} | 結果=成功 | 連結=${link ?: "null（沒讀到）"}")
                 ProcessResult.SUCCESS
             }
             is CaptureResult.Failure -> {
                 onEvent(AutoCaptureEvent.Log("存檔失敗：${result.reason}"))
+                appendDebugLog("商品：${productName ?: "未知"} | 結果=失敗（存檔失敗：${result.reason}）")
                 ProcessResult.FAILED
             }
         }
@@ -383,7 +393,10 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 "ShopeeCaptureDebugLog"
             )
             if (!dir.exists()) dir.mkdirs()
-            val file = File(dir, "debug_log.txt")
+            val fileName = currentDebugLogFileName ?: "debug_log_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.txt".also {
+                currentDebugLogFileName = it
+            }
+            val file = File(dir, fileName)
             val timestamp = SimpleDateFormat("MM-dd HH:mm:ss", Locale.US).format(Date())
             file.appendText("[$timestamp] $line\n")
         } catch (e: Exception) {
