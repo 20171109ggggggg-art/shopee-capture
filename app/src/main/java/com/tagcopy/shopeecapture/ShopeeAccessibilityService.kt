@@ -355,6 +355,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         var price: Double? = null
 
         for (text in texts) {
+            if (isCouponBannerText(text)) continue // 優惠券橫幅文字（例如「低消 $49」）不是商品資訊，整段跳過避免誤判
             if (commission == null) {
                 commissionRegex.find(text)?.let { commission = it.groupValues[1].toDoubleOrNull() }
             }
@@ -380,7 +381,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         // 這裡針對「還是讀不到」的欄位，把整頁文字接在一起再比對一次做為補救，
         // 已經讀到的欄位不受影響，避免因為合併文字而誤配對到別的商品區塊。
         if (commission == null || sold == null || promoter == null || price == null) {
-            val combined = texts.joinToString(" ")
+            val combined = texts.filterNot { isCouponBannerText(it) }.joinToString(" ")
             if (commission == null) {
                 commissionRegex.find(combined)?.let { commission = it.groupValues[1].toDoubleOrNull() }
             }
@@ -792,8 +793,17 @@ class ShopeeAccessibilityService : AccessibilityService() {
     private fun findLikelyProductNameText(root: AccessibilityNodeInfo): String? {
         val candidates = mutableListOf<String>()
         collectTextNodes(root, candidates, maxDepth = 12)
-        // 取長度落在合理商品標題範圍（8~60 字）且非按鈕文字的第一筆
-        return candidates.firstOrNull { it.length in 8..60 }
+        // 取長度落在合理商品標題範圍（8~60 字）且非按鈕文字的第一筆，
+        // 排除優惠券橫幅相關文字（例如「提供優惠券給您的粉絲/關注者」），避免誤判成商品名稱
+        return candidates.firstOrNull {
+            it.length in 8..60 && !isCouponBannerText(it)
+        }
+    }
+
+    /** 商品詳情頁常見的「優惠券／折扣橫幅」文字，不是商品資訊，比對商品名稱或價格時要排除掉。 */
+    private fun isCouponBannerText(text: String): Boolean {
+        val keywords = listOf("提供優惠券", "低消", "社群媒體", "推廣限定", "條款與規範", "有效期限")
+        return keywords.any { text.contains(it) }
     }
 
     private fun collectTextNodes(node: AccessibilityNodeInfo?, out: MutableList<String>, maxDepth: Int, depth: Int = 0) {
