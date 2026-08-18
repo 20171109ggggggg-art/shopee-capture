@@ -99,6 +99,31 @@ data class ProductFilterConfig(
             minPrice == null && maxPrice == null &&
             minSoldCount == null && maxSoldCount == null &&
             minPromoterCount == null && maxPromoterCount == null
+
+    /**
+     * 回傳「哪個欄位、為什麼」沒通過，符合就回傳 null。
+     * 用來在跳過商品時顯示具體原因（例如「分潤率讀到 null（讀不到）」或「已售出 8 < 最低 10」），
+     * 取代原本只顯示「篩選未通過」看不出實際原因的做法。
+     */
+    fun describeMismatch(metrics: ProductMetrics): String? {
+        if (minCommissionPercent != null && (metrics.commissionPercent == null || metrics.commissionPercent < minCommissionPercent))
+            return "分潤率${metrics.commissionPercent?.let { "$it%" } ?: "讀不到"} < 最低 $minCommissionPercent%"
+        if (maxCommissionPercent != null && (metrics.commissionPercent == null || metrics.commissionPercent > maxCommissionPercent))
+            return "分潤率${metrics.commissionPercent?.let { "$it%" } ?: "讀不到"} > 最高 $maxCommissionPercent%"
+        if (minPrice != null && (metrics.price == null || metrics.price < minPrice))
+            return "價格${metrics.price ?: "讀不到"} < 最低 $minPrice"
+        if (maxPrice != null && (metrics.price == null || metrics.price > maxPrice))
+            return "價格${metrics.price ?: "讀不到"} > 最高 $maxPrice"
+        if (minSoldCount != null && (metrics.soldCount == null || metrics.soldCount < minSoldCount))
+            return "已售出${metrics.soldCount ?: "讀不到"} < 最低 $minSoldCount"
+        if (maxSoldCount != null && (metrics.soldCount == null || metrics.soldCount > maxSoldCount))
+            return "已售出${metrics.soldCount ?: "讀不到"} > 最高 $maxSoldCount"
+        if (minPromoterCount != null && (metrics.promoterCount == null || metrics.promoterCount < minPromoterCount))
+            return "已推廣者${metrics.promoterCount ?: "讀不到"} < 最低 $minPromoterCount"
+        if (maxPromoterCount != null && (metrics.promoterCount == null || metrics.promoterCount > maxPromoterCount))
+            return "已推廣者${metrics.promoterCount ?: "讀不到"} > 最高 $maxPromoterCount"
+        return null
+    }
 }
 
 /** 從商品畫面文字解析出來的數值。任一項讀不到就是 null。 */
