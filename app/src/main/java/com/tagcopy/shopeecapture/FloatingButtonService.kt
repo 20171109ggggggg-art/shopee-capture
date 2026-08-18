@@ -42,7 +42,7 @@ class FloatingButtonService : Service() {
         val channelId = "shopee_capture_channel"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
-                channelId, "蝦皮擷取懸浮按鈕",
+                channelId, getString(R.string.notif_channel_floating),
                 NotificationManager.IMPORTANCE_MIN
             )
             val nm = getSystemService(NotificationManager::class.java)
@@ -56,10 +56,10 @@ class FloatingButtonService : Service() {
         )
 
         val notification = Notification.Builder(this, channelId)
-            .setContentTitle("蝦皮擷取器運行中")
-            .setContentText("點擊懸浮按鈕以擷取目前商品")
+            .setContentTitle(getString(R.string.notif_title_running))
+            .setContentText(getString(R.string.notif_text_running))
             .setSmallIcon(android.R.drawable.ic_menu_camera)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "停止", stopPending)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, getString(R.string.btn_stop), stopPending)
             .build()
 
         startForeground(1, notification)
@@ -80,7 +80,7 @@ class FloatingButtonService : Service() {
         }
 
         val captureButton = TextView(this).apply {
-            text = "擷取"
+            text = getString(R.string.btn_capture)
             setBackgroundColor(0xFFE8622C.toInt())
             setTextColor(0xFFFFFFFF.toInt())
             textSize = 14f
@@ -88,7 +88,7 @@ class FloatingButtonService : Service() {
         }
 
         val autoButton = TextView(this).apply {
-            text = "自動"
+            text = getString(R.string.btn_auto)
             setBackgroundColor(0xFF1C2331.toInt())
             setTextColor(0xFFFFFFFF.toInt())
             textSize = 14f
@@ -96,7 +96,7 @@ class FloatingButtonService : Service() {
         }
 
         val detectButton = TextView(this).apply {
-            text = "偵測"
+            text = getString(R.string.btn_detect)
             setBackgroundColor(0xFF8A9A87.toInt())
             setTextColor(0xFFFFFFFF.toInt())
             textSize = 14f
@@ -174,37 +174,37 @@ class FloatingButtonService : Service() {
     private fun onDetectButtonTapped() {
         val service = ShopeeAccessibilityService.instance
         if (service == null) {
-            Toast.makeText(this, "請先開啟「無障礙服務」權限", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, getString(R.string.toast_need_accessibility), Toast.LENGTH_LONG).show()
             return
         }
         val packageName = service.getCurrentPackageName()
         if (packageName == null) {
-            Toast.makeText(this, "讀不到目前 App 的套件名稱", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, getString(R.string.toast_no_package), Toast.LENGTH_LONG).show()
             return
         }
         showAlertNotification(
-            "目前畫面的套件名稱",
-            "$packageName\n\n如果無障礙服務讀不到這個 App 的畫面，請把這個套件名稱加進 accessibility_service_config.xml 的 packageNames 清單裡"
+            getString(R.string.alert_title_package),
+            getString(R.string.alert_msg_package, packageName)
         )
     }
 
     private fun onAutoButtonTapped(autoButton: TextView) {
         val service = ShopeeAccessibilityService.instance
         if (service == null) {
-            Toast.makeText(this, "請先開啟「無障礙服務」權限", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, getString(R.string.toast_need_accessibility), Toast.LENGTH_LONG).show()
             return
         }
 
         if (service.isAutoCaptureRunning()) {
             service.stopAutoCapture()
-            autoButton.text = "自動"
-            Toast.makeText(this, "已停止自動擷取", Toast.LENGTH_SHORT).show()
+            autoButton.text = getString(R.string.btn_auto)
+            Toast.makeText(this, getString(R.string.toast_auto_stopped), Toast.LENGTH_SHORT).show()
             return
         }
 
         val config = AutoCapturePrefs.load(this)
         autoButton.text = "0/${config.targetCount}"
-        Toast.makeText(this, "開始自動擷取 ${config.targetCount} 件商品", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, getString(R.string.toast_auto_started, config.targetCount), Toast.LENGTH_SHORT).show()
 
         service.startAutoCapture(config) { event ->
             when (event) {
@@ -218,19 +218,22 @@ class FloatingButtonService : Service() {
                     autoButton.text = "${event.current}/${event.total}"
                 }
                 is AutoCaptureEvent.Finished -> {
-                    autoButton.text = "自動"
+                    autoButton.text = getString(R.string.btn_auto)
                     when (event.reason) {
                         FinishReason.TIME_LIMIT_REACHED -> showAlertNotification(
-                            "篩選時間已到",
-                            "僅擷取到 ${event.successCount} 件符合條件的商品（篩選跳過 ${event.filteredCount} 件），已自動停止"
+                            getString(R.string.alert_title_time_limit),
+                            getString(R.string.alert_msg_time_limit, event.successCount, event.filteredCount)
                         )
                         FinishReason.MAX_ATTEMPTS_REACHED -> showAlertNotification(
-                            "已達最大嘗試次數",
-                            "多數商品不符篩選條件，僅擷取到 ${event.successCount} 件，已自動停止"
+                            getString(R.string.alert_title_max_attempts),
+                            getString(R.string.alert_msg_max_attempts, event.successCount)
                         )
                         else -> Toast.makeText(
                             this,
-                            "完成：成功 ${event.successCount}／篩選跳過 ${event.filteredCount}／失敗 ${event.failCount}",
+                            getString(
+                                R.string.toast_finished_summary,
+                                event.successCount, event.filteredCount, event.failCount
+                            ),
                             Toast.LENGTH_LONG
                         ).show()
                     }
@@ -242,18 +245,18 @@ class FloatingButtonService : Service() {
     private fun onCaptureButtonTapped() {
         val service = ShopeeAccessibilityService.instance
         if (service == null) {
-            Toast.makeText(this, "請先開啟「無障礙服務」權限", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, getString(R.string.toast_need_accessibility), Toast.LENGTH_LONG).show()
             return
         }
-        Toast.makeText(this, "擷取中…", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, getString(R.string.toast_capturing), Toast.LENGTH_SHORT).show()
         service.captureCurrentScreen { result ->
             when (result) {
                 is CaptureResult.Success -> {
-                    val name = result.product.productName ?: "未知商品"
-                    Toast.makeText(this, "已擷取：$name", Toast.LENGTH_LONG).show()
+                    val name = result.product.productName ?: getString(R.string.unknown_product)
+                    Toast.makeText(this, getString(R.string.toast_captured_success, name), Toast.LENGTH_LONG).show()
                 }
                 is CaptureResult.Failure -> {
-                    Toast.makeText(this, "擷取失敗：${result.reason}", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, getString(R.string.toast_captured_fail, result.reason), Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -268,7 +271,7 @@ class FloatingButtonService : Service() {
         val alertChannelId = "shopee_capture_alert_channel"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
-                alertChannelId, "蝦皮擷取器提醒",
+                alertChannelId, getString(R.string.notif_channel_alert),
                 NotificationManager.IMPORTANCE_HIGH
             )
             val nm = getSystemService(NotificationManager::class.java)

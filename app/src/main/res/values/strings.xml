@@ -1,4 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">蝦皮擷取器</string>
-    <string name="accessibility_service_description">讀取畫面內容以協助自動複製推廣連結與截取商品圖片。技術上這個權限可以讀取任何最上層 App 的畫面，但本 App 只會在你主動點擊懸浮按鈕的當下才執行動作，不會自動讀取、記錄或上傳你在其他 App 裡的任何內容。</string>
+    <!-- MainActivity -->
+    <string name="app_title">蝦皮擷取器</string>
+    <string name="app_subtitle">瀏覽到蝦皮分潤商品分享面板後，點懸浮按鈕自動複製連結並截圖商品</string>
+
+    <string name="step1_title">開啟無障礙服務</string>
+    <string name="step1_desc">允許本 App 讀取蝦皮畫面內容（僅限蝦皮，不會讀取其他 App）</string>
+    <string name="btn_go_to_settings">前往設定</string>
+
+    <string name="step2_title">允許顯示在其他 App 之上</string>
+    <string name="step2_desc">讓懸浮擷取按鈕能顯示在蝦皮畫面上</string>
+
+    <string name="step3_title">啟動懸浮按鈕</string>
+    <string name="step3_desc_running">運作中，可以切到蝦皮 App 開始使用</string>
+    <string name="step3_desc_idle">點擊後切換到蝦皮 App 即可看到懸浮按鈕</string>
+    <string name="btn_stop">停止</string>
+    <string name="btn_start">啟動</string>
+
+    <string name="captured_products_title">已擷取商品</string>
+    <string name="btn_refresh">重新整理</string>
+    <string name="empty_queue_text">還沒有擷取任何商品</string>
+
+    <string name="region_title">蝦皮地區</string>
+    <string name="region_desc">選擇你使用的蝦皮地區版本，會自動加入當地語言的按鈕文字比對（例如菲律賓版的分享／複製連結字樣），提高辨識成功率</string>
+
+    <string name="auto_settings_title">全自動擷取設定</string>
+    <string name="auto_settings_desc">在蝦皮商品列表畫面點懸浮視窗的「自動」按鈕，就會依這裡的設定連續擷取多件商品，不用逐一手動點擊</string>
+
+    <string name="target_count_label">目標擷取數量</string>
+
+    <string name="max_attempts_label">最大嘗試次數限制</string>
+    <string name="max_attempts_desc">目標數量×6（至少30次），避免篩選條件太嚴格時無止盡翻找</string>
+
+    <string name="step_interval_label">每步驟間隔秒數（隨機區間，越大越慢但越不像機器操作）</string>
+    <string name="label_shortest">最短</string>
+    <string name="label_longest">最長</string>
+
+    <string name="filter_title">篩選條件（留空代表不限制）</string>
+    <string name="filter_desc">不符合條件的商品會自動跳過、換下一個，不會被擷取</string>
+    <string name="filter_commission">分潤率 %</string>
+    <string name="filter_price">商品價格</string>
+    <string name="filter_sold">已售出數量</string>
+    <string name="filter_promoter">已推廣者數量</string>
+
+    <string name="time_limit_label">篩選時間上限</string>
+    <string name="time_limit_desc">時間到了還沒湊到目標數量，會自動停止並跳出明顯提醒</string>
+    <string name="time_limit_hint">分鐘，留空代表不限制</string>
+
+    <string name="label_min">最低</string>
+    <string name="label_max">最高</string>
+
+    <string name="unknown_product">未知商品</string>
+    <string name="no_link">（無連結）</string>
+
+    <!-- FloatingButtonService -->
+    <string name="notif_channel_floating">蝦皮擷取懸浮按鈕</string>
+    <string name="notif_title_running">蝦皮擷取器運行中</string>
+    <string name="notif_text_running">點擊懸浮按鈕以擷取目前商品</string>
+
+    <string name="btn_capture">擷取</string>
+    <string name="btn_auto">自動</string>
+    <string name="btn_detect">偵測</string>
+
+    <string name="toast_need_accessibility">請先開啟「無障礙服務」權限</string>
+    <string name="toast_no_package">讀不到目前 App 的套件名稱</string>
+
+    <string name="alert_title_package">目前畫面的套件名稱</string>
+    <string name="alert_msg_package">%1$s\n\n如果無障礙服務讀不到這個 App 的畫面，請把這個套件名稱加進 accessibility_service_config.xml 的 packageNames 清單裡</string>
+
+    <string name="toast_auto_stopped">已停止自動擷取</string>
+    <string name="toast_auto_started">開始自動擷取 %1$d 件商品</string>
+
+    <string name="alert_title_time_limit">篩選時間已到</string>
+    <string name="alert_msg_time_limit">僅擷取到 %1$d 件符合條件的商品（篩選跳過 %2$d 件），已自動停止</string>
+
+    <string name="alert_title_max_attempts">已達最大嘗試次數</string>
+    <string name="alert_msg_max_attempts">多數商品不符篩選條件，僅擷取到 %1$d 件，已自動停止</string>
+
+    <string name="toast_finished_summary">完成：成功 %1$d／篩選跳過 %2$d／失敗 %3$d</string>
+
+    <string name="toast_capturing">擷取中…</string>
+    <string name="toast_captured_success">已擷取：%1$s</string>
+    <string name="toast_captured_fail">擷取失敗：%1$s</string>
+
+    <string name="notif_channel_alert">蝦皮擷取器提醒</string>
 </resources>

@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- MainActivity -->
+    <string name="app_title">Shopee Capture Tool</string>
+    <string name="app_subtitle">After reaching a Shopee affiliate product\'s share panel, tap the floating button to auto-copy the link and screenshot the product</string>
+
+    <string name="step1_title">Enable Accessibility Service</string>
+    <string name="step1_desc">Allow this app to read Shopee\'s screen content (Shopee only — no other apps are read)</string>
+    <string name="btn_go_to_settings">Go to Settings</string>
+
+    <string name="step2_title">Allow Display Over Other Apps</string>
+    <string name="step2_desc">Let the floating capture button appear over the Shopee screen</string>
+
+    <string name="step3_title">Start Floating Button</string>
+    <string name="step3_desc_running">Running — switch to the Shopee app to start using it</string>
+    <string name="step3_desc_idle">Tap, then switch to the Shopee app to see the floating button</string>
+    <string name="btn_stop">Stop</string>
+    <string name="btn_start">Start</string>
+
+    <string name="captured_products_title">Captured Products</string>
+    <string name="btn_refresh">Refresh</string>
+    <string name="empty_queue_text">No products captured yet</string>
+
+    <string name="region_title">Shopee Region</string>
+    <string name="region_desc">Choose the Shopee region you use — local-language button text (e.g. share/copy link wording for the Philippines version) will be added automatically to improve detection accuracy</string>
+
+    <string name="auto_settings_title">Auto-Capture Settings</string>
+    <string name="auto_settings_desc">Tap the \"Auto\" button on the floating window from a Shopee product list screen to capture multiple products in a row, based on the settings below, without tapping each one manually</string>
+
+    <string name="target_count_label">Target Capture Count</string>
+
+    <string name="max_attempts_label">Max Attempt Limit</string>
+    <string name="max_attempts_desc">Target count × 6 (at least 30) — prevents endless searching when filters are too strict</string>
+
+    <string name="step_interval_label">Delay Between Steps (random range — larger means slower but less bot-like)</string>
+    <string name="label_shortest">Min</string>
+    <string name="label_longest">Max</string>
+
+    <string name="filter_title">Filter Conditions (leave blank for no limit)</string>
+    <string name="filter_desc">Products that don\'t match will be skipped automatically and not captured</string>
+    <string name="filter_commission">Commission %</string>
+    <string name="filter_price">Product Price</string>
+    <string name="filter_sold">Units Sold</string>
+    <string name="filter_promoter">Promoters</string>
+
+    <string name="time_limit_label">Filter Time Limit</string>
+    <string name="time_limit_desc">Auto-stops with a clear alert if the target count isn\'t reached in time</string>
+    <string name="time_limit_hint">Minutes, leave blank for no limit</string>
+
+    <string name="label_min">Min</string>
+    <string name="label_max">Max</string>
+
+    <string name="unknown_product">Unknown product</string>
+    <string name="no_link">(No link)</string>
+
+    <!-- FloatingButtonService -->
+    <string name="notif_channel_floating">Shopee Capture Floating Button</string>
+    <string name="notif_title_running">Shopee Capture Tool Running</string>
+    <string name="notif_text_running">Tap the floating button to capture the current product</string>
+
+    <string name="btn_capture">Capture</string>
+    <string name="btn_auto">Auto</string>
+    <string name="btn_detect">Detect</string>
+
+    <string name="toast_need_accessibility">Please enable \"Accessibility Service\" first</string>
+    <string name="toast_no_package">Couldn\'t read the current app\'s package name</string>
+
+    <string name="alert_title_package">Current Screen\'s Package Name</string>
+    <string name="alert_msg_package">%1$s\n\nIf the accessibility service can\'t read this app\'s screen, add this package name to the packageNames list in accessibility_service_config.xml</string>
+
+    <string name="toast_auto_stopped">Auto-capture stopped</string>
+    <string name="toast_auto_started">Started auto-capture: %1$d products</string>
+
+    <string name="alert_title_time_limit">Filter Time Limit Reached</string>
+    <string name="alert_msg_time_limit">Only captured %1$d matching products (skipped %2$d) — stopped automatically</string>
+
+    <string name="alert_title_max_attempts">Max Attempts Reached</string>
+    <string name="alert_msg_max_attempts">Most products didn\'t match the filter — only captured %1$d — stopped automatically</string>
+
+    <string name="toast_finished_summary">Done: %1$d succeeded / %2$d filtered out / %3$d failed</string>
+
+    <string name="toast_capturing">Capturing…</string>
+    <string name="toast_captured_success">Captured: %1$s</string>
+    <string name="toast_captured_fail">Capture failed: %1$s</string>
+
+    <string name="notif_channel_alert">Shopee Capture Alerts</string>
+</resources>
