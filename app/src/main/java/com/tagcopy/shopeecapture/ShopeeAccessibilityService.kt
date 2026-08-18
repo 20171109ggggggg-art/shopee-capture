@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Path
 import android.graphics.Rect
@@ -113,6 +114,8 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
         val startTime = System.currentTimeMillis()
 
+        navigationLostFlag = false
+        lastKnownSearchQuery = null
         currentDebugLogFileName = "debug_log_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.txt"
         appendDebugLog("===== 開始自動擷取，目標 ${config.targetCount} 件，篩選條件：${if (config.filter.isEmpty()) "無" else "有"} =====")
         onEvent(AutoCaptureEvent.Log("開始自動擷取，目標 ${config.targetCount} 件商品"))
@@ -143,6 +146,9 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 break
             }
 
+            // 記錄目前的搜尋關鍵字，萬一之後返回鍵跳過頭跑到首頁，可以用同樣關鍵字重新搜尋復原
+            findSearchBoxText(root)?.let { if (it.isNotBlank()) lastKnownSearchQuery = it }
+
             val cards = findProductCards(root)
             val nextCard = cards.firstOrNull { cardKey(it) !in processedKeys }
 
@@ -168,6 +174,12 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 ProcessResult.FAILED -> failCount++
             }
             onEvent(AutoCaptureEvent.Progress(successCount, config.targetCount))
+            if (navigationLostFlag) {
+                onEvent(AutoCaptureEvent.Log("因返回鍵導航異常，自動擷取安全停止，請手動回到商品列表後再重新啟動"))
+                appendDebugLog("===== 因返回鍵導航異常（跑到蝦皮首頁）安全停止 =====")
+                reason = FinishReason.ERROR
+                break
+            }
             delay(randomDelay(config))
         }
 
@@ -191,6 +203,8 @@ class ShopeeAccessibilityService : AccessibilityService() {
     }
 
     private enum class ProcessResult { SUCCESS, FILTERED, FAILED }
+    private var navigationLostFlag = false
+    private var lastKnownSearchQuery: String? = null
 
     private suspend fun processOneProduct(
         card: AccessibilityNodeInfo,
@@ -293,21 +307,29 @@ class ShopeeAccessibilityService : AccessibilityService() {
             withTimeoutOrNull(4000) { captureScreenshotSuspend() }
         } else null
 
-        // 關閉分享面板、回到商品頁、再回到列表。
-        // 「複製資訊」點下去後，有些情況會自動把分享面板關掉（跟「複製連結」的行為不一樣），
-        // 這裡先檢查面板是否還在畫面上，需要幾次返回鍵就按幾次，避免固定按兩次導致多跳一層、
-        // 跳出商品列表甚至跳回蝦皮首頁。
-        val sheetStillVisible = matchRules.shareSheetTitleTexts.any {
-            rootInActiveWindow?.findAccessibilityNodeInfosByText(it)?.isNotEmpty() == true
-        }
-        appendDebugLog("  → 返回前檢查：分享面板${if (sheetStillVisible) "仍在畫面上，按 2 次返回" else "已經不在畫面上，只按 1 次返回"}")
+        // 關閉分享面板並回到搜尋結果列表。
+        // 使用者實測確認：這個分享面板跟商品詳情頁是合併成同一層的，不管面板還在不在畫面上，
+        // 只要按「一次」返回鍵就會直接回到搜尋結果頁，不需要也不能按兩次（按兩次會多跳一層）。
         performBack()
         delay(randomDelay(config))
-        if (sheetStillVisible) {
-            performBack()
-            delay(randomDelay(config))
-        }
         appendDebugLog("  → 返回後目前畫面套件名稱：${getCurrentPackageName() ?: "讀不到"}")
+
+        // 有些情況下（疑似 App 內部混合式頁面架構）一次「返回」會跳過不只一層，
+        // 導致跳出商品列表、跑到蝦皮首頁。這裡偵測到跑錯畫面時，先嘗試用剛才記下的搜尋關鍵字
+        // 自動重新搜尋、恢復到商品列表繼續跑；真的恢復不了才安全停止（該存的這次擷取還是照存）。
+        val landedRoot = rootInActiveWindow
+        if (landedRoot != null && looksLikeShopeeHomeScreen(landedRoot)) {
+            appendDebugLog("  → ⚠ 偵測到目前畫面疑似跑到蝦皮首頁而非商品列表，關鍵字=${lastKnownSearchQuery ?: "無記錄"}，嘗試自動恢復")
+            onEvent(AutoCaptureEvent.Log("⚠ 返回後畫面異常（疑似跳到首頁），嘗試自動恢復搜尋…"))
+            val recovered = tryRecoverToSearchResults()
+            appendDebugLog("  → 自動恢復結果：${if (recovered) "成功，恢復到商品列表繼續" else "失敗，將安全停止"}")
+            if (recovered) {
+                onEvent(AutoCaptureEvent.Log("✓ 已自動恢復到商品列表，繼續擷取"))
+            } else {
+                onEvent(AutoCaptureEvent.Log("自動恢復失敗，這次擷取仍會保留，但流程即將停止"))
+                navigationLostFlag = true
+            }
+        }
 
         return when (val result = saveResult(productName, link, caption, galleryImages.ifEmpty { listOfNotNull(bitmap) })) {
             is CaptureResult.Success -> {
@@ -495,6 +517,62 @@ class ShopeeAccessibilityService : AccessibilityService() {
 
     /** 讀取目前畫面所屬 App 的套件名稱，用來確認無障礙服務有沒有正確監控到目標 App。 */
     fun getCurrentPackageName(): String? = rootInActiveWindow?.packageName?.toString()
+
+    /** 判斷目前畫面是不是蝦皮聯盟合作 App 的首頁（成效表現／熱門賣場等），用來偵測返回鍵是否跳過頭。 */
+    private fun looksLikeShopeeHomeScreen(root: AccessibilityNodeInfo): Boolean {
+        val texts = mutableListOf<String>()
+        collectTextNodes(root, texts, maxDepth = 15)
+        val homeMarkers = listOf("成效表現", "熱門賣場", "熱門商品", "專屬推薦", "推廣計畫")
+        return homeMarkers.count { marker -> texts.any { it.contains(marker) } } >= 2
+    }
+
+    /** 從目前畫面找搜尋框（可編輯的文字欄位）節點。找不到就回傳 null。 */
+    private fun findSearchBoxNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        var found: AccessibilityNodeInfo? = null
+        fun walk(node: AccessibilityNodeInfo?, depth: Int) {
+            if (node == null || found != null || depth > 15) return
+            if (node.isEditable) {
+                found = node
+                return
+            }
+            for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
+        }
+        walk(root, 0)
+        return found
+    }
+
+    /** 讀出目前畫面搜尋框裡的關鍵字文字。找不到搜尋框就回傳 null。 */
+    private fun findSearchBoxText(root: AccessibilityNodeInfo): String? {
+        return findSearchBoxNode(root)?.text?.toString()
+    }
+
+    /**
+     * 跑到蝦皮首頁時的自動恢復：從首頁找搜尋框，填回剛才記下的關鍵字並送出搜尋，
+     * 等結果頁出現商品卡片就算成功。找不到搜尋框、沒有關鍵字記錄、或送出後仍看不到商品卡片，都算失敗。
+     */
+    private suspend fun tryRecoverToSearchResults(): Boolean {
+        val query = lastKnownSearchQuery
+        if (query.isNullOrBlank()) return false
+
+        val root = rootInActiveWindow ?: return false
+        val searchBox = findSearchBoxNode(root) ?: return false
+
+        val bundle = android.os.Bundle().apply {
+            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, query)
+        }
+        searchBox.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, bundle)
+        delay(400)
+
+        // 送出搜尋：優先用編輯器的「搜尋」動作（Android 11+），找不到就退而求其次點擊搜尋框本身
+        val submitted = searchBox.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
+        if (!submitted) {
+            searchBox.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        }
+        delay(1500)
+
+        val afterRoot = rootInActiveWindow ?: return false
+        return findProductCards(afterRoot).isNotEmpty()
+    }
 
     private fun performBack() {
         performGlobalAction(GLOBAL_ACTION_BACK)
@@ -840,7 +918,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             if (!text.isNullOrBlank()) return text
             delay(150)
         }
-        val finalResult = readClipboard()
+        var finalResult = readClipboard()
         if (finalResult.isNullOrBlank()) {
             // 重試逾時後仍讀不到，把詳細診斷資訊記一次（不是每次輪詢都記，避免洗版）
             val detail = lastClipboardError ?: run {
@@ -862,8 +940,37 @@ class ShopeeAccessibilityService : AccessibilityService() {
             }
             appendDebugLog("     [剪貼簿診斷] 重試 ${timeoutMs}ms 後仍讀不到：$detail")
             lastClipboardError = null
+
+            // 一般讀取失敗，很可能是 Android 10+ 的「非焦點 App 不能讀剪貼簿」限制。
+            // 改用透明橋接 Activity 短暫搶焦點再讀一次。
+            appendDebugLog("     [剪貼簿診斷] 改用焦點橋接 Activity 重試一次")
+            finalResult = readClipboardViaFocusBridge()
+            appendDebugLog("     [剪貼簿診斷] 焦點橋接結果：${if (finalResult.isNullOrBlank()) "仍讀不到" else "成功，長度 ${finalResult.length} 字"}")
         }
         return finalResult
+    }
+
+    /**
+     * 用透明橋接 Activity 短暫搶下畫面焦點來讀取剪貼簿，繞過 Android 10+「非焦點 App 不能讀剪貼簿」的限制。
+     * 啟動後輪詢等待橋接 Activity 完成讀取並自動關閉（最多等 1.5 秒），逾時就放棄回傳 null。
+     */
+    private suspend fun readClipboardViaFocusBridge(): String? {
+        return try {
+            ClipboardBridgeActivity.pendingClipboardResult = null
+            ClipboardBridgeActivity.resultReady = false
+            val intent = Intent(this, ClipboardBridgeActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+            }
+            startActivity(intent)
+            val start = System.currentTimeMillis()
+            while (System.currentTimeMillis() - start < 1500 && !ClipboardBridgeActivity.resultReady) {
+                delay(50)
+            }
+            ClipboardBridgeActivity.pendingClipboardResult
+        } catch (e: Exception) {
+            appendDebugLog("     [剪貼簿診斷] 焦點橋接啟動失敗：${e.javaClass.simpleName} ${e.message}")
+            null
+        }
     }
 
     private fun takeScreenshotAndSave(
