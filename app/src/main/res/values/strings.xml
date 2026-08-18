@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">蝦皮擷取器</string>
+    <string name="accessibility_service_description">讀取畫面內容以協助自動複製推廣連結與截取商品圖片。技術上這個權限可以讀取任何最上層 App 的畫面，但本 App 只會在你主動點擊懸浮按鈕的當下才執行動作，不會自動讀取、記錄或上傳你在其他 App 裡的任何內容。</string>
+</resources>

@@ -1,0 +1,303 @@
+package com.tagcopy.shopeecapture
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.graphics.PixelFormat
+import android.os.Build
+import android.os.IBinder
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.view.Gravity
+import android.view.MotionEvent
+import android.view.View
+import android.view.WindowManager
+import android.widget.TextView
+import android.widget.Toast
+
+class FloatingButtonService : Service() {
+
+    private var windowManager: WindowManager? = null
+    private var floatingView: View? = null
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        startForegroundWithNotification()
+        showFloatingButton()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        floatingView?.let { windowManager?.removeView(it) }
+        floatingView = null
+    }
+
+    private fun startForegroundWithNotification() {
+        val channelId = "shopee_capture_channel"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                channelId, "蝦皮擷取懸浮按鈕",
+                NotificationManager.IMPORTANCE_MIN
+            )
+            val nm = getSystemService(NotificationManager::class.java)
+            nm.createNotificationChannel(channel)
+        }
+
+        val stopIntent = Intent(this, FloatingButtonService::class.java).apply { action = ACTION_STOP }
+        val stopPending = PendingIntent.getService(
+            this, 0, stopIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val notification = Notification.Builder(this, channelId)
+            .setContentTitle("蝦皮擷取器運行中")
+            .setContentText("點擊懸浮按鈕以擷取目前商品")
+            .setSmallIcon(android.R.drawable.ic_menu_camera)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "停止", stopPending)
+            .build()
+
+        startForeground(1, notification)
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_STOP) {
+            stopSelf()
+        }
+        return START_STICKY
+    }
+
+    private fun showFloatingButton() {
+        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+
+        val container = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+        }
+
+        val captureButton = TextView(this).apply {
+            text = "擷取"
+            setBackgroundColor(0xFFE8622C.toInt())
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 14f
+            setPadding(36, 24, 36, 24)
+        }
+
+        val autoButton = TextView(this).apply {
+            text = "自動"
+            setBackgroundColor(0xFF1C2331.toInt())
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 14f
+            setPadding(36, 24, 36, 24)
+        }
+
+        val detectButton = TextView(this).apply {
+            text = "偵測"
+            setBackgroundColor(0xFF8A9A87.toInt())
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 14f
+            setPadding(36, 24, 36, 24)
+        }
+
+        container.addView(captureButton)
+        container.addView(autoButton)
+        container.addView(detectButton)
+
+        val layoutFlag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        } else {
+            @Suppress("DEPRECATION")
+            WindowManager.LayoutParams.TYPE_PHONE
+        }
+
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            layoutFlag,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT
+        )
+        params.gravity = Gravity.TOP or Gravity.START
+        params.x = 0
+        params.y = 300
+
+        var initialX = 0
+        var initialY = 0
+        var initialTouchX = 0f
+        var initialTouchY = 0f
+        var isDrag = false
+
+        val dragListener = View.OnTouchListener { view, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    initialX = params.x
+                    initialY = params.y
+                    initialTouchX = event.rawX
+                    initialTouchY = event.rawY
+                    isDrag = false
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = (event.rawX - initialTouchX).toInt()
+                    val dy = (event.rawY - initialTouchY).toInt()
+                    if (kotlin.math.abs(dx) > 8 || kotlin.math.abs(dy) > 8) isDrag = true
+                    params.x = initialX + dx
+                    params.y = initialY + dy
+                    windowManager?.updateViewLayout(container, params)
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (!isDrag) {
+                        when (view) {
+                            captureButton -> onCaptureButtonTapped()
+                            autoButton -> onAutoButtonTapped(autoButton)
+                            detectButton -> onDetectButtonTapped()
+                        }
+                    }
+                    true
+                }
+                else -> false
+            }
+        }
+        captureButton.setOnTouchListener(dragListener)
+        autoButton.setOnTouchListener(dragListener)
+        detectButton.setOnTouchListener(dragListener)
+
+        floatingView = container
+        windowManager?.addView(container, params)
+    }
+
+    private fun onDetectButtonTapped() {
+        val service = ShopeeAccessibilityService.instance
+        if (service == null) {
+            Toast.makeText(this, "請先開啟「無障礙服務」權限", Toast.LENGTH_LONG).show()
+            return
+        }
+        val packageName = service.getCurrentPackageName()
+        if (packageName == null) {
+            Toast.makeText(this, "讀不到目前 App 的套件名稱", Toast.LENGTH_LONG).show()
+            return
+        }
+        showAlertNotification(
+            "目前畫面的套件名稱",
+            "$packageName\n\n如果無障礙服務讀不到這個 App 的畫面，請把這個套件名稱加進 accessibility_service_config.xml 的 packageNames 清單裡"
+        )
+    }
+
+    private fun onAutoButtonTapped(autoButton: TextView) {
+        val service = ShopeeAccessibilityService.instance
+        if (service == null) {
+            Toast.makeText(this, "請先開啟「無障礙服務」權限", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        if (service.isAutoCaptureRunning()) {
+            service.stopAutoCapture()
+            autoButton.text = "自動"
+            Toast.makeText(this, "已停止自動擷取", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val config = AutoCapturePrefs.load(this)
+        autoButton.text = "0/${config.targetCount}"
+        Toast.makeText(this, "開始自動擷取 ${config.targetCount} 件商品", Toast.LENGTH_SHORT).show()
+
+        service.startAutoCapture(config) { event ->
+            when (event) {
+                is AutoCaptureEvent.Log -> {
+                    // 簡短提示，避免 Toast 洗版太頻繁只顯示重點
+                    if (event.message.startsWith("✓") || event.message.contains("結束") || event.message.contains("錯誤")) {
+                        Toast.makeText(this, event.message, Toast.LENGTH_SHORT).show()
+                    }
+                }
+                is AutoCaptureEvent.Progress -> {
+                    autoButton.text = "${event.current}/${event.total}"
+                }
+                is AutoCaptureEvent.Finished -> {
+                    autoButton.text = "自動"
+                    when (event.reason) {
+                        FinishReason.TIME_LIMIT_REACHED -> showAlertNotification(
+                            "篩選時間已到",
+                            "僅擷取到 ${event.successCount} 件符合條件的商品（篩選跳過 ${event.filteredCount} 件），已自動停止"
+                        )
+                        FinishReason.MAX_ATTEMPTS_REACHED -> showAlertNotification(
+                            "已達最大嘗試次數",
+                            "多數商品不符篩選條件，僅擷取到 ${event.successCount} 件，已自動停止"
+                        )
+                        else -> Toast.makeText(
+                            this,
+                            "完成：成功 ${event.successCount}／篩選跳過 ${event.filteredCount}／失敗 ${event.failCount}",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun onCaptureButtonTapped() {
+        val service = ShopeeAccessibilityService.instance
+        if (service == null) {
+            Toast.makeText(this, "請先開啟「無障礙服務」權限", Toast.LENGTH_LONG).show()
+            return
+        }
+        Toast.makeText(this, "擷取中…", Toast.LENGTH_SHORT).show()
+        service.captureCurrentScreen { result ->
+            when (result) {
+                is CaptureResult.Success -> {
+                    val name = result.product.productName ?: "未知商品"
+                    Toast.makeText(this, "已擷取：$name", Toast.LENGTH_LONG).show()
+                }
+                is CaptureResult.Failure -> {
+                    Toast.makeText(this, "擷取失敗：${result.reason}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    /**
+     * 用來提醒「時間到／次數到但沒湊到目標數量」的明顯提醒：
+     * 獨立的高優先度通知（會跳出橫幅）+ 震動，跟一般 Toast 分開，
+     * 避免使用者切到別的 App 時錯過這個重要訊息。
+     */
+    private fun showAlertNotification(title: String, message: String) {
+        val alertChannelId = "shopee_capture_alert_channel"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                alertChannelId, "蝦皮擷取器提醒",
+                NotificationManager.IMPORTANCE_HIGH
+            )
+            val nm = getSystemService(NotificationManager::class.java)
+            nm.createNotificationChannel(channel)
+        }
+
+        val notification = Notification.Builder(this, alertChannelId)
+            .setContentTitle(title)
+            .setContentText(message)
+            .setStyle(Notification.BigTextStyle().bigText(message))
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setAutoCancel(true)
+            .build()
+
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.notify(2, notification)
+
+        Toast.makeText(this, "$title：$message", Toast.LENGTH_LONG).show()
+
+        val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            vibrator?.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 200, 100, 200), -1))
+        } else {
+            @Suppress("DEPRECATION")
+            vibrator?.vibrate(longArrayOf(0, 200, 100, 200), -1)
+        }
+    }
+
+    companion object {
+        const val ACTION_STOP = "com.tagcopy.shopeecapture.STOP"
+    }
+}
