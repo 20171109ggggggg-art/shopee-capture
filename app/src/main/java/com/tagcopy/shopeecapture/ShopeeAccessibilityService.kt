@@ -111,6 +111,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
         val startTime = System.currentTimeMillis()
 
+        appendDebugLog("===== 開始自動擷取，目標 ${config.targetCount} 件，篩選條件：${if (config.filter.isEmpty()) "無" else "有"} =====")
         onEvent(AutoCaptureEvent.Log("開始自動擷取，目標 ${config.targetCount} 件商品"))
         if (!config.filter.isEmpty()) {
             onEvent(AutoCaptureEvent.Log("已套用篩選條件，不符合的商品會自動跳過"))
@@ -181,6 +182,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             else -> {}
         }
 
+        appendDebugLog("===== 結束：成功 $successCount／篩選跳過 $filteredCount／失敗 $failCount，原因=$reason =====")
         onEvent(AutoCaptureEvent.Finished(successCount, failCount, filteredCount, reason))
         autoJob = null
     }
@@ -206,16 +208,20 @@ class ShopeeAccessibilityService : AccessibilityService() {
 
         val productName = findLikelyProductNameText(detailRoot)
 
-        // 篩選檢查：讀取分潤率／價格／已售出／已推廣者，不符合就直接返回上一層跳過
+        // 無論有沒有設篩選條件，都讀取一次四個參數的狀態並寫進除錯 log，方便排查「明明符合卻沒被擷取」這類問題
+        var metrics = extractProductMetrics(detailRoot)
+        if (!config.filter.isEmpty() && !hasRequiredFields(metrics, config.filter)) {
+            // 分享按鈕出現不代表所有數字都渲染完成了（例如「已推廣者數量」有時會晚一點才出來），
+            // 這裡針對「你有設限制、但目前讀不到」的欄位再多等一下，避免因為讀取太早而誤判成不符合。
+            metrics = waitForRequiredMetrics(config.filter, 2000) ?: metrics
+        }
+        logMetricsDebug(productName, metrics)
+
+        // 篩選檢查：不符合就直接返回上一層跳過
         if (!config.filter.isEmpty()) {
-            var metrics = extractProductMetrics(detailRoot)
-            if (!hasRequiredFields(metrics, config.filter)) {
-                // 分享按鈕出現不代表所有數字都渲染完成了（例如「已推廣者數量」有時會晚一點才出來），
-                // 這裡針對「你有設限制、但目前讀不到」的欄位再多等一下，避免因為讀取太早而誤判成不符合。
-                metrics = waitForRequiredMetrics(config.filter, 2000) ?: metrics
-            }
             if (!config.filter.matches(metrics)) {
-                onEvent(AutoCaptureEvent.Log("○ 篩選未通過，略過：${productName ?: "未知商品"}"))
+                val reason = config.filter.describeMismatch(metrics) ?: "未知原因"
+                onEvent(AutoCaptureEvent.Log("○ 篩選未通過（$reason），略過：${productName ?: "未知商品"}"))
                 performBack()
                 delay(randomDelay(config))
                 return ProcessResult.FILTERED
@@ -331,6 +337,34 @@ class ShopeeAccessibilityService : AccessibilityService() {
     }
 
     /** 檢查「有設篩選條件的欄位」是否都已經讀到值（null 代表那個欄位還沒渲染出來，不是真的沒有）。 */
+    /**
+     * 把「這個商品讀到的四個參數」寫進除錯 log 檔案（Download/ShopeeCaptureDebugLog/debug_log.txt），
+     * 不管有沒有設篩選條件都會記錄，這樣事後可以直接把整個檔案傳出來看每個商品當時讀到什麼、
+     * 哪個欄位是 null（代表沒讀到），排查「明明符合卻沒被擷取」比對截圖準確很多。
+     */
+    private fun logMetricsDebug(productName: String?, metrics: ProductMetrics) {
+        val line = "商品：${productName ?: "未知"} | 分潤率=${metrics.commissionPercent?.toString() ?: "null（沒讀到）"} | " +
+            "價格=${metrics.price?.toString() ?: "null（沒讀到）"} | " +
+            "已售出=${metrics.soldCount?.toString() ?: "null（沒讀到）"} | " +
+            "已推廣者=${metrics.promoterCount?.toString() ?: "null（沒讀到）"}"
+        appendDebugLog(line)
+    }
+
+    private fun appendDebugLog(line: String) {
+        try {
+            val dir = File(
+                android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
+                "ShopeeCaptureDebugLog"
+            )
+            if (!dir.exists()) dir.mkdirs()
+            val file = File(dir, "debug_log.txt")
+            val timestamp = SimpleDateFormat("MM-dd HH:mm:ss", Locale.US).format(Date())
+            file.appendText("[$timestamp] $line\n")
+        } catch (e: Exception) {
+            // 寫檔失敗不影響主流程，忽略即可
+        }
+    }
+
     private fun hasRequiredFields(metrics: ProductMetrics, filter: ProductFilterConfig): Boolean {
         if ((filter.minCommissionPercent != null || filter.maxCommissionPercent != null) && metrics.commissionPercent == null) return false
         if ((filter.minPrice != null || filter.maxPrice != null) && metrics.price == null) return false
