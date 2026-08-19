@@ -164,7 +164,10 @@ class ShopeeAccessibilityService : AccessibilityService() {
 
             if (nextCard == null) {
                 emptyScrollAttempts++
+                appendDebugLog("  → 找不到新商品卡片（畫面上共 ${cards.size} 張，全部已處理過），準備往下滑動（第 $emptyScrollAttempts/${maxEmptyScrollAttempts} 次嘗試），目前套件名稱：${getCurrentPackageName() ?: "讀不到"}")
                 if (emptyScrollAttempts > maxEmptyScrollAttempts) {
+                    appendDebugLog("  → 已達最大滑動嘗試次數，判定沒有更多商品，結束前記錄目前畫面內容供除錯")
+                    dumpClickableNodesToLog(root)
                     onEvent(AutoCaptureEvent.Log("已無更多商品可擷取，結束"))
                     reason = FinishReason.NO_MORE_PRODUCTS
                     break
@@ -613,10 +616,21 @@ class ShopeeAccessibilityService : AccessibilityService() {
      */
     private suspend fun tryRecoverToSearchResults(): Boolean {
         val query = lastKnownSearchQuery
-        if (query.isNullOrBlank()) return false
+        if (query.isNullOrBlank()) {
+            appendDebugLog("  → 自動恢復：沒有記錄到搜尋關鍵字，無法恢復")
+            return false
+        }
 
-        val root = rootInActiveWindow ?: return false
-        val searchBox = findSearchBoxNode(root) ?: return false
+        val root = rootInActiveWindow
+        if (root == null) {
+            appendDebugLog("  → 自動恢復：讀不到目前畫面")
+            return false
+        }
+        val searchBox = findSearchBoxNode(root)
+        if (searchBox == null) {
+            appendDebugLog("  → 自動恢復：目前畫面找不到搜尋框（可編輯欄位），可能不在蝦皮首頁或列表相關畫面")
+            return false
+        }
 
         val bundle = android.os.Bundle().apply {
             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, query)
@@ -626,13 +640,20 @@ class ShopeeAccessibilityService : AccessibilityService() {
 
         // 送出搜尋：優先用編輯器的「搜尋」動作（Android 11+），找不到就退而求其次點擊搜尋框本身
         val submitted = searchBox.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
+        appendDebugLog("  → 自動恢復：已填入關鍵字「$query」並送出搜尋（${if (submitted) "用編輯器搜尋動作" else "改點擊搜尋框"}），等待結果載入")
         if (!submitted) {
             searchBox.performAction(AccessibilityNodeInfo.ACTION_CLICK)
         }
         delay(1500)
 
-        val afterRoot = rootInActiveWindow ?: return false
-        return findProductCards(afterRoot).isNotEmpty()
+        val afterRoot = rootInActiveWindow
+        if (afterRoot == null) {
+            appendDebugLog("  → 自動恢復：送出搜尋後讀不到畫面")
+            return false
+        }
+        val cardCount = findProductCards(afterRoot).size
+        appendDebugLog("  → 自動恢復：搜尋後畫面偵測到 $cardCount 張商品卡片")
+        return cardCount > 0
     }
 
     private fun performBack() {
