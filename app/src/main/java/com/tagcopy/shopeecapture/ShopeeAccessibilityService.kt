@@ -251,10 +251,12 @@ class ShopeeAccessibilityService : AccessibilityService() {
 
         val productName = findLikelyProductNameText(detailRoot)
 
-        // 早期判斷：這個商品名稱如果先前任何一次執行就擷取過，直接跳過，省下後面截圖、讀剪貼簿的時間
+        // 早期判斷：這個商品名稱如果先前任何一次執行就擷取過，直接跳過，省下後面截圖、讀剪貼簿的時間。
+        // 但跳過前先停留 3-4 秒再返回，避免進入商品頁不到 1 秒就跳出，看起來太不像真人操作。
         if (isProductNameAlreadyCaptured(productName)) {
             appendDebugLog("商品：$productName | 結果=跳過（重複商品，先前已擷取過）")
             onEvent(AutoCaptureEvent.Log("○ 已擷取過此商品，略過：$productName"))
+            delay(Random.nextLong(3000, 4001))
             performBack()
             delay(randomDelay(config))
             return ProcessResult.FILTERED
@@ -375,11 +377,30 @@ class ShopeeAccessibilityService : AccessibilityService() {
         } else null
 
         // 關閉分享面板並回到搜尋結果列表。
-        // 使用者實測確認：這個分享面板跟商品詳情頁是合併成同一層的，不管面板還在不在畫面上，
-        // 只要按「一次」返回鍵就會直接回到搜尋結果頁，不需要也不能按兩次（按兩次會多跳一層）。
+        // 使用者多數情況下實測確認：這個分享面板跟商品詳情頁是合併成同一層的，只要按「一次」
+        // 返回鍵就會直接回到搜尋結果頁。但這次 log 證實：遇到內容特別複雜的商品頁（例如圖片輪播
+        // 多達 28 張），單次返回鍵有時「按了但沒真正離開」，畫面會卡在原地的分享面板，導致後續
+        // 一直判斷不到新商品卡片、誤以為列表已經到底而提前結束整個流程。這裡加上返回後驗證：
+        // 如果返回後畫面上還看得到分享面板的標題文字，代表根本沒離開，額外再按最多 2 次返回鍵，
+        // 每次都重新確認，直到真正離開或已經試過上限次數。
         performBack()
         delay(randomDelay(config))
         appendDebugLog("  → 返回後目前畫面套件名稱：${getCurrentPackageName() ?: "讀不到"}")
+
+        var backRetryCount = 0
+        while (backRetryCount < 2) {
+            val stillOnSheet = rootInActiveWindow?.let { r ->
+                matchRules.shareSheetTitleTexts.any { t -> r.findAccessibilityNodeInfosByText(t).isNotEmpty() }
+            } ?: false
+            if (!stillOnSheet) break
+            backRetryCount++
+            appendDebugLog("  → ⚠ 返回後偵測到分享面板文字仍在畫面上，判定單次返回鍵沒有真正離開，額外補按一次返回鍵（第 $backRetryCount 次）")
+            performBack()
+            delay(randomDelay(config))
+        }
+        if (backRetryCount > 0) {
+            appendDebugLog("  → 補按返回鍵後目前畫面套件名稱：${getCurrentPackageName() ?: "讀不到"}")
+        }
 
         // 有些情況下（疑似 App 內部混合式頁面架構）一次「返回」會跳過不只一層，
         // 導致跳出商品列表、跑到蝦皮首頁。這裡偵測到跑錯畫面時，先嘗試用剛才記下的搜尋關鍵字
@@ -429,8 +450,18 @@ class ShopeeAccessibilityService : AccessibilityService() {
      * - K/M 縮寫：「10K+ sold」「11.5K+ Affiliates Promoted」（菲律賓版常見格式）
      */
     private fun extractProductMetrics(root: AccessibilityNodeInfo): ProductMetrics {
-        val texts = mutableListOf<String>()
-        collectTextNodes(root, texts, maxDepth = 20)
+        val allTexts = mutableListOf<String>()
+        collectTextNodes(root, allTexts, maxDepth = 20)
+
+        // 關鍵修正：商品詳情頁往下捲動會有「逛逛賣場其他好物」區塊，裡面是同賣場其他商品的
+        // 推薦卡片，每張卡片也各自標了「分潤 X%」——這是「別的商品」的分潤率，不是目前這個
+        // 商品的。實測發現這些卡片的分潤率文字剛好是單一完整節點（同時含「分潤」＋數字＋%），
+        // 比本商品自己的徽章（常被拆成「分潤加碼」跟「10.5%」兩個獨立節點）更早被逐一比對
+        // 命中，導致誤抓到「其他好物」裡別的商品分潤率（例如商品實際 10.5%，誤讀成其他好物
+        // 卡片的 0.5%）。修法：只用「逛逛賣場其他好物」這個區塊標記之前的文字做指標解析，
+        // 標記之後的內容（其他商品的資訊）一律不採用，避免任何欄位被跨商品污染。
+        val relatedSectionIndex = allTexts.indexOfFirst { it.contains("逛逛賣場其他好物") }
+        val texts = if (relatedSectionIndex >= 0) allTexts.subList(0, relatedSectionIndex) else allTexts
 
         // 分潤率：中文「分潤」或英文「Comm Rate」「COMMSXTRA」等變體
         val commissionRegex = Regex("(?:分潤|Comm\\s*Rate|COMMS?\\s*XTRA)[^\\d%]*([\\d]+\\.?[\\d]*)\\s*%", RegexOption.IGNORE_CASE)
