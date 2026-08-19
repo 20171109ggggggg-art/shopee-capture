@@ -1117,13 +1117,21 @@ class ShopeeAccessibilityService : AccessibilityService() {
 
     private fun findLikelyProductNameText(root: AccessibilityNodeInfo): String? {
         val candidates = mutableListOf<String>()
-        collectTextNodes(root, candidates, maxDepth = 12)
-        // 取長度落在合理商品標題範圍（8~60 字）且非按鈕文字的第一筆，
+        // 節點數上限從預設 30 放寬到 60：部分商品（例如多規格、長圖片輪播）前面會先出現
+        // 較多其他文字節點（規格縮圖說明、按鈕等），標題可能排在比較後面，30 個節點有時還沒掃到標題就被截斷。
+        collectTextNodes(root, candidates, maxDepth = 12, maxNodes = 60)
+        // 取長度落在合理商品標題範圍（8~90 字）且非按鈕文字的第一筆，
         // 排除優惠券橫幅相關文字（例如「提供優惠券給您的粉絲/關注者」），避免誤判成商品名稱，
         // 也排除純數字／價格格式的文字（例如「1,680.00」），這類文字不可能是真正的商品標題。
-        return candidates.firstOrNull {
-            it.length in 8..60 && !isCouponBannerText(it) && !isPureNumberOrPriceText(it)
+        // 長度上限從 60 放寬到 90：實測發現部分商品標題（含品牌名、規格描述）超過 60 字。
+        val result = candidates.firstOrNull {
+            it.length in 8..90 && !isCouponBannerText(it) && !isPureNumberOrPriceText(it)
         }
+        if (result == null) {
+            // 找不到時記錄候選清單前 15 筆，方便下次排查是「標題太長/太短被排除」還是「根本沒掃到標題」
+            appendDebugLog("  → ⚠ 商品名稱找不到，候選文字清單（前 ${candidates.size.coerceAtMost(15)} 筆）：${candidates.take(15)}")
+        }
+        return result
     }
 
     /** 判斷文字是不是「純數字」「價格格式」或「價格範圍格式」（例如 1,680.00、399、$399、$169.00-$399.00），這種不可能是商品標題。 */
@@ -1142,12 +1150,12 @@ class ShopeeAccessibilityService : AccessibilityService() {
         return keywords.any { text.contains(it) }
     }
 
-    private fun collectTextNodes(node: AccessibilityNodeInfo?, out: MutableList<String>, maxDepth: Int, depth: Int = 0) {
-        if (node == null || depth > maxDepth || out.size > 30) return
+    private fun collectTextNodes(node: AccessibilityNodeInfo?, out: MutableList<String>, maxDepth: Int, depth: Int = 0, maxNodes: Int = 30) {
+        if (node == null || depth > maxDepth || out.size > maxNodes) return
         val text = node.text?.toString()?.trim()
         if (!text.isNullOrEmpty()) out.add(text)
         for (i in 0 until node.childCount) {
-            collectTextNodes(node.getChild(i), out, maxDepth, depth + 1)
+            collectTextNodes(node.getChild(i), out, maxDepth, depth + 1, maxNodes)
         }
     }
 
