@@ -227,6 +227,8 @@ class ShopeeAccessibilityService : AccessibilityService() {
     private enum class ProcessResult { SUCCESS, FILTERED, FAILED }
     private var navigationLostFlag = false
     private var lastKnownSearchQuery: String? = null
+    /** 分潤率讀取時實際比對到的原始文字片段，供除錯用（診斷讀錯數字時比對來源）。*/
+    private var lastCommissionSourceText: String? = null
 
     private suspend fun processOneProduct(
         card: AccessibilityNodeInfo,
@@ -339,7 +341,16 @@ class ShopeeAccessibilityService : AccessibilityService() {
         // 「複製連結」跟「複製資訊」都是寫進同一個剪貼簿，要分開點、分開讀，
         // 不然後點的會把先點的內容蓋掉。這裡先讀完連結，再點複製資訊、讀取文案。
         var caption: String? = null
-        val copyInfoNode = rootInActiveWindow?.let { findNodeByTexts(it, matchRules.copyInfoButtonTexts) }
+        var copyInfoRoot = rootInActiveWindow
+        var copyInfoNode = copyInfoRoot?.let { findNodeByTexts(it, matchRules.copyInfoButtonTexts) }
+        if (copyInfoNode == null) {
+            // 找不到時先不急著判定失敗：剛才讀取連結時可能觸發了剪貼簿焦點橋接 Activity，
+            // 畫面焦點短暫切換過去又切回來，這裡的 rootInActiveWindow 有時會抓到過渡狀態
+            // （半空的畫面），稍等一下重新抓一次再找。
+            delay(400)
+            copyInfoRoot = rootInActiveWindow
+            copyInfoNode = copyInfoRoot?.let { findNodeByTexts(it, matchRules.copyInfoButtonTexts) }
+        }
         if (copyInfoNode != null) {
             copyInfoNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             delay(300) // 給點擊一點反應時間，避免立刻讀到「複製連結」殘留的舊值
@@ -356,7 +367,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         } else {
             appendDebugLog("商品：${productName ?: "未知"} | 找不到「複製資訊」按鈕，文案留空")
             appendDebugLog("  → 候選字串：${matchRules.copyInfoButtonTexts}")
-            rootInActiveWindow?.let { dumpClickableNodesToLog(it) }
+            copyInfoRoot?.let { dumpClickableNodesToLog(it) }
         }
 
         val bitmap = if (galleryImages.isEmpty() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -439,11 +450,15 @@ class ShopeeAccessibilityService : AccessibilityService() {
         var sold: Int? = null
         var promoter: Int? = null
         var price: Double? = null
+        lastCommissionSourceText = null
 
         for (text in texts) {
             if (isCouponBannerText(text)) continue // 優惠券橫幅文字（例如「低消 $49」）不是商品資訊，整段跳過避免誤判
             if (commission == null) {
-                commissionRegex.find(text)?.let { commission = it.groupValues[1].toDoubleOrNull() }
+                commissionRegex.find(text)?.let {
+                    commission = it.groupValues[1].toDoubleOrNull()
+                    lastCommissionSourceText = text
+                }
             }
             if (sold == null) {
                 soldRegex.find(text)?.let { sold = it.groupValues[1].replace(",", "").toIntOrNull() }
@@ -469,7 +484,15 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (commission == null || sold == null || promoter == null || price == null) {
             val combined = texts.filterNot { isCouponBannerText(it) }.joinToString(" ")
             if (commission == null) {
-                commissionRegex.find(combined)?.let { commission = it.groupValues[1].toDoubleOrNull() }
+                commissionRegex.find(combined)?.let {
+                    commission = it.groupValues[1].toDoubleOrNull()
+                    // 合併文字比對時只記錄比對到的片段本身（前後各留一點上下文），
+                    // 不記錄整段 combined（太長，洗版）。
+                    val matchStart = it.range.first
+                    val contextStart = (matchStart - 15).coerceAtLeast(0)
+                    val contextEnd = (it.range.last + 5).coerceAtMost(combined.length - 1)
+                    lastCommissionSourceText = "[合併文字比對] …${combined.substring(contextStart, contextEnd + 1)}…"
+                }
             }
             if (sold == null) {
                 soldRegex.find(combined)?.let { sold = it.groupValues[1].replace(",", "").toIntOrNull() }
@@ -503,6 +526,11 @@ class ShopeeAccessibilityService : AccessibilityService() {
             "已售出=${metrics.soldCount?.toString() ?: "null（沒讀到）"} | " +
             "已推廣者=${metrics.promoterCount?.toString() ?: "null（沒讀到）"}"
         appendDebugLog(line)
+        // 分潤率是誤判紀錄最多的欄位，額外記下比對到的原始文字來源，
+        // 下次如果又讀錯數字，可以直接對照這段文字找出規則哪裡誤配對到不相關的數字。
+        if (metrics.commissionPercent != null && lastCommissionSourceText != null) {
+            appendDebugLog("  → 分潤率讀取來源文字：「${lastCommissionSourceText}」")
+        }
     }
 
     /**
@@ -692,7 +720,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             lineTo(endX, y)
         }
         val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0, 250))
+            .addStroke(GestureDescription.StrokeDescription(path, 0, 500))
             .build()
         dispatchGesture(gesture, null, null)
     }
@@ -766,7 +794,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         appendDebugLog("  → 圖片輪播擷取：偵測到範圍 $bounds，共 $total 張，開始逐張截圖")
         val images = mutableListOf<Bitmap>()
         var timeoutCount = 0
-        val overallDeadline = System.currentTimeMillis() + 20000 // 整體時間上限，改成內部自己控管，逾時就跳出迴圈回傳「已經抓到的部分」，不會像外層 withTimeoutOrNull 那樣把整批結果都作廢
+        val overallDeadline = System.currentTimeMillis() + 40000 // 整體時間上限，改成內部自己控管，逾時就跳出迴圈回傳「已經抓到的部分」，不會像外層 withTimeoutOrNull 那樣把整批結果都作廢（滑動速度放慢一倍後，上限同步拉長，避免20張圖片還沒抓完就被打斷）
 
         for (index in 1..total) {
             if (System.currentTimeMillis() > overallDeadline) {
@@ -775,8 +803,8 @@ class ShopeeAccessibilityService : AccessibilityService() {
             }
             if (index > 1) {
                 swipeCarouselNext(bounds)
-                waitForCarouselIndex(index, 1200)
-                delay(200) // 滑動動畫緩衝
+                waitForCarouselIndex(index, 2400)
+                delay(400) // 滑動動畫緩衝（使用者反映抓取速度太快，整體放慢一倍）
             }
             // 加上逾時保護：截圖請求萬一卡住（例如系統沒回應），最多等 4 秒就放棄這張，
             // 不會讓整個自動擷取流程被卡死，之前就是因為沒有這層保護才整個凍結。
@@ -950,22 +978,33 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }, 600)
     }
 
+    /**
+     * 找不到可點擊祖先層時的容錯：直接對文字節點本身嘗試點擊。
+     * Compose UI 元件常見的狀況是 isClickable=false，但實際上仍能回應 ACTION_CLICK，
+     * isClickable 只是輔助標記，不是能否點擊的絕對依據。
+     */
     private fun findNodeByTexts(root: AccessibilityNodeInfo, texts: List<String>): AccessibilityNodeInfo? {
+        var fallbackNode: AccessibilityNodeInfo? = null
         for (text in texts) {
             val matches = root.findAccessibilityNodeInfosByText(text)
             for (node in matches) {
                 if (node.isClickable) return node
-                // 有些按鈕的可點擊區域在父節點
+                // 有些按鈕的可點擊區域在父節點。原本只往上找 4 層，實測發現部分按鈕
+                // （例如「複製資訊」）的可點擊容器比「複製連結」深，4 層不夠會漏找，
+                // 這裡放寬到 10 層。
                 var parent = node.parent
                 var depth = 0
-                while (parent != null && depth < 4) {
+                while (parent != null && depth < 10) {
                     if (parent.isClickable) return parent
                     parent = parent.parent
                     depth++
                 }
+                // 全部祖先都不是 isClickable=true：記下這個節點本身當備援，
+                // 如果最後真的找不到任何可點擊層，就直接試著點擊文字節點本身。
+                if (fallbackNode == null) fallbackNode = node
             }
         }
-        return null
+        return fallbackNode
     }
 
     /**
