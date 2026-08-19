@@ -118,6 +118,12 @@ class ShopeeAccessibilityService : AccessibilityService() {
         lastKnownSearchQuery = null
         currentDebugLogFileName = "debug_log_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.txt"
         appendDebugLog("===== 開始自動擷取，目標 ${config.targetCount} 件，篩選條件：${if (config.filter.isEmpty()) "無" else "有"} =====")
+        run {
+            val dedupPrefs = getDedupPrefs()
+            val nameCount = (dedupPrefs.getStringSet("captured_names", emptySet()) ?: emptySet()).size
+            val linkCount = (dedupPrefs.getStringSet("captured_links", emptySet()) ?: emptySet()).size
+            appendDebugLog("  → 目前防重複記錄庫累積：商品名稱 $nameCount 筆、連結 $linkCount 筆")
+        }
         onEvent(AutoCaptureEvent.Log("開始自動擷取，目標 ${config.targetCount} 件商品"))
         if (!config.filter.isEmpty()) {
             onEvent(AutoCaptureEvent.Log("已套用篩選條件，不符合的商品會自動跳過"))
@@ -189,6 +195,15 @@ class ShopeeAccessibilityService : AccessibilityService() {
             reason = FinishReason.MAX_ATTEMPTS_REACHED
         }
 
+        // 整個流程結束前最後確認一次：畫面應該停在搜尋結果列表，而不是卡在商品詳情頁／分享面板。
+        // 如果不是列表畫面，用剛才記下的搜尋關鍵字自動搜一次，確保結束時畫面是乾淨的列表狀態。
+        val finalRoot = rootInActiveWindow
+        if (finalRoot != null && findProductCards(finalRoot).isEmpty() && !lastKnownSearchQuery.isNullOrBlank()) {
+            appendDebugLog("  → 結束前檢查：目前畫面看不到商品列表，嘗試自動搜尋回到列表")
+            val recovered = tryRecoverToSearchResults()
+            appendDebugLog("  → 結束前恢復結果：${if (recovered) "成功回到列表" else "失敗，維持原畫面"}")
+        }
+
         when (reason) {
             FinishReason.TIME_LIMIT_REACHED ->
                 onEvent(AutoCaptureEvent.Log("已達篩選時間上限，僅擷取到 $successCount／${config.targetCount} 件符合條件的商品，已停止"))
@@ -227,12 +242,35 @@ class ShopeeAccessibilityService : AccessibilityService() {
 
         val productName = findLikelyProductNameText(detailRoot)
 
+        // 早期判斷：這個商品名稱如果先前任何一次執行就擷取過，直接跳過，省下後面截圖、讀剪貼簿的時間
+        if (isProductNameAlreadyCaptured(productName)) {
+            appendDebugLog("商品：$productName | 結果=跳過（重複商品，先前已擷取過）")
+            onEvent(AutoCaptureEvent.Log("○ 已擷取過此商品，略過：$productName"))
+            performBack()
+            delay(randomDelay(config))
+            return ProcessResult.FILTERED
+        }
+
         // 無論有沒有設篩選條件，都讀取一次四個參數的狀態並寫進除錯 log，方便排查「明明符合卻沒被擷取」這類問題
         var metrics = extractProductMetrics(detailRoot)
         if (!config.filter.isEmpty() && !hasRequiredFields(metrics, config.filter)) {
             // 分享按鈕出現不代表所有數字都渲染完成了（例如「已推廣者數量」有時會晚一點才出來），
             // 這裡針對「你有設限制、但目前讀不到」的欄位再多等一下，避免因為讀取太早而誤判成不符合。
             metrics = waitForRequiredMetrics(config.filter, 2000) ?: metrics
+        }
+        // 有些商品的數字（尤其分潤率）會先顯示一個過渡值、稍後才變成正確值。
+        // 這裡再等一下重讀一次做確認，如果兩次讀到的不一樣，代表數字還在變動，採用比較晚讀到的那次。
+        // 寧可慢一點也要正確，所以等待時間拉長到 2 秒。
+        run {
+            val currentRoot = rootInActiveWindow
+            if (currentRoot != null) {
+                delay(2000)
+                val recheck = extractProductMetrics(currentRoot)
+                if (recheck != metrics) {
+                    appendDebugLog("  → 數值確認：分潤率/價格/已售出/已推廣者第一次讀到的跟 2 秒後不一致，改用較晚讀到的結果（原=$metrics，改=$recheck）")
+                    metrics = recheck
+                }
+            }
         }
         logMetricsDebug(productName, metrics)
 
@@ -297,8 +335,17 @@ class ShopeeAccessibilityService : AccessibilityService() {
         val copyInfoNode = rootInActiveWindow?.let { findNodeByTexts(it, matchRules.copyInfoButtonTexts) }
         if (copyInfoNode != null) {
             copyInfoNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            delay(300) // 給點擊一點反應時間，避免立刻讀到「複製連結」殘留的舊值
             caption = readClipboardWithRetry()
-            appendDebugLog("  → 複製資訊：${if (caption.isNullOrBlank()) "點擊成功但剪貼簿讀不到內容" else "成功，長度 ${caption.length} 字"}")
+            if (!caption.isNullOrBlank() && caption == link) {
+                // 讀到的內容跟連結一模一樣：代表剪貼簿根本還沒被「複製資訊」寫入新內容，是殘留的舊值，不是真正的文案。
+                appendDebugLog("  → 複製資訊：讀到的內容跟連結完全相同，判定為剪貼簿還沒更新的舊值，重試一次")
+                copyInfoNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                delay(600)
+                val retryCaption = readClipboardWithRetry()
+                caption = if (!retryCaption.isNullOrBlank() && retryCaption != link) retryCaption else null
+            }
+            appendDebugLog("  → 複製資訊：${if (caption.isNullOrBlank()) "讀不到有效文案內容（可能跟連結重複或剪貼簿讀取失敗）" else "成功，長度 ${caption!!.length} 字"}")
         } else {
             appendDebugLog("商品：${productName ?: "未知"} | 找不到「複製資訊」按鈕，文案留空")
         }
@@ -331,8 +378,16 @@ class ShopeeAccessibilityService : AccessibilityService() {
             }
         }
 
-        return when (val result = saveResult(productName, link, caption, galleryImages.ifEmpty { listOfNotNull(bitmap) })) {
+        // 最終確認：用連結比對（比商品名稱準確），避免早期名稱判斷漏掉的重複商品被存下來
+        if (isLinkAlreadyCaptured(link)) {
+            appendDebugLog("商品：${productName ?: "未知"} | 結果=跳過（連結重複，先前已擷取過：$link）")
+            onEvent(AutoCaptureEvent.Log("○ 連結重複，先前已擷取過，不重複存檔：${productName ?: "未知商品"}"))
+            return ProcessResult.FILTERED
+        }
+
+        return when (val result = saveResult(productName, link, caption, galleryImages.ifEmpty { listOfNotNull(bitmap) }, metrics)) {
             is CaptureResult.Success -> {
+                markAsCaptured(productName, link)
                 onEvent(AutoCaptureEvent.Log("✓ 已擷取：${productName ?: "未知商品"}"))
                 appendDebugLog("商品：${productName ?: "未知"} | 結果=成功 | 連結=${link ?: "null（沒讀到）"} | 文案=${if (caption.isNullOrBlank()) "null（沒讀到）" else "已讀到"}")
                 ProcessResult.SUCCESS
@@ -582,9 +637,11 @@ class ShopeeAccessibilityService : AccessibilityService() {
         val metrics = resources.displayMetrics
         val width = metrics.widthPixels
         val height = metrics.heightPixels
+        // 滑動距離縮短（原本 75%→30%，改成 78%→48%），讓前後兩次畫面有更多重疊，
+        // 避免商品格子之間有落差時，中間那排商品完全沒出現過就被跳過。
         val path = Path().apply {
-            moveTo(width / 2f, height * 0.75f)
-            lineTo(width / 2f, height * 0.3f)
+            moveTo(width / 2f, height * 0.78f)
+            lineTo(width / 2f, height * 0.48f)
         }
         val gesture = GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(path, 0, 300))
@@ -868,6 +925,41 @@ class ShopeeAccessibilityService : AccessibilityService() {
         return null
     }
 
+    /**
+     * 記錄「哪些商品已經擷取過」的持久化清單，跨越不同次「自動」執行、甚至跨越 App 重啟都會保留，
+     * 避免今天跑過的商品明天重新搜尋又被抓一次、產生重複資料夾。
+     * 用商品名稱做「早期快速判斷」（省下後面截圖、讀剪貼簿的時間），用連結做最終確認（比較準確）。
+     */
+    private fun getDedupPrefs() = getSharedPreferences("capture_dedup_prefs", Context.MODE_PRIVATE)
+
+    private fun isProductNameAlreadyCaptured(name: String?): Boolean {
+        if (name.isNullOrBlank() || name == "未知") return false
+        val set = getDedupPrefs().getStringSet("captured_names", emptySet()) ?: emptySet()
+        return set.contains(name)
+    }
+
+    private fun isLinkAlreadyCaptured(link: String?): Boolean {
+        if (link.isNullOrBlank()) return false
+        val set = getDedupPrefs().getStringSet("captured_links", emptySet()) ?: emptySet()
+        return set.contains(link)
+    }
+
+    private fun markAsCaptured(name: String?, link: String?) {
+        val prefs = getDedupPrefs()
+        val editor = prefs.edit()
+        if (!name.isNullOrBlank() && name != "未知") {
+            val names = (prefs.getStringSet("captured_names", emptySet()) ?: emptySet()).toMutableSet()
+            names.add(name)
+            editor.putStringSet("captured_names", names)
+        }
+        if (!link.isNullOrBlank()) {
+            val links = (prefs.getStringSet("captured_links", emptySet()) ?: emptySet()).toMutableSet()
+            links.add(link)
+            editor.putStringSet("captured_links", links)
+        }
+        editor.apply()
+    }
+
     private fun findLikelyProductNameText(root: AccessibilityNodeInfo): String? {
         val candidates = mutableListOf<String>()
         collectTextNodes(root, candidates, maxDepth = 12)
@@ -1015,7 +1107,13 @@ class ShopeeAccessibilityService : AccessibilityService() {
         )
     }
 
-    private fun saveResult(productName: String?, link: String?, caption: String?, bitmaps: List<Bitmap>): CaptureResult {
+    private fun saveResult(
+        productName: String?,
+        link: String?,
+        caption: String?,
+        bitmaps: List<Bitmap>,
+        metrics: ProductMetrics? = null
+    ): CaptureResult {
         val id = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val baseDir = File(
             android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
@@ -1045,7 +1143,15 @@ class ShopeeAccessibilityService : AccessibilityService() {
             }
         }
 
-        // 文案文字另存一個純文字檔，方便直接打開複製貼上使用
+        // 連結跟文案文字都各自另存一個純文字檔（跟 meta.json 內容重複，但方便之後的文案／影片生成
+        // 工具直接讀取單一檔案，不用每次都解析 JSON）。
+        if (!link.isNullOrBlank()) {
+            try {
+                File(baseDir, "link.txt").writeText(link)
+            } catch (e: Exception) {
+                // 忽略
+            }
+        }
         if (!caption.isNullOrBlank()) {
             try {
                 File(baseDir, "caption.txt").writeText(caption)
@@ -1060,12 +1166,20 @@ class ShopeeAccessibilityService : AccessibilityService() {
             put("productName", productName ?: org.json.JSONObject.NULL)
             put("promoLink", link ?: org.json.JSONObject.NULL)
             put("caption", caption ?: org.json.JSONObject.NULL)
+            put("commissionPercent", metrics?.commissionPercent ?: org.json.JSONObject.NULL)
+            put("price", metrics?.price ?: org.json.JSONObject.NULL)
+            put("soldCount", metrics?.soldCount ?: org.json.JSONObject.NULL)
+            put("promoterCount", metrics?.promoterCount ?: org.json.JSONObject.NULL)
             put("imageCount", bitmaps.size)
             put("capturedAt", System.currentTimeMillis())
         }
         metaFile.writeText(metaJson.toString())
 
-        val product = CapturedProduct(id, productName, link, caption, System.currentTimeMillis())
+        val product = CapturedProduct(
+            id, productName, link, caption,
+            metrics?.commissionPercent, metrics?.price, metrics?.soldCount, metrics?.promoterCount,
+            System.currentTimeMillis()
+        )
         return CaptureResult.Success(product, baseDir.absolutePath)
     }
 }

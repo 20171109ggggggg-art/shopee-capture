@@ -8,6 +8,10 @@ data class CapturedProduct(
     val productName: String?,
     val promoLink: String?,
     val caption: String? = null,
+    val commissionPercent: Double? = null,
+    val price: Double? = null,
+    val soldCount: Int? = null,
+    val promoterCount: Int? = null,
     val capturedAt: Long
 )
 
