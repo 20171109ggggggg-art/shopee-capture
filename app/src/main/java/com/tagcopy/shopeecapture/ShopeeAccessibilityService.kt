@@ -287,7 +287,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
 
         // 篩選通過後，趁還在商品詳情頁時先把圖片輪播全部滑過一輪存下來（給後續生成影片用）
-        val galleryImages = withTimeoutOrNull(15000) { captureGalleryImages(detailRoot) } ?: emptyList()
+        val galleryImages = captureGalleryImages(detailRoot)
         appendDebugLog("商品：${productName ?: "未知"} | 已擷取商品圖片 ${galleryImages.size} 張")
 
         val shareNode = findNodeByDescriptors(detailRoot, matchRules.shareButtonDescriptors)
@@ -348,6 +348,8 @@ class ShopeeAccessibilityService : AccessibilityService() {
             appendDebugLog("  → 複製資訊：${if (caption.isNullOrBlank()) "讀不到有效文案內容（可能跟連結重複或剪貼簿讀取失敗）" else "成功，長度 ${caption!!.length} 字"}")
         } else {
             appendDebugLog("商品：${productName ?: "未知"} | 找不到「複製資訊」按鈕，文案留空")
+            appendDebugLog("  → 候選字串：${matchRules.copyInfoButtonTexts}")
+            rootInActiveWindow?.let { dumpClickableNodesToLog(it) }
         }
 
         val bitmap = if (galleryImages.isEmpty() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -733,8 +735,13 @@ class ShopeeAccessibilityService : AccessibilityService() {
         appendDebugLog("  → 圖片輪播擷取：偵測到範圍 $bounds，共 $total 張，開始逐張截圖")
         val images = mutableListOf<Bitmap>()
         var timeoutCount = 0
+        val overallDeadline = System.currentTimeMillis() + 20000 // 整體時間上限，改成內部自己控管，逾時就跳出迴圈回傳「已經抓到的部分」，不會像外層 withTimeoutOrNull 那樣把整批結果都作廢
 
         for (index in 1..total) {
+            if (System.currentTimeMillis() > overallDeadline) {
+                appendDebugLog("  → 圖片輪播擷取：已達整體時間上限，提前結束（已成功 ${images.size} 張，剩餘 ${total - index + 1} 張放棄）")
+                break
+            }
             if (index > 1) {
                 swipeCarouselNext(bounds)
                 waitForCarouselIndex(index, 1200)
@@ -964,10 +971,17 @@ class ShopeeAccessibilityService : AccessibilityService() {
         val candidates = mutableListOf<String>()
         collectTextNodes(root, candidates, maxDepth = 12)
         // 取長度落在合理商品標題範圍（8~60 字）且非按鈕文字的第一筆，
-        // 排除優惠券橫幅相關文字（例如「提供優惠券給您的粉絲/關注者」），避免誤判成商品名稱
+        // 排除優惠券橫幅相關文字（例如「提供優惠券給您的粉絲/關注者」），避免誤判成商品名稱，
+        // 也排除純數字／價格格式的文字（例如「1,680.00」），這類文字不可能是真正的商品標題。
         return candidates.firstOrNull {
-            it.length in 8..60 && !isCouponBannerText(it)
+            it.length in 8..60 && !isCouponBannerText(it) && !isPureNumberOrPriceText(it)
         }
+    }
+
+    /** 判斷文字是不是「純數字」或「價格格式」（例如 1,680.00、399、$399），這種不可能是商品標題。 */
+    private fun isPureNumberOrPriceText(text: String): Boolean {
+        val stripped = text.trim().removePrefix("$").removePrefix("₱").removePrefix("฿").removePrefix("₫")
+        return Regex("^[\\d,]+(\\.\\d+)?$").matches(stripped)
     }
 
     /** 商品詳情頁常見的「優惠券／折扣橫幅」文字，不是商品資訊，比對商品名稱或價格時要排除掉。 */
