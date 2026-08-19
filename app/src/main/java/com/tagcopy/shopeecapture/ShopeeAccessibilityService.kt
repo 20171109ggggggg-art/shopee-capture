@@ -249,7 +249,21 @@ class ShopeeAccessibilityService : AccessibilityService() {
             return ProcessResult.FAILED
         }
 
-        val productName = findLikelyProductNameText(detailRoot)
+        var productName = findLikelyProductNameText(detailRoot)
+        if (productName == null) {
+            // 找不到標題時先不急著判定失敗：waitForDetailPageLoaded 只確認「分享按鈕」這類底部固定
+            // 按鈕出現，代表頁面骨架已經載入，但標題、價格等內容可能還在非同步渲染中，早一步讀取
+            // 剛好只抓到查看更多／聊聊／收藏／立即推廣這幾個固定不變的按鈕。稍等一下重新抓取最新畫面
+            // （不能沿用舊的 detailRoot，要重新拿 rootInActiveWindow 才能看到剛渲染完成的內容）再試一次。
+            delay(800)
+            val freshRoot = rootInActiveWindow
+            if (freshRoot != null) {
+                productName = findLikelyProductNameText(freshRoot)
+                if (productName != null) {
+                    appendDebugLog("  → 商品名稱第一次讀不到，等待 0.8 秒後重新讀取成功：$productName")
+                }
+            }
+        }
 
         // 早期判斷：這個商品名稱如果先前任何一次執行就擷取過，直接跳過，省下後面截圖、讀剪貼簿的時間。
         // 但跳過前先停留 3-4 秒再返回，避免進入商品頁不到 1 秒就跳出，看起來太不像真人操作。
