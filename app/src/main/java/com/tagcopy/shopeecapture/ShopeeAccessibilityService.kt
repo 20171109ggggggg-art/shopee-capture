@@ -465,6 +465,13 @@ class ShopeeAccessibilityService : AccessibilityService() {
 
         // 分潤率：中文「分潤」或英文「Comm Rate」「COMMSXTRA」等變體
         val commissionRegex = Regex("(?:分潤|Comm\\s*Rate|COMMS?\\s*XTRA)[^\\d%]*([\\d]+\\.?[\\d]*)\\s*%", RegexOption.IGNORE_CASE)
+        // 裸百分比數字（例如單一節點只有「10.5%」，前後不含任何文字）：
+        // 實測發現商品自己的分潤率徽章在畫面上常常是「分潤加碼」跟「10.5%」兩個獨立節點，
+        // 用關鍵字比對法（上面那個 regex）永遠配對不到「分潤加碼」節點本身（缺數字），
+        // 只能在合併文字時才勉強配對到，但合併文字時反而容易誤抓到「最高分潤率」（賣場整體）
+        // 或「逛逛賣場其他好物」（別的商品）這些格式相似但意義不同的分潤率文字。
+        // 真正可靠的判斷依據是「位置」：商品自己的分潤率數字節點，緊接在價格節點之後幾個節點內出現。
+        val barePercentRegex = Regex("^([\\d]+\\.?[\\d]*)\\s*%$")
 
         // 已售出：中文「已售出 1,234」或英文「10K+ sold」「10K+ Sold」
         val soldRegex = Regex("已售出\\s*([\\d,]+)\\+?")
@@ -483,9 +490,24 @@ class ShopeeAccessibilityService : AccessibilityService() {
         var price: Double? = null
         lastCommissionSourceText = null
 
+        // 主要判斷：找到價格節點的位置，往後幾個節點內找「裸百分比」文字，那才是商品自己的分潤率。
+        val priceIndex = texts.indexOfFirst { !isCouponBannerText(it) && priceRegex.containsMatchIn(it) }
+        if (priceIndex >= 0) {
+            for (i in (priceIndex + 1)..(priceIndex + 4).coerceAtMost(texts.size - 1)) {
+                val candidate = texts[i].trim()
+                if (isCouponBannerText(candidate)) continue
+                barePercentRegex.find(candidate)?.let {
+                    commission = it.groupValues[1].toDoubleOrNull()
+                    lastCommissionSourceText = "[價格鄰近比對] 價格節點「${texts[priceIndex]}」之後第 ${i - priceIndex} 個節點：「$candidate」"
+                }
+                if (commission != null) break
+            }
+        }
+
         for (text in texts) {
             if (isCouponBannerText(text)) continue // 優惠券橫幅文字（例如「低消 $49」）不是商品資訊，整段跳過避免誤判
-            if (commission == null) {
+            if (commission == null && !text.contains("最高分潤率")) {
+                // 「最高分潤率」是賣場整體徽章，不是這個商品自己的分潤率，明確排除避免誤判
                 commissionRegex.find(text)?.let {
                     commission = it.groupValues[1].toDoubleOrNull()
                     lastCommissionSourceText = text
@@ -514,15 +536,17 @@ class ShopeeAccessibilityService : AccessibilityService() {
         // 已經讀到的欄位不受影響，避免因為合併文字而誤配對到別的商品區塊。
         if (commission == null || sold == null || promoter == null || price == null) {
             val combined = texts.filterNot { isCouponBannerText(it) }.joinToString(" ")
+            // 分潤率的合併比對額外排除含「最高分潤率」的節點，避免抓到賣場整體徽章而非商品本身
+            val combinedForCommission = texts.filterNot { isCouponBannerText(it) || it.contains("最高分潤率") }.joinToString(" ")
             if (commission == null) {
-                commissionRegex.find(combined)?.let {
+                commissionRegex.find(combinedForCommission)?.let {
                     commission = it.groupValues[1].toDoubleOrNull()
                     // 合併文字比對時只記錄比對到的片段本身（前後各留一點上下文），
                     // 不記錄整段 combined（太長，洗版）。
                     val matchStart = it.range.first
                     val contextStart = (matchStart - 15).coerceAtLeast(0)
-                    val contextEnd = (it.range.last + 5).coerceAtMost(combined.length - 1)
-                    lastCommissionSourceText = "[合併文字比對] …${combined.substring(contextStart, contextEnd + 1)}…"
+                    val contextEnd = (it.range.last + 5).coerceAtMost(combinedForCommission.length - 1)
+                    lastCommissionSourceText = "[合併文字比對，已排除最高分潤率] …${combinedForCommission.substring(contextStart, contextEnd + 1)}…"
                 }
             }
             if (sold == null) {
@@ -1084,10 +1108,14 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
     }
 
-    /** 判斷文字是不是「純數字」或「價格格式」（例如 1,680.00、399、$399），這種不可能是商品標題。 */
+    /** 判斷文字是不是「純數字」「價格格式」或「價格範圍格式」（例如 1,680.00、399、$399、$169.00-$399.00），這種不可能是商品標題。 */
     private fun isPureNumberOrPriceText(text: String): Boolean {
         val stripped = text.trim().removePrefix("$").removePrefix("₱").removePrefix("฿").removePrefix("₫")
-        return Regex("^[\\d,]+(\\.\\d+)?$").matches(stripped)
+        if (Regex("^[\\d,]+(\\.\\d+)?$").matches(stripped)) return true
+        // 部分商品類別（例如跑步機、多規格商品）價格顯示成範圍「$169.00-$399.00」，
+        // 整段文字剛好落在標題長度範圍內，之前的純數字判斷沒涵蓋帶減號的範圍格式，導致誤判成商品名稱。
+        if (Regex("^[\$₱฿₫]?[\\d,]+(\\.\\d+)?\\s*-\\s*[\$₱฿₫]?[\\d,]+(\\.\\d+)?$").matches(text.trim())) return true
+        return false
     }
 
     /** 商品詳情頁常見的「優惠券／折扣橫幅」文字，不是商品資訊，比對商品名稱或價格時要排除掉。 */
