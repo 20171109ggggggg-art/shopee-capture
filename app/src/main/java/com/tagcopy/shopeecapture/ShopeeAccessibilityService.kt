@@ -1117,9 +1117,10 @@ class ShopeeAccessibilityService : AccessibilityService() {
 
     private fun findLikelyProductNameText(root: AccessibilityNodeInfo): String? {
         val candidates = mutableListOf<String>()
-        // 節點數上限從預設 30 放寬到 60：部分商品（例如多規格、長圖片輪播）前面會先出現
-        // 較多其他文字節點（規格縮圖說明、按鈕等），標題可能排在比較後面，30 個節點有時還沒掃到標題就被截斷。
-        collectTextNodes(root, candidates, maxDepth = 12, maxNodes = 60)
+        // 搜尋深度從 12 提高到 20：診斷 log 證實部分商品畫面的標題節點層數比較深（超過 12 層），
+        // extractProductMetrics 用 maxDepth=20 能穩定讀到同一頁的價格，代表 20 層對這個 App 的畫面結構是夠的，
+        // 這裡跟著提高到一致的深度，避免標題因為搜尋深度不夠而完全掃不到。
+        collectTextNodes(root, candidates, maxDepth = 20, maxNodes = 60)
         // 取長度落在合理商品標題範圍（8~90 字）且非按鈕文字的第一筆，
         // 排除優惠券橫幅相關文字（例如「提供優惠券給您的粉絲/關注者」），避免誤判成商品名稱，
         // 也排除純數字／價格格式的文字（例如「1,680.00」），這類文字不可能是真正的商品標題。
