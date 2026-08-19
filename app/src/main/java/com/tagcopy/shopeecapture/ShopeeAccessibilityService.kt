@@ -490,18 +490,35 @@ class ShopeeAccessibilityService : AccessibilityService() {
         var price: Double? = null
         lastCommissionSourceText = null
 
-        // 主要判斷：找到價格節點的位置，往後幾個節點內找「裸百分比」文字，那才是商品自己的分潤率。
-        val priceIndex = texts.indexOfFirst { !isCouponBannerText(it) && priceRegex.containsMatchIn(it) }
-        if (priceIndex >= 0) {
-            for (i in (priceIndex + 1)..(priceIndex + 4).coerceAtMost(texts.size - 1)) {
+        // 主要判斷：找到價格的位置，往後幾個節點內找「裸百分比」文字，那才是商品自己的分潤率。
+        // 注意：貨幣符號（$）跟數字（304.00）常常是兩個分開的節點，不會同時出現在同一段文字裡，
+        // 所以錨點改成「單獨一個貨幣符號」的節點（不要求同節點內要有數字），比對更寬鬆、更準確。
+        val currencySymbols = setOf("$", "₱", "฿", "₫")
+        var priceAnchorIndex = texts.indexOfFirst { it.trim() in currencySymbols }
+        if (priceAnchorIndex < 0) {
+            // 找不到單獨貨幣符號節點，退而求其次找同節點內含貨幣符號＋數字的（例如「$304.00」黏在一起的情況）
+            priceAnchorIndex = texts.indexOfFirst { !isCouponBannerText(it) && priceRegex.containsMatchIn(it) }
+        }
+        if (priceAnchorIndex >= 0) {
+            for (i in (priceAnchorIndex + 1)..(priceAnchorIndex + 6).coerceAtMost(texts.size - 1)) {
                 val candidate = texts[i].trim()
                 if (isCouponBannerText(candidate)) continue
                 barePercentRegex.find(candidate)?.let {
                     commission = it.groupValues[1].toDoubleOrNull()
-                    lastCommissionSourceText = "[價格鄰近比對] 價格節點「${texts[priceIndex]}」之後第 ${i - priceIndex} 個節點：「$candidate」"
+                    lastCommissionSourceText = "[價格鄰近比對] 價格錨點「${texts[priceAnchorIndex]}」之後第 ${i - priceAnchorIndex} 個節點：「$candidate」"
                 }
                 if (commission != null) break
             }
+        }
+        if (commission == null) {
+            // 位置比對沒找到時也要留下診斷線索：記錄價格錨點位置附近實際看到的節點內容，
+            // 方便下次還讀不到分潤率時，直接從 log 比對是不是節點順序跟預期不同。
+            val debugWindow = if (priceAnchorIndex >= 0) {
+                texts.subList(priceAnchorIndex, (priceAnchorIndex + 7).coerceAtMost(texts.size)).joinToString(" | ")
+            } else {
+                "找不到價格錨點（無單獨貨幣符號節點，也無含貨幣符號+數字的節點）"
+            }
+            lastCommissionSourceText = "[位置比對找不到，價格錨點附近節點內容] $debugWindow"
         }
 
         for (text in texts) {
@@ -581,9 +598,10 @@ class ShopeeAccessibilityService : AccessibilityService() {
             "已售出=${metrics.soldCount?.toString() ?: "null（沒讀到）"} | " +
             "已推廣者=${metrics.promoterCount?.toString() ?: "null（沒讀到）"}"
         appendDebugLog(line)
-        // 分潤率是誤判紀錄最多的欄位，額外記下比對到的原始文字來源，
-        // 下次如果又讀錯數字，可以直接對照這段文字找出規則哪裡誤配對到不相關的數字。
-        if (metrics.commissionPercent != null && lastCommissionSourceText != null) {
+        // 分潤率是誤判紀錄最多的欄位，不管有沒有讀到都記下診斷來源：
+        // 讀到值時記錄比對到的原始文字，下次誤判可以對照找出哪裡抓錯；
+        // 讀不到值時記錄附近節點內容，才能知道是錨點沒找到還是範圍內真的沒有百分比文字。
+        if (lastCommissionSourceText != null) {
             appendDebugLog("  → 分潤率讀取來源文字：「${lastCommissionSourceText}」")
         }
     }
