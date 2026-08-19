@@ -156,6 +156,10 @@ class ShopeeAccessibilityService : AccessibilityService() {
             findSearchBoxText(root)?.let { if (it.isNotBlank()) lastKnownSearchQuery = it }
 
             val cards = findProductCards(root)
+            val alreadyProcessedCount = cards.count { cardKey(it) in processedKeys }
+            if (alreadyProcessedCount > 0) {
+                appendDebugLog("  → 畫面上偵測到 ${cards.size} 張卡片，其中 $alreadyProcessedCount 張已處理過（用標題比對），直接跳過選取，不會重複點進去")
+            }
             val nextCard = cards.firstOrNull { cardKey(it) !in processedKeys }
 
             if (nextCard == null) {
@@ -835,12 +839,17 @@ class ShopeeAccessibilityService : AccessibilityService() {
     }
 
     private fun cardKey(node: AccessibilityNodeInfo): String {
-        val bounds = Rect()
-        node.getBoundsInScreen(bounds)
+        // 只用商品標題文字當識別碼，不再混入螢幕座標。
+        // 之前用「標題+座標」的組合，滑動後同一張卡片座標會變，導致被誤判成新卡片、重複點進去，
+        // 靠後面的防重複機制攔下來雖然沒有真的重複存檔，但還是多浪費一次點擊詳情頁的時間。
         val texts = mutableListOf<String>()
         collectTextNodes(node, texts, maxDepth = 6)
-        val title = texts.firstOrNull { it.length in 4..80 } ?: ""
-        return "$title|$bounds"
+        val title = texts.firstOrNull { it.length in 4..80 }
+        if (!title.isNullOrBlank()) return title
+        // 標題抓不到的極少數情況，退回用座標當備援識別碼，避免不同商品因為都是空字串而互相誤判成重複
+        val bounds = Rect()
+        node.getBoundsInScreen(bounds)
+        return "(無標題)|$bounds"
     }
 
     private fun findNodeByDescriptors(root: AccessibilityNodeInfo, texts: List<String>): AccessibilityNodeInfo? {
