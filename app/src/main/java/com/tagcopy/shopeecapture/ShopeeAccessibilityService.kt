@@ -510,21 +510,26 @@ class ShopeeAccessibilityService : AccessibilityService() {
      * 這樣不用再靠猜測，直接從 log 裡看蝦皮這個按鈕實際叫什麼名字，之後就能把正確字串加進比對規則。
      */
     private fun dumpClickableNodesToLog(root: AccessibilityNodeInfo) {
+        // 原本只收集 isClickable=true 的節點，但實測發現許多按鈕的可點擊範圍其實是在父節點，
+        // 子節點本身（顯示文字的那一層）isClickable 是 false，導致條件太嚴格、常常抓到 0 個元件、
+        // 診斷起不了作用。改成列出「所有有文字或描述」的節點，不再限制 isClickable，
+        // 並額外標註 clickable 狀態方便判斷實際可點的是哪一層。
         val lines = mutableListOf<String>()
         fun walk(node: AccessibilityNodeInfo?, depth: Int) {
-            if (node == null || depth > 25 || lines.size > 40) return
-            if (node.isClickable) {
-                val text = node.text?.toString()?.trim()
-                val desc = node.contentDescription?.toString()?.trim()
-                val id = node.viewIdResourceName
-                if (!text.isNullOrEmpty() || !desc.isNullOrEmpty()) {
-                    lines.add("text=${text ?: "-"} | desc=${desc ?: "-"} | id=${id ?: "-"}")
-                }
+            if (node == null || depth > 25 || lines.size > 60) return
+            val text = node.text?.toString()?.trim()
+            val desc = node.contentDescription?.toString()?.trim()
+            val id = node.viewIdResourceName
+            if (!text.isNullOrEmpty() || !desc.isNullOrEmpty()) {
+                lines.add("text=${text ?: "-"} | desc=${desc ?: "-"} | id=${id ?: "-"} | clickable=${node.isClickable}")
             }
             for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
         }
         walk(root, 0)
-        appendDebugLog("  → 畫面上可點擊元件清單（前 ${lines.size} 個）：")
+        appendDebugLog("  → 畫面上元件清單（前 ${lines.size} 個，含不可點擊節點）：")
+        if (lines.isEmpty()) {
+            appendDebugLog("     （完全沒有找到任何有文字/描述的節點，畫面可能還沒載入完成或讀取範圍有問題）")
+        }
         lines.forEach { appendDebugLog("     $it") }
     }
 
@@ -664,11 +669,12 @@ class ShopeeAccessibilityService : AccessibilityService() {
         val metrics = resources.displayMetrics
         val width = metrics.widthPixels
         val height = metrics.heightPixels
-        // 滑動距離縮短（原本 75%→30%，改成 78%→48%），讓前後兩次畫面有更多重疊，
-        // 避免商品格子之間有落差時，中間那排商品完全沒出現過就被跳過。
+        // 滑動距離：原本 75%→30%（滑動45%）會漏抓中間商品，改成 78%→48%（滑動30%）又造成
+        // 重疊過多、4張卡片有一半是滑動前就出現過的舊卡片，浪費時間跳過。
+        // 實測後調整為 80%→40%（滑動40%），在「不漏抓」與「不過度重疊」之間取折衷。
         val path = Path().apply {
-            moveTo(width / 2f, height * 0.78f)
-            lineTo(width / 2f, height * 0.48f)
+            moveTo(width / 2f, height * 0.80f)
+            lineTo(width / 2f, height * 0.40f)
         }
         val gesture = GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(path, 0, 300))

@@ -55,7 +55,7 @@ object AutoCapturePrefs {
             minDelayMs = sp.getLong(KEY_MIN_DELAY, 3000L),
             maxDelayMs = sp.getLong(KEY_MAX_DELAY, 6000L),
             filter = filter,
-            timeLimitMs = sp.getLong(KEY_TIME_LIMIT, 180000L).let { if (it <= 0L) null else it },
+            timeLimitMs = sp.getLong(KEY_TIME_LIMIT, 600000L).let { if (it <= 0L) null else it },
             maxAttemptsLimitEnabled = sp.getBoolean(KEY_MAX_ATTEMPTS_ENABLED, true),
             timeLimitEnabled = sp.getBoolean(KEY_TIME_LIMIT_ENABLED, true)
         )
