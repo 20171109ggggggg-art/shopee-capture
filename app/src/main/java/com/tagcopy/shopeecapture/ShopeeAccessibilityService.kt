@@ -1058,7 +1058,10 @@ class ShopeeAccessibilityService : AccessibilityService() {
         return result
     }
 
-    /** 找出對應第 index 張圖片的容器節點：靠「index/total」頁碼文字節點的父層來定位（同一容器底下的兄弟關係）。 */
+    /** 找出對應第 index 張圖片的容器節點：靠「index/total」頁碼文字節點的父層來定位（同一容器底下的兄弟關係）。
+     * 重要：呼叫時 root 參數務必傳「分享面板專屬的縮圖列 scrollView」，不能傳整個畫面 root——
+     * 背景商品詳情頁自己也有「X/N」頁碼文字，範圍沒限定住會抓錯到背景頁去（見 findShareSheetScrollView 的說明）。
+     */
     private fun findShareSheetItemContainer(root: AccessibilityNodeInfo, index: Int, total: Int): AccessibilityNodeInfo? {
         var result: AccessibilityNodeInfo? = null
         fun walk(node: AccessibilityNodeInfo?, depth: Int) {
@@ -1096,12 +1099,29 @@ class ShopeeAccessibilityService : AccessibilityService() {
         return null
     }
 
-    /** 找出輪播的 HorizontalScrollView 容器，供橫向滑動使用。 */
+    /** 找出輪播的 HorizontalScrollView 容器，供橫向滑動使用。
+     * 關鍵：畫面上背景的商品詳情頁自己也有一個 HorizontalScrollView（含自己的輪播圖片與「X/N」頁碼），
+     * 分享面板打開後背景頁面只是被蓋住、節點還在無障礙樹裡，兩者結構高度相似、頁碼還可能剛好數字一樣，
+     * 光用「是不是 HorizontalScrollView」去找一定會抓錯（實測就是抓到背景頁那個）。
+     * 這裡改成「這個 HorizontalScrollView 底下必須真的含有分享面板專屬的 AN_ShareDrawer_ 開頭 id」才算數，
+     * 確保抓到的是分享面板的縮圖列，不是背景商品頁的輪播。
+     */
     private fun findShareSheetScrollView(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        fun containsShareDrawerId(node: AccessibilityNodeInfo?, depth: Int): Boolean {
+            if (node == null || depth > 6) return false
+            val id = node.viewIdResourceName
+            if (id != null && (id.endsWith("AN_ShareDrawer_ImageUrl_Img") || id.endsWith("AN_ShareDrawer_DownloadPng_Img_1"))) {
+                return true
+            }
+            for (i in 0 until node.childCount) {
+                if (containsShareDrawerId(node.getChild(i), depth + 1)) return true
+            }
+            return false
+        }
         var result: AccessibilityNodeInfo? = null
         fun walk(node: AccessibilityNodeInfo?, depth: Int) {
-            if (node == null || result != null || depth > 15) return
-            if (node.className == "android.widget.HorizontalScrollView") {
+            if (node == null || result != null || depth > 20) return
+            if (node.className == "android.widget.HorizontalScrollView" && containsShareDrawerId(node, 0)) {
                 result = node
                 return
             }
@@ -1171,32 +1191,39 @@ class ShopeeAccessibilityService : AccessibilityService() {
             appendDebugLog("  → 下載式圖片擷取：沒有讀取相簿權限，跳過（改用截圖版本）")
             return null
         }
-        val total = findShareSheetTotalCount(sheetRoot)
+        val total = findShareSheetTotalCount(sheetRoot)?.coerceAtMost(15)
         if (total == null || total <= 0) {
             appendDebugLog("  → 下載式圖片擷取：找不到分享面板的「N/M」頁碼，跳過（改用截圖版本）")
             return null
         }
         appendDebugLog("  → 下載式圖片擷取：偵測到共 $total 張，開始逐張點下載鈕")
-        val scrollView = findShareSheetScrollView(sheetRoot)
         val screenWidth = resources.displayMetrics.widthPixels
         val images = mutableListOf<Bitmap>()
+        // 每次都重新抓「當下畫面」再重找 scrollView，避免沿用舊 root/舊節點引用（可能已經過期）。
+        // 關鍵修正：容器搜尋範圍務必限定在分享面板專屬的 scrollView 底下，不能搜整個畫面 root——
+        // 背景商品詳情頁自己也有輪播跟「X/N」頁碼，範圍沒限定住會抓錯到背景頁那組完全不相干的節點。
+        fun currentScrollView(): AccessibilityNodeInfo? =
+            findShareSheetScrollView(rootInActiveWindow ?: sheetRoot)
+        fun currentItemContainer(idx: Int): AccessibilityNodeInfo? =
+            currentScrollView()?.let { findShareSheetItemContainer(it, idx, total) }
+
         for (index in 1..total) {
-            var container = findShareSheetItemContainer(rootInActiveWindow ?: sheetRoot, index, total)
+            var container = currentItemContainer(index)
             var scrollAttempts = 0
-            // 抓到容器後，不代表整個容器已經完全滑進畫面可視範圍——實測發現最後一張常常是「文字節點找得到，
-            // 但容器還沒完全進入畫面，裡面的下載鈕圖示因為在螢幕外/被裁切，系統根本沒把它加進節點樹」。
-            // 這裡除了「找不到容器」要繼續滑之外，「容器左右邊界超出螢幕範圍」也視為還沒滑到定位，繼續滑。
+            // 抓到容器後，不代表整個容器已經完全滑進畫面可視範圍——之前誤抓到背景頁全螢幕節點時，
+            // 這個檢查形同虛設（背景頁節點永遠「完全可見」），範圍修正後這裡才會真的發揮作用。
             fun isFullyVisible(node: AccessibilityNodeInfo): Boolean {
                 val b = Rect()
                 node.getBoundsInScreen(b)
                 return b.left >= 0 && b.right <= screenWidth
             }
-            while ((container == null || !isFullyVisible(container)) && scrollAttempts < total + 3 && scrollView != null) {
+            while ((container == null || !isFullyVisible(container)) && scrollAttempts < total + 3) {
+                val sv = currentScrollView() ?: break
                 val svBounds = Rect()
-                scrollView.getBoundsInScreen(svBounds)
+                sv.getBoundsInScreen(svBounds)
                 swipeHorizontalLeft(svBounds)
                 delay(DOWNLOAD_SCROLL_SETTLE_DELAY_MS)
-                container = findShareSheetItemContainer(rootInActiveWindow ?: sheetRoot, index, total)
+                container = currentItemContainer(index)
                 scrollAttempts++
                 // 已經滑到不能再滑（畫面沒有再變化的跡象時，容器仍抓得到但沒完全可見也只能將就用），
                 // 這裡沒有偵測「滑到底」的機制，用總嘗試次數上限（total+3）避免無限迴圈卡住。
@@ -1214,7 +1241,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 var retry = 0
                 while (btn == null && retry < 3) {
                     delay(DOWNLOAD_SCROLL_SETTLE_DELAY_MS)
-                    val freshContainer = findShareSheetItemContainer(rootInActiveWindow ?: sheetRoot, index, total)
+                    val freshContainer = currentItemContainer(index)
                     if (freshContainer != null) {
                         btn = findDownloadButtonInContainer(freshContainer)
                     }
@@ -1223,7 +1250,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 btn
             }
             if (downloadBtn == null) {
-                // 【診斷用】猜了三次都沒猜對，這裡直接把當下抓到的容器內部長什麼樣子印出來，不再猜
+                // 【診斷用】保留診斷輸出，萬一範圍修正後還有其他邊界情況，還能繼續看到實際節點內容
                 val cb = Rect()
                 container.getBoundsInScreen(cb)
                 appendDebugLog("  → 下載式圖片擷取：第 $index 張重試 3 次仍找不到下載鈕節點，放棄這張（已嘗試滑動 $scrollAttempts 次，容器 bounds=$cb，螢幕寬=$screenWidth）")
@@ -1286,7 +1313,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         FloatingButtonService.hideForScreenshot()
         delay(200) // 給畫面一點時間重繪，確保懸浮視窗真的消失了才開始截圖，避免第一張還是抓到隱藏前的殘影
         try {
-            val total = readCarouselTotal(root).coerceIn(1, 20) // 上限 20 張，避免極端情況跑太久
+            val total = readCarouselTotal(root).coerceIn(1, 15) // 上限 15 張，避免極端情況跑太久
             appendDebugLog("  → 圖片輪播擷取：偵測到範圍 $bounds，共 $total 張，開始逐張截圖")
             val images = mutableListOf<Bitmap>()
             var timeoutCount = 0
