@@ -1202,7 +1202,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 // 這裡沒有偵測「滑到底」的機制，用總嘗試次數上限（total+3）避免無限迴圈卡住。
             }
             if (container == null) {
-                appendDebugLog("  → 下載式圖片擷取：第 $index 張滑動多次仍找不到容器，放棄這張")
+                appendDebugLog("  → 下載式圖片擷取：第 $index 張滑動多次仍找不到容器，放棄這張（已嘗試滑動 $scrollAttempts 次）")
                 continue
             }
             val downloadBtn = run {
@@ -1223,7 +1223,25 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 btn
             }
             if (downloadBtn == null) {
-                appendDebugLog("  → 下載式圖片擷取：第 $index 張重試 3 次仍找不到下載鈕節點，放棄這張")
+                // 【診斷用】猜了三次都沒猜對，這裡直接把當下抓到的容器內部長什麼樣子印出來，不再猜
+                val cb = Rect()
+                container.getBoundsInScreen(cb)
+                appendDebugLog("  → 下載式圖片擷取：第 $index 張重試 3 次仍找不到下載鈕節點，放棄這張（已嘗試滑動 $scrollAttempts 次，容器 bounds=$cb，螢幕寬=$screenWidth）")
+                val lines = mutableListOf<String>()
+                fun walk(node: AccessibilityNodeInfo?, depth: Int) {
+                    if (node == null || depth > 8 || lines.size > 40) return
+                    val text = node.text?.toString()?.trim()
+                    val desc = node.contentDescription?.toString()?.trim()
+                    val id = node.viewIdResourceName
+                    val cls = node.className?.toString()
+                    val b = Rect()
+                    node.getBoundsInScreen(b)
+                    lines.add("depth=$depth class=${cls ?: "-"} text=${text ?: "-"} desc=${desc ?: "-"} id=${id ?: "-"} clickable=${node.isClickable} bounds=$b")
+                    for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
+                }
+                walk(container, 0)
+                appendDebugLog("     【診斷】第 $index 張容器內部節點樹（${lines.size} 個）：")
+                lines.forEach { appendDebugLog("        $it") }
                 continue
             }
             val clickTime = System.currentTimeMillis()
