@@ -21,23 +21,9 @@ import android.widget.Toast
 
 class FloatingButtonService : Service() {
 
-    companion object {
-        // 讓 ShopeeAccessibilityService 在截圖前後可以直接呼叫，隱藏/恢復懸浮視窗，
-        // 避免「擷取／自動／偵測」這幾顆按鈕被一起拍進商品圖片裡。
-        // 用 instance 弱參照的方式讓外部服務找到目前活著的 FloatingButtonService；
-        // Service 生命週期內只會有一個實例，onCreate 設定、onDestroy 清除。
-        @Volatile
-        private var instance: FloatingButtonService? = null
-
-        fun hideForScreenshot() {
-            instance?.floatingView?.visibility = View.INVISIBLE
-        }
-
-        fun restoreAfterScreenshot() {
-            instance?.floatingView?.visibility = View.VISIBLE
-        }
-    }
-
+    // instance 讓 companion object（見檔案最下方）的靜態方法能找到目前活著的實例，
+    // 用來在截圖前後隱藏/恢復懸浮視窗，避免按鈕被拍進商品圖片。
+    // Service 生命週期內只會有一個實例，onCreate 設定、onDestroy 清除。
     private var windowManager: WindowManager? = null
     private var floatingView: View? = null
 
@@ -321,5 +307,18 @@ class FloatingButtonService : Service() {
 
     companion object {
         const val ACTION_STOP = "com.tagcopy.shopeecapture.STOP"
+
+        // 讓 ShopeeAccessibilityService 在截圖前後可以直接呼叫，隱藏/恢復懸浮視窗，
+        // 避免「擷取／自動／偵測」這幾顆按鈕被一起拍進商品圖片裡。
+        @Volatile
+        private var instance: FloatingButtonService? = null
+
+        fun hideForScreenshot() {
+            instance?.floatingView?.visibility = View.INVISIBLE
+        }
+
+        fun restoreAfterScreenshot() {
+            instance?.floatingView?.visibility = View.VISIBLE
+        }
     }
 }
