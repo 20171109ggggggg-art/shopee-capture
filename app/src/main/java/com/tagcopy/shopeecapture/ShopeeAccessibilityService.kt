@@ -6,6 +6,9 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Rect
 import android.hardware.HardwareBuffer
@@ -842,6 +845,70 @@ class ShopeeAccessibilityService : AccessibilityService() {
         return null
     }
 
+    /**
+     * 收斂輪播裁切範圍，排除兩塊不屬於商品圖片本身的區域：
+     * 1. 頂部系統狀態列（時間／電量／WiFi等，由系統繪製，不在 App 畫面節點內，
+     *    用系統資源高度直接扣除，不受個別手機狀態列高度不同影響）
+     * 2. 底部「N 規格」縮圖列（找到該文字節點，裁切到其上緣之前，把整排規格縮圖排除在外）
+     * 找不到「規格」節點（例如商品沒有多規格選項）時就不裁切底部，維持原本範圍。
+     */
+    private fun refineCarouselBounds(root: AccessibilityNodeInfo, raw: Rect): Rect {
+        val statusBarHeight = run {
+            val resId = resources.getIdentifier("status_bar_height", "dimen", "android")
+            if (resId > 0) resources.getDimensionPixelSize(resId) else 0
+        }
+        val top = raw.top.coerceAtLeast(statusBarHeight)
+
+        var specTop: Int? = null
+        fun walk(node: AccessibilityNodeInfo?, depth: Int) {
+            if (node == null || specTop != null || depth > 20) return
+            val t = node.text?.toString()?.trim()
+            if (t != null && Regex("^\\d+\\s*規格$").matches(t)) {
+                val b = Rect()
+                node.getBoundsInScreen(b)
+                if (b.top in raw.top..raw.bottom) specTop = b.top
+                return
+            }
+            for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
+        }
+        walk(root, 0)
+
+        val bottom = specTop?.takeIf { it > top }?.coerceAtMost(raw.bottom) ?: raw.bottom
+        if (bottom <= top) return raw // 保險：算出異常範圍就退回原本的，避免產生高度為0或負值的裁切框
+        return Rect(raw.left, top, raw.right, bottom)
+    }
+
+    /**
+     * 在輪播範圍內找出疊加在圖片上方的控制項（返回／分享箭頭、「X/N」頁碼文字），
+     * 事後在截圖上塗黑遮蓋，避免這些介面元件被拍進商品圖片。
+     * 這些控制項是疊加繪製在圖片同一層，無法靠單純裁切排除，只能用遮蓋處理。
+     * 判斷依據：(a) 符合「數字/數字」格式的頁碼文字節點；(b) 小尺寸、可點擊、
+     * 位置貼近輪播範圍頂部（上緣18%範圍內）且偏靠左或右角落的節點（典型返回/分享箭頭大小與位置）。
+     */
+    private fun findOverlayControlBounds(root: AccessibilityNodeInfo, carouselBounds: Rect): List<Rect> {
+        val results = mutableListOf<Rect>()
+        val topBandBottom = carouselBounds.top + (carouselBounds.height() * 0.18f).toInt()
+        val leftBandRight = carouselBounds.left + (carouselBounds.width() * 0.25f).toInt()
+        val rightBandLeft = carouselBounds.right - (carouselBounds.width() * 0.25f).toInt()
+        fun walk(node: AccessibilityNodeInfo?, depth: Int) {
+            if (node == null || depth > 20) return
+            val b = Rect()
+            node.getBoundsInScreen(b)
+            if (Rect.intersects(b, carouselBounds)) {
+                val t = node.text?.toString()?.trim()
+                val isPageIndicator = t != null && Regex("^\\d+\\s*/\\s*\\d+$").matches(t)
+                val isSmallCornerButton = node.isClickable &&
+                    b.width() in 40..220 && b.height() in 40..220 &&
+                    b.top <= topBandBottom &&
+                    (b.left <= leftBandRight || b.right >= rightBandLeft)
+                if (isPageIndicator || isSmallCornerButton) results.add(Rect(b))
+            }
+            for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
+        }
+        walk(root, 0)
+        return results
+    }
+
     /** 讀取目前畫面上「X/N」頁碼指示文字裡的總張數 N，讀不到就回傳 1（當作只有一張圖）。 */
     private fun readCarouselTotal(root: AccessibilityNodeInfo): Int {
         val texts = mutableListOf<String>()
@@ -872,11 +939,13 @@ class ShopeeAccessibilityService : AccessibilityService() {
             appendDebugLog("  → 圖片輪播擷取：系統版本低於 Android 11，不支援截圖，跳過")
             return emptyList()
         }
-        val bounds = findImageCarouselBounds(root)
-        if (bounds == null) {
+        val rawBounds = findImageCarouselBounds(root)
+        if (rawBounds == null) {
             appendDebugLog("  → 圖片輪播擷取：找不到輪播範圍（沒偵測到「X/N」頁碼），跳過")
             return emptyList()
         }
+        // 排除頂部狀態列與底部「N 規格」縮圖列，避免這兩塊區域被拍進商品圖片
+        val bounds = refineCarouselBounds(root, rawBounds)
         // 截圖前先隱藏懸浮視窗（擷取／自動／偵測按鈕），避免這幾顆按鈕被一起拍進商品圖片裡。
         // 用 try-finally 確保萬一擷取過程中發生例外，懸浮視窗還是一定會被恢復，
         // 不會卡在隱藏狀態讓使用者以為 App 當掉了。
@@ -912,7 +981,30 @@ class ShopeeAccessibilityService : AccessibilityService() {
                     val top = bounds.top.coerceIn(0, full.height)
                     val width = bounds.width().coerceAtMost(full.width - left)
                     val height = bounds.height().coerceAtMost(full.height - top)
-                    if (width > 0 && height > 0) Bitmap.createBitmap(full, left, top, width, height) else full
+                    if (width > 0 && height > 0) {
+                        val bmp = Bitmap.createBitmap(full, left, top, width, height)
+                        // 返回/分享箭頭與頁碼是疊加在圖片同一層的控制項，裁切排除不了，改用塗黑遮蓋
+                        // 每滑一張畫面就換了，不能沿用函式開頭那個舊 root，這裡重新抓當下畫面再找位置
+                        val liveRoot = rootInActiveWindow ?: root
+                        val overlays = findOverlayControlBounds(liveRoot, bounds)
+                        if (overlays.isEmpty()) {
+                            bmp
+                        } else {
+                            val mutable = bmp.copy(Bitmap.Config.ARGB_8888, true)
+                            val canvas = Canvas(mutable)
+                            val paint = Paint().apply { color = Color.BLACK }
+                            for (ob in overlays) {
+                                val rLeft = (ob.left - left).coerceIn(0, mutable.width)
+                                val rTop = (ob.top - top).coerceIn(0, mutable.height)
+                                val rRight = (ob.right - left).coerceIn(0, mutable.width)
+                                val rBottom = (ob.bottom - top).coerceIn(0, mutable.height)
+                                if (rRight > rLeft && rBottom > rTop) {
+                                    canvas.drawRect(rLeft.toFloat(), rTop.toFloat(), rRight.toFloat(), rBottom.toFloat(), paint)
+                                }
+                            }
+                            mutable
+                        }
+                    } else full
                 } catch (e: Exception) {
                     full
                 }
