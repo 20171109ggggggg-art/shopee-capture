@@ -1178,27 +1178,38 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
         appendDebugLog("  → 下載式圖片擷取：偵測到共 $total 張，開始逐張點下載鈕")
         val scrollView = findShareSheetScrollView(sheetRoot)
+        val screenWidth = resources.displayMetrics.widthPixels
         val images = mutableListOf<Bitmap>()
         for (index in 1..total) {
             var container = findShareSheetItemContainer(rootInActiveWindow ?: sheetRoot, index, total)
             var scrollAttempts = 0
-            while (container == null && scrollAttempts < total && scrollView != null) {
+            // 抓到容器後，不代表整個容器已經完全滑進畫面可視範圍——實測發現最後一張常常是「文字節點找得到，
+            // 但容器還沒完全進入畫面，裡面的下載鈕圖示因為在螢幕外/被裁切，系統根本沒把它加進節點樹」。
+            // 這裡除了「找不到容器」要繼續滑之外，「容器左右邊界超出螢幕範圍」也視為還沒滑到定位，繼續滑。
+            fun isFullyVisible(node: AccessibilityNodeInfo): Boolean {
+                val b = Rect()
+                node.getBoundsInScreen(b)
+                return b.left >= 0 && b.right <= screenWidth
+            }
+            while ((container == null || !isFullyVisible(container)) && scrollAttempts < total + 3 && scrollView != null) {
                 val svBounds = Rect()
                 scrollView.getBoundsInScreen(svBounds)
                 swipeHorizontalLeft(svBounds)
                 delay(DOWNLOAD_SCROLL_SETTLE_DELAY_MS)
                 container = findShareSheetItemContainer(rootInActiveWindow ?: sheetRoot, index, total)
                 scrollAttempts++
+                // 已經滑到不能再滑（畫面沒有再變化的跡象時，容器仍抓得到但沒完全可見也只能將就用），
+                // 這裡沒有偵測「滑到底」的機制，用總嘗試次數上限（total+3）避免無限迴圈卡住。
             }
             if (container == null) {
                 appendDebugLog("  → 下載式圖片擷取：第 $index 張滑動多次仍找不到容器，放棄這張")
                 continue
             }
             val downloadBtn = run {
-                // 找到容器後，下載鈕圖示可能還在非同步渲染中（尤其是滑到最尾端那一張），
-                // 立刻找常常撲空，改成重試幾次、每次都重新抓最新容器再找，給渲染多一點時間。
-                // 注意：這裡改用區域變數 searchContainer，不去動外層的 container，
-                // 避免同一個 closure 裡「讀取又重新賦值」外層變數導致編譯器 smart-cast 失敗。
+                // 找到容器後，下載鈕圖示可能還在非同步渲染中，立刻找常常撲空，
+                // 改成重試幾次、每次都重新抓最新容器再找，給渲染多一點時間。
+                // 注意：這裡不去動外層的 container，避免同一個 closure 裡「讀取又重新賦值」
+                // 外層變數導致編譯器 smart-cast 失敗。
                 var btn: AccessibilityNodeInfo? = findDownloadButtonInContainer(container)
                 var retry = 0
                 while (btn == null && retry < 3) {
