@@ -3,21 +3,27 @@ package com.tagcopy.shopeecapture
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.content.ClipboardManager
+import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Rect
 import android.hardware.HardwareBuffer
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.MediaStore
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.annotation.RequiresApi
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -315,8 +321,9 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
 
         // 篩選通過後，趁還在商品詳情頁時先把圖片輪播全部滑過一輪存下來（給後續生成影片用）
-        val galleryImages = captureGalleryImages(detailRoot)
-        appendDebugLog("商品：${productName ?: "未知"} | 已擷取商品圖片 ${galleryImages.size} 張")
+        // 這裡先用截圖版本墊底，等分享面板打開後如果能用「下載鈕」抓到乾淨原圖，會直接覆蓋掉這批
+        var galleryImages = captureGalleryImages(detailRoot)
+        appendDebugLog("商品：${productName ?: "未知"} | 已擷取商品圖片（截圖版本）${galleryImages.size} 張")
 
         val shareNode = findNodeByDescriptors(detailRoot, matchRules.shareButtonDescriptors)
         if (shareNode == null) {
@@ -342,8 +349,20 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
 
         val sheetRoot = rootInActiveWindow
-        // 【診斷用】把分享面板完整節點樹印進 log，找出輪播縮圖下載鈕的 class/desc/id/座標
-        if (sheetRoot != null) dumpShareSheetFullTreeToLog(sheetRoot)
+        // 分享面板裡的輪播縮圖下載鈕能拿到完全乾淨的原圖（無浮水印、無介面元素），
+        // 畫質也比截圖再裁切好，優先用這個；抓不到（例如沒有讀取相簿權限、或面板結構跟預期不同）就沿用上面截圖版本
+        if (sheetRoot != null) {
+            val downloaded = try {
+                captureGalleryImagesViaDownload(sheetRoot)
+            } catch (e: Exception) {
+                appendDebugLog("  → 下載式圖片擷取發生例外，改用截圖版本：${e.message}")
+                null
+            }
+            if (!downloaded.isNullOrEmpty()) {
+                appendDebugLog("商品：${productName ?: "未知"} | 改用分享面板下載鈕擷取到原圖 ${downloaded.size} 張（取代截圖版本）")
+                galleryImages = downloaded
+            }
+        }
         val copyLinkNode = sheetRoot?.let { findNodeByTexts(it, matchRules.copyLinkButtonTexts) }
         if (copyLinkNode == null) {
             onEvent(AutoCaptureEvent.Log("找不到「複製連結」按鈕，跳過此商品"))
@@ -998,6 +1017,206 @@ class ShopeeAccessibilityService : AccessibilityService() {
             if (root != null && root.findAccessibilityNodeInfosByText("$index/").isNotEmpty()) return
             delay(120)
         }
+    }
+
+    // ===== 分享面板「輪播縮圖下載鈕」擷取原圖（取代截圖＋裁切＋遮蓋） =====
+    // 使用者手動測試發現：分享面板的圖片輪播縮圖上有下載鈕，點了會把完全乾淨（無浮水印、無介面元素）
+    // 的原始商品圖存進手機相簿，畫質也比截圖再裁切好。這裡把這個操作自動化。
+    // 時間參數依需求「間隔再加50%」，括號內標註原始基準值。
+    private val DOWNLOAD_AFTER_CLICK_INITIAL_DELAY_MS = 1350L // 原900ms
+    private val DOWNLOAD_POLL_INTERVAL_MS = 450L // 原300ms
+    private val DOWNLOAD_POLL_TIMEOUT_MS = 4500L // 原3000ms
+    private val DOWNLOAD_BETWEEN_IMAGES_DELAY_MS = 750L // 原500ms
+    private val DOWNLOAD_SCROLL_SETTLE_DELAY_MS = 600L // 原400ms
+
+    /** 檢查有沒有讀取相簿的權限（Android 13+ 用 READ_MEDIA_IMAGES，以下用 READ_EXTERNAL_STORAGE）。 */
+    private fun hasMediaReadPermission(): Boolean {
+        val permission = if (Build.VERSION.SDK_INT >= 33) {
+            android.Manifest.permission.READ_MEDIA_IMAGES
+        } else {
+            android.Manifest.permission.READ_EXTERNAL_STORAGE
+        }
+        return ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
+    }
+
+    /** 讀分享面板裡「N/M」頁碼文字裡的總張數 M，讀不到就回傳 null（代表面板結構跟預期不同，不走這條路）。 */
+    private fun findShareSheetTotalCount(root: AccessibilityNodeInfo): Int? {
+        var result: Int? = null
+        fun walk(node: AccessibilityNodeInfo?, depth: Int) {
+            if (node == null || result != null || depth > 20) return
+            val t = node.text?.toString()?.trim()
+            if (t != null) {
+                val m = Regex("^(\\d+)\\s*/\\s*(\\d+)$").find(t)
+                if (m != null) {
+                    result = m.groupValues[2].toIntOrNull()
+                    return
+                }
+            }
+            for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
+        }
+        walk(root, 0)
+        return result
+    }
+
+    /** 找出對應第 index 張圖片的容器節點：靠「index/total」頁碼文字節點的父層來定位（同一容器底下的兄弟關係）。 */
+    private fun findShareSheetItemContainer(root: AccessibilityNodeInfo, index: Int, total: Int): AccessibilityNodeInfo? {
+        var result: AccessibilityNodeInfo? = null
+        fun walk(node: AccessibilityNodeInfo?, depth: Int) {
+            if (node == null || result != null || depth > 20) return
+            val t = node.text?.toString()?.trim()
+            if (t == "$index/$total") {
+                result = node.parent
+                return
+            }
+            for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
+        }
+        walk(root, 0)
+        return result
+    }
+
+    /** 在圖片容器內找下載鈕：先找到下載圖示節點，再往上找第一個可點擊的父層（圖示本身通常不可點）。 */
+    private fun findDownloadButtonInContainer(container: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        var iconNode: AccessibilityNodeInfo? = null
+        fun walk(node: AccessibilityNodeInfo?, depth: Int) {
+            if (node == null || iconNode != null || depth > 10) return
+            if (node.viewIdResourceName?.endsWith("AN_ShareDrawer_DownloadPng_Img_1") == true) {
+                iconNode = node
+                return
+            }
+            for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
+        }
+        walk(container, 0)
+        var p = iconNode ?: return null
+        var depth = 0
+        while (depth < 6) {
+            if (p.isClickable) return p
+            p = p.parent ?: return null
+            depth++
+        }
+        return null
+    }
+
+    /** 找出輪播的 HorizontalScrollView 容器，供橫向滑動使用。 */
+    private fun findShareSheetScrollView(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        var result: AccessibilityNodeInfo? = null
+        fun walk(node: AccessibilityNodeInfo?, depth: Int) {
+            if (node == null || result != null || depth > 15) return
+            if (node.className == "android.widget.HorizontalScrollView") {
+                result = node
+                return
+            }
+            for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
+        }
+        walk(root, 0)
+        return result
+    }
+
+    /** 在指定範圍內由右往左滑一下，捲動輪播到下一批項目。 */
+    private fun swipeHorizontalLeft(bounds: Rect) {
+        val y = bounds.centerY().toFloat()
+        val startX = bounds.right - bounds.width() * 0.1f
+        val endX = bounds.left + bounds.width() * 0.1f
+        val path = Path().apply { moveTo(startX, y); lineTo(endX, y) }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, 400))
+            .build()
+        dispatchGesture(gesture, null, null)
+    }
+
+    /** 查詢相簿裡「指定時間之後」新增的最新一張圖片，回傳它的 content Uri（讀不到就回傳 null）。 */
+    private fun queryLatestImageUriAfter(afterTimeMs: Long): Uri? {
+        val collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        val projection = arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DATE_ADDED)
+        val selection = "${MediaStore.Images.Media.DATE_ADDED} >= ?"
+        // MediaStore 的 DATE_ADDED 是「秒」為單位，click 時間是毫秒，這裡要換算
+        val selectionArgs = arrayOf((afterTimeMs / 1000).toString())
+        val sortOrder = "${MediaStore.Images.Media.DATE_ADDED} DESC"
+        return try {
+            contentResolver.query(collection, projection, selection, selectionArgs, sortOrder)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID))
+                    ContentUris.withAppendedId(collection, id)
+                } else null
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** 等待相簿出現指定時間之後新增的圖片，最多等 DOWNLOAD_POLL_TIMEOUT_MS，逾時回傳 null。 */
+    private suspend fun waitForNewImageUri(afterTimeMs: Long): Uri? {
+        val start = System.currentTimeMillis()
+        delay(DOWNLOAD_AFTER_CLICK_INITIAL_DELAY_MS)
+        while (System.currentTimeMillis() - start < DOWNLOAD_POLL_TIMEOUT_MS) {
+            val uri = queryLatestImageUriAfter(afterTimeMs)
+            if (uri != null) return uri
+            delay(DOWNLOAD_POLL_INTERVAL_MS)
+        }
+        return null
+    }
+
+    private fun loadBitmapFromUri(uri: Uri): Bitmap? = try {
+        contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+    } catch (e: Exception) {
+        null
+    }
+
+    /**
+     * 透過分享面板的輪播縮圖下載鈕，逐張擷取乾淨原圖（取代截圖＋裁切＋遮蓋）。
+     * 沒有讀取相簿權限、或面板結構跟預期不同（找不到「N/M」頁碼、找不到下載鈕）就回傳 null，
+     * 由呼叫端自動退回原本的截圖版本，不影響既有流程穩定性。
+     */
+    private suspend fun captureGalleryImagesViaDownload(sheetRoot: AccessibilityNodeInfo): List<Bitmap>? {
+        if (!hasMediaReadPermission()) {
+            appendDebugLog("  → 下載式圖片擷取：沒有讀取相簿權限，跳過（改用截圖版本）")
+            return null
+        }
+        val total = findShareSheetTotalCount(sheetRoot)
+        if (total == null || total <= 0) {
+            appendDebugLog("  → 下載式圖片擷取：找不到分享面板的「N/M」頁碼，跳過（改用截圖版本）")
+            return null
+        }
+        appendDebugLog("  → 下載式圖片擷取：偵測到共 $total 張，開始逐張點下載鈕")
+        val scrollView = findShareSheetScrollView(sheetRoot)
+        val images = mutableListOf<Bitmap>()
+        for (index in 1..total) {
+            var container = findShareSheetItemContainer(rootInActiveWindow ?: sheetRoot, index, total)
+            var scrollAttempts = 0
+            while (container == null && scrollAttempts < total && scrollView != null) {
+                val svBounds = Rect()
+                scrollView.getBoundsInScreen(svBounds)
+                swipeHorizontalLeft(svBounds)
+                delay(DOWNLOAD_SCROLL_SETTLE_DELAY_MS)
+                container = findShareSheetItemContainer(rootInActiveWindow ?: sheetRoot, index, total)
+                scrollAttempts++
+            }
+            if (container == null) {
+                appendDebugLog("  → 下載式圖片擷取：第 $index 張滑動多次仍找不到容器，放棄這張")
+                continue
+            }
+            val downloadBtn = findDownloadButtonInContainer(container)
+            if (downloadBtn == null) {
+                appendDebugLog("  → 下載式圖片擷取：第 $index 張找不到下載鈕節點，放棄這張")
+                continue
+            }
+            val clickTime = System.currentTimeMillis()
+            downloadBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            val uri = waitForNewImageUri(clickTime)
+            if (uri == null) {
+                appendDebugLog("  → 下載式圖片擷取：第 $index 張點擊後逾時沒偵測到相簿新圖，放棄這張")
+                delay(DOWNLOAD_BETWEEN_IMAGES_DELAY_MS)
+                continue
+            }
+            val bmp = loadBitmapFromUri(uri)
+            if (bmp != null) {
+                images.add(bmp)
+            } else {
+                appendDebugLog("  → 下載式圖片擷取：第 $index 張讀取相簿檔案失敗，放棄這張")
+            }
+            delay(DOWNLOAD_BETWEEN_IMAGES_DELAY_MS)
+        }
+        appendDebugLog("  → 下載式圖片擷取完成：成功 ${images.size}/$total 張")
+        return images
     }
 
     /**

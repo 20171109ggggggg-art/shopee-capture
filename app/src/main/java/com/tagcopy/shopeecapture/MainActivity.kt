@@ -1,6 +1,8 @@
 package com.tagcopy.shopeecapture
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -26,6 +28,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.core.content.ContextCompat
 import java.io.File
 import org.json.JSONObject
 
@@ -50,6 +53,7 @@ fun RootScreen() {
     var accessibilityEnabled by remember { mutableStateOf(false) }
     var overlayGranted by remember { mutableStateOf(false) }
     var floatingServiceRunning by remember { mutableStateOf(false) }
+    var mediaPermissionGranted by remember { mutableStateOf(false) }
     var queueItems by remember { mutableStateOf(listOf<QueueItem>()) }
 
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -60,6 +64,13 @@ fun RootScreen() {
         overlayGranted = canDrawOverlays(context)
     }
 
+    // 用來要「讀取相簿權限」（分享面板下載鈕擷取原圖要用到，去 MediaStore 查剛存的檔案時需要這個權限）
+    val mediaPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        mediaPermissionGranted = granted
+    }
+
     // 從系統設定頁（開啟無障礙服務／懸浮視窗權限）切回這個畫面時，
     // 重新檢查一次狀態 —— 否則「前往設定」的完成勾勾不會更新，要重啟 App 才會抓到。
     val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
@@ -68,6 +79,7 @@ fun RootScreen() {
             if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
                 accessibilityEnabled = isAccessibilityServiceEnabled(context)
                 overlayGranted = canDrawOverlays(context)
+                mediaPermissionGranted = hasMediaPermission(context)
                 queueItems = loadQueueItems()
             }
         }
@@ -78,6 +90,7 @@ fun RootScreen() {
     LaunchedEffect(Unit) {
         accessibilityEnabled = isAccessibilityServiceEnabled(context)
         overlayGranted = canDrawOverlays(context)
+        mediaPermissionGranted = hasMediaPermission(context)
         queueItems = loadQueueItems()
     }
 
@@ -146,6 +159,24 @@ fun RootScreen() {
                 }
             },
             enabled = accessibilityEnabled && overlayGranted
+        )
+
+        Spacer(Modifier.height(14.dp))
+
+        SetupStepCard(
+            stepNumber = "4",
+            title = "讀取相簿權限",
+            description = "分享面板下載鈕擷取原圖，需要讀取相簿才能抓到剛存下的圖片檔案。",
+            done = mediaPermissionGranted,
+            buttonText = "授予權限",
+            onClick = {
+                val permission = if (Build.VERSION.SDK_INT >= 33) {
+                    Manifest.permission.READ_MEDIA_IMAGES
+                } else {
+                    Manifest.permission.READ_EXTERNAL_STORAGE
+                }
+                mediaPermissionLauncher.launch(permission)
+            }
         )
 
         Spacer(Modifier.height(14.dp))
@@ -539,4 +570,13 @@ private fun canDrawOverlays(context: android.content.Context): Boolean {
     } else {
         true
     }
+}
+
+private fun hasMediaPermission(context: android.content.Context): Boolean {
+    val permission = if (Build.VERSION.SDK_INT >= 33) {
+        Manifest.permission.READ_MEDIA_IMAGES
+    } else {
+        Manifest.permission.READ_EXTERNAL_STORAGE
+    }
+    return ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
 }
