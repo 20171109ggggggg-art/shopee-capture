@@ -877,43 +877,52 @@ class ShopeeAccessibilityService : AccessibilityService() {
             appendDebugLog("  → 圖片輪播擷取：找不到輪播範圍（沒偵測到「X/N」頁碼），跳過")
             return emptyList()
         }
-        val total = readCarouselTotal(root).coerceIn(1, 20) // 上限 20 張，避免極端情況跑太久
-        appendDebugLog("  → 圖片輪播擷取：偵測到範圍 $bounds，共 $total 張，開始逐張截圖")
-        val images = mutableListOf<Bitmap>()
-        var timeoutCount = 0
-        val overallDeadline = System.currentTimeMillis() + 40000 // 整體時間上限，改成內部自己控管，逾時就跳出迴圈回傳「已經抓到的部分」，不會像外層 withTimeoutOrNull 那樣把整批結果都作廢（滑動速度放慢一倍後，上限同步拉長，避免20張圖片還沒抓完就被打斷）
+        // 截圖前先隱藏懸浮視窗（擷取／自動／偵測按鈕），避免這幾顆按鈕被一起拍進商品圖片裡。
+        // 用 try-finally 確保萬一擷取過程中發生例外，懸浮視窗還是一定會被恢復，
+        // 不會卡在隱藏狀態讓使用者以為 App 當掉了。
+        FloatingButtonService.hideForScreenshot()
+        delay(200) // 給畫面一點時間重繪，確保懸浮視窗真的消失了才開始截圖，避免第一張還是抓到隱藏前的殘影
+        try {
+            val total = readCarouselTotal(root).coerceIn(1, 20) // 上限 20 張，避免極端情況跑太久
+            appendDebugLog("  → 圖片輪播擷取：偵測到範圍 $bounds，共 $total 張，開始逐張截圖")
+            val images = mutableListOf<Bitmap>()
+            var timeoutCount = 0
+            val overallDeadline = System.currentTimeMillis() + 40000 // 整體時間上限，改成內部自己控管，逾時就跳出迴圈回傳「已經抓到的部分」，不會像外層 withTimeoutOrNull 那樣把整批結果都作廢（滑動速度放慢一倍後，上限同步拉長，避免20張圖片還沒抓完就被打斷）
 
-        for (index in 1..total) {
-            if (System.currentTimeMillis() > overallDeadline) {
-                appendDebugLog("  → 圖片輪播擷取：已達整體時間上限，提前結束（已成功 ${images.size} 張，剩餘 ${total - index + 1} 張放棄）")
-                break
+            for (index in 1..total) {
+                if (System.currentTimeMillis() > overallDeadline) {
+                    appendDebugLog("  → 圖片輪播擷取：已達整體時間上限，提前結束（已成功 ${images.size} 張，剩餘 ${total - index + 1} 張放棄）")
+                    break
+                }
+                if (index > 1) {
+                    swipeCarouselNext(bounds)
+                    waitForCarouselIndex(index, 2400)
+                    delay(400) // 滑動動畫緩衝（使用者反映抓取速度太快，整體放慢一倍）
+                }
+                // 加上逾時保護：截圖請求萬一卡住（例如系統沒回應），最多等 4 秒就放棄這張，
+                // 不會讓整個自動擷取流程被卡死，之前就是因為沒有這層保護才整個凍結。
+                val full = withTimeoutOrNull(4000) { captureScreenshotSuspend() }
+                if (full == null) {
+                    timeoutCount++
+                    appendDebugLog("  → 第 $index 張截圖逾時或失敗，跳過")
+                    continue
+                }
+                val cropped = try {
+                    val left = bounds.left.coerceIn(0, full.width)
+                    val top = bounds.top.coerceIn(0, full.height)
+                    val width = bounds.width().coerceAtMost(full.width - left)
+                    val height = bounds.height().coerceAtMost(full.height - top)
+                    if (width > 0 && height > 0) Bitmap.createBitmap(full, left, top, width, height) else full
+                } catch (e: Exception) {
+                    full
+                }
+                images.add(cropped)
             }
-            if (index > 1) {
-                swipeCarouselNext(bounds)
-                waitForCarouselIndex(index, 2400)
-                delay(400) // 滑動動畫緩衝（使用者反映抓取速度太快，整體放慢一倍）
-            }
-            // 加上逾時保護：截圖請求萬一卡住（例如系統沒回應），最多等 4 秒就放棄這張，
-            // 不會讓整個自動擷取流程被卡死，之前就是因為沒有這層保護才整個凍結。
-            val full = withTimeoutOrNull(4000) { captureScreenshotSuspend() }
-            if (full == null) {
-                timeoutCount++
-                appendDebugLog("  → 第 $index 張截圖逾時或失敗，跳過")
-                continue
-            }
-            val cropped = try {
-                val left = bounds.left.coerceIn(0, full.width)
-                val top = bounds.top.coerceIn(0, full.height)
-                val width = bounds.width().coerceAtMost(full.width - left)
-                val height = bounds.height().coerceAtMost(full.height - top)
-                if (width > 0 && height > 0) Bitmap.createBitmap(full, left, top, width, height) else full
-            } catch (e: Exception) {
-                full
-            }
-            images.add(cropped)
+            appendDebugLog("  → 圖片輪播擷取完成：成功 ${images.size}/$total 張（逾時或失敗 $timeoutCount 張）")
+            return images
+        } finally {
+            FloatingButtonService.restoreAfterScreenshot()
         }
-        appendDebugLog("  → 圖片輪播擷取完成：成功 ${images.size}/$total 張（逾時或失敗 $timeoutCount 張）")
-        return images
     }
 
     /**
