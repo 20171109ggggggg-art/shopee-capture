@@ -909,6 +909,49 @@ class ShopeeAccessibilityService : AccessibilityService() {
         return results
     }
 
+    /**
+     * 幫遮蓋色塊取樣周圍背景顏色，取代單純塗黑，讓色塊融入商品照片背景，不會顯得突兀。
+     * 取樣方向優先選「往圖片中心方向」的那一側（例如色塊在左邊角落，就往右側取樣），
+     * 因為商品照片背景通常延伸到中心附近，比色塊外側（貼近圖片邊緣）更可能還是純背景色，
+     * 不會不小心取樣到商品本體的顏色。取不到樣本（極端情況）才退回白色。
+     */
+    private fun sampleFillColor(bmp: Bitmap, rect: Rect): Int {
+        val margin = 6
+        val sampleSize = 14
+        data class Sample(val r: Long, val g: Long, val b: Long, val count: Long)
+        val samples = mutableListOf<Sample>()
+        fun sampleRegion(x0: Int, y0: Int, x1: Int, y1: Int) {
+            var rSum = 0L; var gSum = 0L; var bSum = 0L; var count = 0L
+            for (y in y0 until y1) {
+                for (x in x0 until x1) {
+                    if (x in 0 until bmp.width && y in 0 until bmp.height) {
+                        val c = bmp.getPixel(x, y)
+                        rSum += Color.red(c); gSum += Color.green(c); bSum += Color.blue(c)
+                        count++
+                    }
+                }
+            }
+            if (count > 0) samples.add(Sample(rSum, gSum, bSum, count))
+        }
+        val cx = bmp.width / 2
+        val cy = bmp.height / 2
+        if (rect.centerX() < cx) {
+            sampleRegion(rect.right + margin, rect.top, rect.right + margin + sampleSize, rect.bottom)
+        } else {
+            sampleRegion(rect.left - margin - sampleSize, rect.top, rect.left - margin, rect.bottom)
+        }
+        if (rect.centerY() < cy) {
+            sampleRegion(rect.left, rect.bottom + margin, rect.right, rect.bottom + margin + sampleSize)
+        } else {
+            sampleRegion(rect.left, rect.top - margin - sampleSize, rect.right, rect.top - margin)
+        }
+        if (samples.isEmpty()) return Color.WHITE
+        var rSum = 0L; var gSum = 0L; var bSum = 0L; var total = 0L
+        for (s in samples) { rSum += s.r; gSum += s.g; bSum += s.b; total += s.count }
+        if (total == 0L) return Color.WHITE
+        return Color.rgb((rSum / total).toInt(), (gSum / total).toInt(), (bSum / total).toInt())
+    }
+
     /** 讀取目前畫面上「X/N」頁碼指示文字裡的總張數 N，讀不到就回傳 1（當作只有一張圖）。 */
     private fun readCarouselTotal(root: AccessibilityNodeInfo): Int {
         val texts = mutableListOf<String>()
@@ -992,13 +1035,15 @@ class ShopeeAccessibilityService : AccessibilityService() {
                         } else {
                             val mutable = bmp.copy(Bitmap.Config.ARGB_8888, true)
                             val canvas = Canvas(mutable)
-                            val paint = Paint().apply { color = Color.BLACK }
+                            val paint = Paint()
                             for (ob in overlays) {
                                 val rLeft = (ob.left - left).coerceIn(0, mutable.width)
                                 val rTop = (ob.top - top).coerceIn(0, mutable.height)
                                 val rRight = (ob.right - left).coerceIn(0, mutable.width)
                                 val rBottom = (ob.bottom - top).coerceIn(0, mutable.height)
                                 if (rRight > rLeft && rBottom > rTop) {
+                                    val rect = Rect(rLeft, rTop, rRight, rBottom)
+                                    paint.color = sampleFillColor(mutable, rect)
                                     canvas.drawRect(rLeft.toFloat(), rTop.toFloat(), rRight.toFloat(), rBottom.toFloat(), paint)
                                 }
                             }
