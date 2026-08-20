@@ -342,6 +342,8 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
 
         val sheetRoot = rootInActiveWindow
+        // 【診斷用】把分享面板完整節點樹印進 log，找出輪播縮圖下載鈕的 class/desc/id/座標
+        if (sheetRoot != null) dumpShareSheetFullTreeToLog(sheetRoot)
         val copyLinkNode = sheetRoot?.let { findNodeByTexts(it, matchRules.copyLinkButtonTexts) }
         if (copyLinkNode == null) {
             onEvent(AutoCaptureEvent.Log("找不到「複製連結」按鈕，跳過此商品"))
@@ -648,6 +650,31 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (lines.isEmpty()) {
             appendDebugLog("     （完全沒有找到任何有文字/描述的節點，畫面可能還沒載入完成或讀取範圍有問題）")
         }
+        lines.forEach { appendDebugLog("     $it") }
+    }
+
+    /**
+     * 【診斷用，一次性】列出分享面板內所有節點的 class、bounds、clickable、text/desc、resource-id，
+     * 用來確認使用者手動測試發現的「輪播縮圖下載鈕」在無障礙服務眼中長什麼樣子
+     * （class name／content-description／resource-id／座標範圍），才能準確地找到並自動點擊它。
+     * 不限制要有文字/描述才列出（既有的 dumpClickableNodesToLog 會漏掉純圖示按鈕），
+     * 且额外印出 bounds 方便比對畫面上的實際位置。
+     */
+    private fun dumpShareSheetFullTreeToLog(root: AccessibilityNodeInfo) {
+        val lines = mutableListOf<String>()
+        fun walk(node: AccessibilityNodeInfo?, depth: Int) {
+            if (node == null || depth > 25 || lines.size > 150) return
+            val text = node.text?.toString()?.trim()
+            val desc = node.contentDescription?.toString()?.trim()
+            val id = node.viewIdResourceName
+            val cls = node.className?.toString()
+            val b = Rect()
+            node.getBoundsInScreen(b)
+            lines.add("depth=$depth class=${cls ?: "-"} text=${text ?: "-"} desc=${desc ?: "-"} id=${id ?: "-"} clickable=${node.isClickable} bounds=$b")
+            for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
+        }
+        walk(root, 0)
+        appendDebugLog("  → 【診斷】分享面板完整節點樹（前 ${lines.size} 個）：")
         lines.forEach { appendDebugLog("     $it") }
     }
 
