@@ -1197,13 +1197,14 @@ class ShopeeAccessibilityService : AccessibilityService() {
             val downloadBtn = run {
                 // 找到容器後，下載鈕圖示可能還在非同步渲染中（尤其是滑到最尾端那一張），
                 // 立刻找常常撲空，改成重試幾次、每次都重新抓最新容器再找，給渲染多一點時間。
+                // 注意：這裡改用區域變數 searchContainer，不去動外層的 container，
+                // 避免同一個 closure 裡「讀取又重新賦值」外層變數導致編譯器 smart-cast 失敗。
                 var btn: AccessibilityNodeInfo? = findDownloadButtonInContainer(container)
                 var retry = 0
                 while (btn == null && retry < 3) {
                     delay(DOWNLOAD_SCROLL_SETTLE_DELAY_MS)
                     val freshContainer = findShareSheetItemContainer(rootInActiveWindow ?: sheetRoot, index, total)
                     if (freshContainer != null) {
-                        container = freshContainer
                         btn = findDownloadButtonInContainer(freshContainer)
                     }
                     retry++
