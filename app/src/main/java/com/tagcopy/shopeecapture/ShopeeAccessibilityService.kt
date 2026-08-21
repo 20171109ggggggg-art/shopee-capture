@@ -1064,12 +1064,22 @@ class ShopeeAccessibilityService : AccessibilityService() {
      */
     private fun findShareSheetItemContainer(root: AccessibilityNodeInfo, index: Int, total: Int): AccessibilityNodeInfo? {
         var result: AccessibilityNodeInfo? = null
+        // 這裡改用跟 findShareSheetTotalCount 一致的寬鬆正規表示式比對「index/total」頁碼文字，
+        // 不再用完全相等（t == "$index/$total"）比對。根因：蝦皮App畫面若把頁碼格式從「1/15」
+        // 改成「1 / 15」（斜線前後多了空格），完全相等比對會永遠比對失敗，但總張數判斷那邊本來就
+        // 用寬鬆正規表示式抓，才會出現「總張數偵測成功、但每一張都找不到容器」這種矛盾現象。
         fun walk(node: AccessibilityNodeInfo?, depth: Int) {
             if (node == null || result != null || depth > 20) return
             val t = node.text?.toString()?.trim()
-            if (t == "$index/$total") {
-                result = node.parent
-                return
+            if (t != null) {
+                val m = Regex("^(\\d+)\\s*/\\s*(\\d+)$").find(t)
+                if (m != null &&
+                    m.groupValues[1].toIntOrNull() == index &&
+                    m.groupValues[2].toIntOrNull() == total
+                ) {
+                    result = node.parent
+                    return
+                }
             }
             for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
         }
@@ -1230,6 +1240,23 @@ class ShopeeAccessibilityService : AccessibilityService() {
             }
             if (container == null) {
                 appendDebugLog("  → 下載式圖片擷取：第 $index 張滑動多次仍找不到容器，放棄這張（已嘗試滑動 $scrollAttempts 次）")
+                // 【診斷用】萬一頁碼正規表示式修正後這裡還會發生，把分享面板scrollView底下的
+                // 文字節點都印出來，直接看實際頁碼文字長什麼樣子，不用再靠螢幕截圖來回確認
+                val sv = currentScrollView()
+                if (sv != null) {
+                    val lines = mutableListOf<String>()
+                    fun walk(node: AccessibilityNodeInfo?, depth: Int) {
+                        if (node == null || depth > 10 || lines.size > 30) return
+                        val text = node.text?.toString()?.trim()
+                        if (!text.isNullOrEmpty()) {
+                            lines.add("depth=$depth text=\"$text\" id=${node.viewIdResourceName ?: "-"}")
+                        }
+                        for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
+                    }
+                    walk(sv, 0)
+                    appendDebugLog("     【診斷】分享面板scrollView底下的文字節點（${lines.size} 個）：")
+                    lines.forEach { appendDebugLog("        $it") }
+                }
                 continue
             }
             val downloadBtn = run {
