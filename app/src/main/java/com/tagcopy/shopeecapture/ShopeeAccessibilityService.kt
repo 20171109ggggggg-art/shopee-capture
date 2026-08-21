@@ -1201,12 +1201,19 @@ class ShopeeAccessibilityService : AccessibilityService() {
             appendDebugLog("  → 下載式圖片擷取：沒有讀取相簿權限，跳過（改用截圖版本）")
             return null
         }
-        val total = findShareSheetTotalCount(sheetRoot)?.coerceAtMost(15)
-        if (total == null || total <= 0) {
+        // 關鍵修正：total 有兩種用途，之前混用同一個變數導致 bug——
+        // (1) 跟畫面上「X/N」頁碼文字比對時，N 必須是「真實總張數」（例如商品實際有25張，
+        //     畫面就會顯示 1/25、2/25...25/25），這個數字絕對不能被砍掉，砍了就永遠比對不上真實畫面文字；
+        // (2) 「實際要下載幾張」這件事才需要上限（避免商品圖片太多跑太久），這個才是可以砍到15的地方。
+        // 先前把這兩件事混在同一個變數裡（total = 真實總數.coerceAtMost(15)），
+        // 導致比對分母被錯砍成15，但畫面文字分母永遠是真實總數（例如25），兩者對不上、每張都找不到容器。
+        val rawTotal = findShareSheetTotalCount(sheetRoot)
+        if (rawTotal == null || rawTotal <= 0) {
             appendDebugLog("  → 下載式圖片擷取：找不到分享面板的「N/M」頁碼，跳過（改用截圖版本）")
             return null
         }
-        appendDebugLog("  → 下載式圖片擷取：偵測到共 $total 張，開始逐張點下載鈕")
+        val downloadCount = rawTotal.coerceAtMost(10)
+        appendDebugLog("  → 下載式圖片擷取：偵測到共 $rawTotal 張（實際下載前 $downloadCount 張），開始逐張點下載鈕")
         val screenWidth = resources.displayMetrics.widthPixels
         val images = mutableListOf<Bitmap>()
         // 每次都重新抓「當下畫面」再重找 scrollView，避免沿用舊 root/舊節點引用（可能已經過期）。
@@ -1215,9 +1222,9 @@ class ShopeeAccessibilityService : AccessibilityService() {
         fun currentScrollView(): AccessibilityNodeInfo? =
             findShareSheetScrollView(rootInActiveWindow ?: sheetRoot)
         fun currentItemContainer(idx: Int): AccessibilityNodeInfo? =
-            currentScrollView()?.let { findShareSheetItemContainer(it, idx, total) }
+            currentScrollView()?.let { findShareSheetItemContainer(it, idx, rawTotal) }
 
-        for (index in 1..total) {
+        for (index in 1..downloadCount) {
             var container = currentItemContainer(index)
             var scrollAttempts = 0
             // 抓到容器後，不代表整個容器已經完全滑進畫面可視範圍——之前誤抓到背景頁全螢幕節點時，
@@ -1227,7 +1234,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 node.getBoundsInScreen(b)
                 return b.left >= 0 && b.right <= screenWidth
             }
-            while ((container == null || !isFullyVisible(container)) && scrollAttempts < total + 3) {
+            while ((container == null || !isFullyVisible(container)) && scrollAttempts < downloadCount + 3) {
                 val sv = currentScrollView() ?: break
                 val svBounds = Rect()
                 sv.getBoundsInScreen(svBounds)
@@ -1314,7 +1321,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             }
             delay(DOWNLOAD_BETWEEN_IMAGES_DELAY_MS)
         }
-        appendDebugLog("  → 下載式圖片擷取完成：成功 ${images.size}/$total 張")
+        appendDebugLog("  → 下載式圖片擷取完成：成功 ${images.size}/$downloadCount 張")
         return images
     }
 
@@ -1340,7 +1347,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         FloatingButtonService.hideForScreenshot()
         delay(200) // 給畫面一點時間重繪，確保懸浮視窗真的消失了才開始截圖，避免第一張還是抓到隱藏前的殘影
         try {
-            val total = readCarouselTotal(root).coerceIn(1, 15) // 上限 15 張，避免極端情況跑太久
+            val total = readCarouselTotal(root).coerceIn(1, 10) // 上限 10 張，跟 make_video.py 的 MAX_IMAGES_IN_VIDEO 一致，多抓的用不到
             appendDebugLog("  → 圖片輪播擷取：偵測到範圍 $bounds，共 $total 張，開始逐張截圖")
             val images = mutableListOf<Bitmap>()
             var timeoutCount = 0
