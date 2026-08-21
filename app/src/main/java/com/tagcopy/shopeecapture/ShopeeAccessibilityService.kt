@@ -264,7 +264,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             // 按鈕出現，代表頁面骨架已經載入，但標題、價格等內容可能還在非同步渲染中，早一步讀取
             // 剛好只抓到查看更多／聊聊／收藏／立即推廣這幾個固定不變的按鈕。稍等一下重新抓取最新畫面
             // （不能沿用舊的 detailRoot，要重新拿 rootInActiveWindow 才能看到剛渲染完成的內容）再試一次。
-            delay(800)
+            delay(1050)
             val freshRoot = rootInActiveWindow
             if (freshRoot != null) {
                 productName = findLikelyProductNameText(freshRoot)
@@ -279,7 +279,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (isProductNameAlreadyCaptured(productName)) {
             appendDebugLog("商品：$productName | 結果=跳過（重複商品，先前已擷取過）")
             onEvent(AutoCaptureEvent.Log("○ 已擷取過此商品，略過：$productName"))
-            delay(Random.nextLong(3000, 4001))
+            delay(Random.nextLong(3900, 5201))
             performBack()
             delay(randomDelay(config))
             return ProcessResult.FILTERED
@@ -298,7 +298,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         run {
             val currentRoot = rootInActiveWindow
             if (currentRoot != null) {
-                delay(2000)
+                delay(2600)
                 val recheck = extractProductMetrics(currentRoot)
                 if (recheck != metrics) {
                     appendDebugLog("  → 數值確認：分潤率/價格/已售出/已推廣者第一次讀到的跟 2 秒後不一致，改用較晚讀到的結果（原=$metrics，改=$recheck）")
@@ -387,19 +387,19 @@ class ShopeeAccessibilityService : AccessibilityService() {
             // 找不到時先不急著判定失敗：剛才讀取連結時可能觸發了剪貼簿焦點橋接 Activity，
             // 畫面焦點短暫切換過去又切回來，這裡的 rootInActiveWindow 有時會抓到過渡狀態
             // （半空的畫面），稍等一下重新抓一次再找。
-            delay(400)
+            delay(520)
             copyInfoRoot = rootInActiveWindow
             copyInfoNode = copyInfoRoot?.let { findNodeByTexts(it, matchRules.copyInfoButtonTexts) }
         }
         if (copyInfoNode != null) {
             copyInfoNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            delay(300) // 給點擊一點反應時間，避免立刻讀到「複製連結」殘留的舊值
+            delay(400) // 給點擊一點反應時間，避免立刻讀到「複製連結」殘留的舊值
             caption = readClipboardWithRetry()
             if (!caption.isNullOrBlank() && caption == link) {
                 // 讀到的內容跟連結一模一樣：代表剪貼簿根本還沒被「複製資訊」寫入新內容，是殘留的舊值，不是真正的文案。
                 appendDebugLog("  → 複製資訊：讀到的內容跟連結完全相同，判定為剪貼簿還沒更新的舊值，重試一次")
                 copyInfoNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                delay(600)
+                delay(800)
                 val retryCaption = readClipboardWithRetry()
                 caption = if (!retryCaption.isNullOrBlank() && retryCaption != link) retryCaption else null
             }
@@ -732,7 +732,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             val metrics = extractProductMetrics(root)
             last = metrics
             if (hasRequiredFields(metrics, filter)) return metrics
-            delay(200)
+            delay(260)
         }
         return last
     }
@@ -805,7 +805,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, query)
         }
         searchBox.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, bundle)
-        delay(400)
+        delay(520)
 
         // 送出搜尋：優先用編輯器的「搜尋」動作（Android 11+），找不到就退而求其次點擊搜尋框本身
         val submitted = searchBox.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
@@ -813,7 +813,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (!submitted) {
             searchBox.performAction(AccessibilityNodeInfo.ACTION_CLICK)
         }
-        delay(1500)
+        delay(2000)
 
         val afterRoot = rootInActiveWindow
         if (afterRoot == null) {
@@ -1015,7 +1015,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         while (System.currentTimeMillis() - start < timeoutMs) {
             val root = rootInActiveWindow
             if (root != null && root.findAccessibilityNodeInfosByText("$index/").isNotEmpty()) return
-            delay(120)
+            delay(160)
         }
     }
 
@@ -1023,11 +1023,11 @@ class ShopeeAccessibilityService : AccessibilityService() {
     // 使用者手動測試發現：分享面板的圖片輪播縮圖上有下載鈕，點了會把完全乾淨（無浮水印、無介面元素）
     // 的原始商品圖存進手機相簿，畫質也比截圖再裁切好。這裡把這個操作自動化。
     // 時間參數依需求「間隔再加50%」，括號內標註原始基準值。
-    private val DOWNLOAD_AFTER_CLICK_INITIAL_DELAY_MS = 1350L // 原900ms
-    private val DOWNLOAD_POLL_INTERVAL_MS = 450L // 原300ms
+    private val DOWNLOAD_AFTER_CLICK_INITIAL_DELAY_MS = 1750L // 原900ms，再放慢30%
+    private val DOWNLOAD_POLL_INTERVAL_MS = 600L // 原300ms，再放慢30%
     private val DOWNLOAD_POLL_TIMEOUT_MS = 4500L // 原3000ms
-    private val DOWNLOAD_BETWEEN_IMAGES_DELAY_MS = 750L // 原500ms
-    private val DOWNLOAD_SCROLL_SETTLE_DELAY_MS = 600L // 原400ms
+    private val DOWNLOAD_BETWEEN_IMAGES_DELAY_MS = 1000L // 原500ms，再放慢30%
+    private val DOWNLOAD_SCROLL_SETTLE_DELAY_MS = 800L // 原400ms，再放慢30%
 
     /** 檢查有沒有讀取相簿的權限（Android 13+ 用 READ_MEDIA_IMAGES，以下用 READ_EXTERNAL_STORAGE）。 */
     private fun hasMediaReadPermission(): Boolean {
@@ -1345,7 +1345,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         // 用 try-finally 確保萬一擷取過程中發生例外，懸浮視窗還是一定會被恢復，
         // 不會卡在隱藏狀態讓使用者以為 App 當掉了。
         FloatingButtonService.hideForScreenshot()
-        delay(200) // 給畫面一點時間重繪，確保懸浮視窗真的消失了才開始截圖，避免第一張還是抓到隱藏前的殘影
+        delay(260) // 給畫面一點時間重繪，確保懸浮視窗真的消失了才開始截圖，避免第一張還是抓到隱藏前的殘影
         try {
             val total = readCarouselTotal(root).coerceIn(1, 10) // 上限 10 張，跟 make_video.py 的 MAX_IMAGES_IN_VIDEO 一致，多抓的用不到
             appendDebugLog("  → 圖片輪播擷取：偵測到範圍 $bounds，共 $total 張，開始逐張截圖")
@@ -1361,7 +1361,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 if (index > 1) {
                     swipeCarouselNext(bounds)
                     waitForCarouselIndex(index, 2400)
-                    delay(400) // 滑動動畫緩衝（使用者反映抓取速度太快，整體放慢一倍）
+                    delay(520) // 滑動動畫緩衝（使用者反映抓取速度太快，整體放慢一倍）
                 }
                 // 加上逾時保護：截圖請求萬一卡住（例如系統沒回應），最多等 4 秒就放棄這張，
                 // 不會讓整個自動擷取流程被卡死，之前就是因為沒有這層保護才整個凍結。
@@ -1425,10 +1425,10 @@ class ShopeeAccessibilityService : AccessibilityService() {
         while (System.currentTimeMillis() - start < timeoutMs) {
             val root = rootInActiveWindow
             if (root != null && findNodeByDescriptors(root, matchRules.shareButtonDescriptors) != null) {
-                delay(250) // 分享按鈕出現後，分潤率／價格等文字通常緊接著渲染完成，多留一點緩衝
+                delay(330) // 分享按鈕出現後，分潤率／價格等文字通常緊接著渲染完成，多留一點緩衝
                 return rootInActiveWindow
             }
-            delay(150)
+            delay(200)
         }
         return rootInActiveWindow
     }
@@ -1442,7 +1442,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
                     if (root.findAccessibilityNodeInfosByText(t).isNotEmpty()) return true
                 }
             }
-            delay(150)
+            delay(200)
         }
         return false
     }
@@ -1690,12 +1690,12 @@ class ShopeeAccessibilityService : AccessibilityService() {
     private var lastClipboardError: String? = null
 
     /** 剪貼簿有時候不是點擊當下就馬上寫入完成，這裡輪詢重試最多 1.5 秒，取代單次固定延遲後讀取。 */
-    private suspend fun readClipboardWithRetry(timeoutMs: Long = 1500): String? {
+    private suspend fun readClipboardWithRetry(timeoutMs: Long = 1950): String? {
         val start = System.currentTimeMillis()
         while (System.currentTimeMillis() - start < timeoutMs) {
             val text = readClipboard()
             if (!text.isNullOrBlank()) return text
-            delay(150)
+            delay(200)
         }
         var finalResult = readClipboard()
         if (finalResult.isNullOrBlank()) {
@@ -1742,8 +1742,8 @@ class ShopeeAccessibilityService : AccessibilityService() {
             }
             startActivity(intent)
             val start = System.currentTimeMillis()
-            while (System.currentTimeMillis() - start < 1500 && !ClipboardBridgeActivity.resultReady) {
-                delay(50)
+            while (System.currentTimeMillis() - start < 1950 && !ClipboardBridgeActivity.resultReady) {
+                delay(65)
             }
             ClipboardBridgeActivity.pendingClipboardResult
         } catch (e: Exception) {
