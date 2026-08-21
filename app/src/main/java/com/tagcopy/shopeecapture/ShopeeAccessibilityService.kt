@@ -751,6 +751,17 @@ class ShopeeAccessibilityService : AccessibilityService() {
     /** 讀取目前畫面所屬 App 的套件名稱，用來確認無障礙服務有沒有正確監控到目標 App。 */
     fun getCurrentPackageName(): String? = rootInActiveWindow?.packageName?.toString()
 
+    /**
+     * 依目前畫面的套件名稱判斷地區，寫進meta.json的region欄位。
+     * 蝦皮菲律賓套件名稱慣例格式是 com.shopee.ph（跟台灣 com.shopee.tw 對應），
+     * 目前App實際只操作過台灣蝦皮，這裡先做好判斷邏輯備用，
+     * 判斷不出來就預設TW，跟Python端make_video.py的load_region()預設值保持一致。
+     */
+    private fun currentRegionFromPackage(): String {
+        val pkg = getCurrentPackageName() ?: return "TW"
+        return if (pkg.contains(".ph", ignoreCase = true)) "PH" else "TW"
+    }
+
     /** 判斷目前畫面是不是蝦皮聯盟合作 App 的首頁（成效表現／熱門賣場等），用來偵測返回鍵是否跳過頭。 */
     private fun looksLikeShopeeHomeScreen(root: AccessibilityNodeInfo): Boolean {
         val texts = mutableListOf<String>()
@@ -1859,6 +1870,18 @@ class ShopeeAccessibilityService : AccessibilityService() {
             put("promoterCount", metrics?.promoterCount ?: org.json.JSONObject.NULL)
             put("imageCount", bitmaps.size)
             put("capturedAt", System.currentTimeMillis())
+            // 地區判斷：目前只支援台灣蝦皮(com.shopee.tw)，菲律賓套件名稱慣例格式為 com.shopee.ph，
+            // 這裡先做好判斷邏輯，之後真的要支援菲律賓時不用回頭改資料結構。
+            // 判斷不出來（例如套件名稱讀不到）就預設TW，跟Python端make_video.py的load_region()預設值一致。
+            put("region", currentRegionFromPackage())
+            // 這兩個狀態欄位由擷取器初始化成「尚未完成」，實際完成時間由後續流程回寫：
+            // videoGeneratedAt 由 make_video.py 生成影片成功後回寫時間戳記；
+            // shopeePosted 由未來的上架自動化流程在成功上架後改成 true。
+            // 上架自動化之後可以直接掃這個資料夾底下所有meta.json，找
+            // videoGeneratedAt有值但shopeePosted還是false的，就是待上架清單，
+            // 不用另外維護一份清單、不用複製移動影片檔案。
+            put("videoGeneratedAt", org.json.JSONObject.NULL)
+            put("shopeePosted", false)
         }
         metaFile.writeText(metaJson.toString())
 
