@@ -1325,7 +1325,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             }
 
             if (successCount < maxCount) {
-                delay(Random.nextLong(2000, 4000))
+                delay(Random.nextLong(6000, 10000))
             }
         }
 
@@ -1360,6 +1360,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (!waitForAnyText(listOf("從匯入連結新增"), 3000)) {
             appendDebugLog("  → 等不到「從匯入連結新增」選單"); return false
         }
+        delay(800)
         val importMenuNode = findNodeByTexts(rootInActiveWindow ?: return false, listOf("從匯入連結新增"))
         if (importMenuNode == null || !clickNodeBestEffort(importMenuNode)) {
             appendDebugLog("  → 點擊「從匯入連結新增」失敗"); return false
@@ -1369,7 +1370,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (!waitForAnyText(listOf("商品連結"), 3000)) {
             appendDebugLog("  → 等不到「商品連結」輸入畫面"); return false
         }
-        delay(400)
+        delay(800)
         root = rootInActiveWindow ?: return false
         val linkInput = findSearchBoxNode(root)
         if (linkInput == null) {
@@ -1379,7 +1380,18 @@ class ShopeeAccessibilityService : AccessibilityService() {
             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, candidate.promoLink)
         }
         linkInput.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, linkBundle)
-        delay(500)
+        delay(800)
+        // 填完文字後鍵盤還開著、輸入框還focus著，「新增至按讚好物」按鈕不會被觸發／可能被鍵盤蓋住，
+        // 要主動清除焦點+收起鍵盤，模擬使用者「點輸入框外面一下」的動作，畫面才會切到確認狀態。
+        linkInput.performAction(AccessibilityNodeInfo.ACTION_CLEAR_FOCUS)
+        delay(300)
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
+        imm?.hideSoftInputFromWindow(null, 0)
+        delay(700)
+        // 保險再點一次畫面上方的「商品連結」標籤文字，確保焦點確實離開輸入框
+        root = rootInActiveWindow ?: return false
+        findNodeByTexts(root, listOf("商品連結"))?.let { clickNodeBestEffort(it) }
+        delay(700)
 
         // 3. 點「新增至按讚好物」
         root = rootInActiveWindow ?: return false
@@ -1387,19 +1399,19 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (addToListButton == null || !clickNodeBestEffort(addToListButton)) {
             appendDebugLog("  → 找不到或點擊「新增至按讚好物」失敗"); return false
         }
-        delay(1500)
+        delay(2500)
 
         // 4. 回到清單，勾選第一筆（排序：最新，剛新增的會排在最上面）
         if (!waitForAnyText(listOf("分潤按讚好物"), 4000)) {
             appendDebugLog("  → 新增連結後等不到回到清單畫面"); return false
         }
-        delay(500)
+        delay(1200)
         root = rootInActiveWindow ?: return false
         val firstCheckbox = findFirstNodeById(root, "AN_Checkbox_CheckedIconUnCheckIcon_Img")
         if (firstCheckbox == null || !clickNodeBestEffort(firstCheckbox)) {
             appendDebugLog("  → 找不到或點擊清單第一筆的勾選框失敗"); return false
         }
-        delay(500)
+        delay(1200)
 
         // 5. 點「分享」
         root = rootInActiveWindow ?: return false
@@ -1427,9 +1439,9 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
 
         // 7. 趁畫面切換的空檔，把影片登記進媒體庫，確保等一下的選片畫面找得到
-        delay(1500)
+        delay(2000)
         registerVideoInMediaStore(candidate.videoFile)
-        delay(500)
+        delay(1000)
 
         // 8. 點「媒體庫」
         root = rootInActiveWindow ?: run { appendDebugLog("  → 等不到短影音錄影頁"); return false }
@@ -1442,19 +1454,19 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (!waitForAnyText(listOf("相片集"), 4000)) {
             appendDebugLog("  → 等不到媒體庫選片畫面"); return false
         }
-        delay(500)
+        delay(1000)
         root = rootInActiveWindow ?: return false
         val videoTab = root.findAccessibilityNodeInfosByText("短影音").firstOrNull { it.isClickable }
         if (videoTab != null) {
             clickNodeBestEffort(videoTab)
-            delay(800)
+            delay(1200)
         }
         root = rootInActiveWindow ?: return false
         val firstGalleryItem = findFirstNodeById(root, "check") ?: findFirstNodeById(root, "ll_check")
         if (firstGalleryItem == null || !clickNodeBestEffort(firstGalleryItem)) {
             appendDebugLog("  → 找不到或點擊媒體庫第一個項目失敗"); return false
         }
-        delay(500)
+        delay(1000)
 
         // 10. 點「下一步」
         root = rootInActiveWindow ?: return false
@@ -1467,7 +1479,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (!waitForAnyText(listOf("撰寫內文", "為您的短影音撰寫內文"), 5000)) {
             appendDebugLog("  → 等不到「撰寫內文」畫面"); return false
         }
-        delay(500)
+        delay(1000)
         root = rootInActiveWindow ?: return false
         val captionInput = findNodeByIdSuffix(root, "et_caption")
         if (captionInput == null) {
@@ -1478,7 +1490,11 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, candidate.narrationText)
             }
             captionInput.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, captionBundle)
-            delay(500)
+            delay(1000)
+            captionInput.performAction(AccessibilityNodeInfo.ACTION_CLEAR_FOCUS)
+            val imm2 = getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
+            imm2?.hideSoftInputFromWindow(null, 0)
+            delay(700)
         }
 
         // 12. 確認商品卡是否自動帶入（只記錄不當失敗條件，避免因為判斷誤差擋住整個流程）
@@ -1495,19 +1511,19 @@ class ShopeeAccessibilityService : AccessibilityService() {
             val r = clickNodeBestEffort(it)
             appendDebugLog("  → 嘗試關閉「允許他人合拍」：${if (r) "已送出點擊" else "點擊失敗"}")
         }
-        delay(300)
+        delay(700)
         root = rootInActiveWindow ?: return false
         findNodeByIdSuffix(root, "tv_allow_stitch")?.let {
             val r = clickNodeBestEffort(it)
             appendDebugLog("  → 嘗試關閉「允許他人拼接」：${if (r) "已送出點擊" else "點擊失敗"}")
         }
-        delay(300)
+        delay(700)
         root = rootInActiveWindow ?: return false
         findNodeByIdSuffix(root, "tv_ai_generated_title")?.let {
             val r = clickNodeBestEffort(it)
             appendDebugLog("  → 嘗試開啟「AI生成影片標記」：${if (r) "已送出點擊" else "點擊失敗"}")
         }
-        delay(300)
+        delay(1000)
 
         // 14. 點「發佈」
         root = rootInActiveWindow ?: return false
