@@ -1166,6 +1166,86 @@ class ShopeeAccessibilityService : AccessibilityService() {
     }
 
     /**
+     * 【階段2用】代表一個「已生成影片、還沒上架」的候選商品，掃描結果的資料結構。
+     * narrationText可能是空字串（例如舊資料還沒補這個欄位、或AI/規則模板都抽取不到內容），
+     * 呼叫端（撰寫內文步驟）要自己決定空字串時要不要退回用別的文字來源。
+     */
+    data class UploadCandidate(
+        val folder: File,
+        val promoLink: String,
+        val narrationText: String,
+        val videoFile: File
+    )
+
+    /**
+     * 【階段2用】掃描 CaptionQueue 底下所有商品資料夾，找出符合上架條件的候選清單：
+     * meta.json 的 videoGeneratedAt 有值（代表影片已生成）且 shopeePosted 還是 false（代表還沒上架）。
+     * 這個函式不會動到任何檔案（純讀取），可以放心重複呼叫。
+     *
+     * 實作細節：org.json.JSONObject 對於值是 JSONObject.NULL 的欄位，optString() 讀出來
+     * 會拿到字串"null"（不是空字串、也不是丟例外），這是org.json函式庫的已知怪異行為，
+     * 這裡用 .takeIf { it.isNotBlank() && it != "null" } 統一過濾掉，避免誤判成「有值」。
+     */
+    private fun scanUploadCandidates(): List<UploadCandidate> {
+        val baseDir = File(
+            android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
+            "CaptionQueue"
+        )
+        val candidates = mutableListOf<UploadCandidate>()
+        val dirs = baseDir.listFiles()?.filter { it.isDirectory } ?: return candidates
+
+        for (dir in dirs) {
+            val metaFile = File(dir, "meta.json")
+            if (!metaFile.isFile) continue
+            try {
+                val json = org.json.JSONObject(metaFile.readText())
+
+                val videoGeneratedAt = json.optString("videoGeneratedAt", "")
+                    .takeIf { it.isNotBlank() && it != "null" }
+                if (videoGeneratedAt == null) continue // 影片還沒生成，不是候選
+
+                val shopeePosted = json.optBoolean("shopeePosted", false)
+                if (shopeePosted) continue // 已經上架過了，不是候選
+
+                val promoLink = json.optString("promoLink", "")
+                    .takeIf { it.isNotBlank() && it != "null" }
+                if (promoLink == null) {
+                    appendDebugLog("  → 掃描候選商品：${dir.name} 沒有商品連結，跳過")
+                    continue
+                }
+
+                val videoFile = File(dir, "output.mp4")
+                if (!videoFile.isFile) {
+                    appendDebugLog("  → 掃描候選商品：${dir.name} 標記已生成影片但實際找不到output.mp4，跳過")
+                    continue
+                }
+
+                val narrationText = json.optString("narrationText", "")
+                    .takeIf { it.isNotBlank() && it != "null" } ?: ""
+
+                candidates.add(UploadCandidate(dir, promoLink, narrationText, videoFile))
+            } catch (e: Exception) {
+                appendDebugLog("  → 掃描候選商品：讀取 ${dir.name}/meta.json 失敗，跳過（${e.javaClass.simpleName}：${e.message}）")
+            }
+        }
+        return candidates
+    }
+
+    /**
+     * 【階段2測試用】暫時借用「偵測」按鈕觸發這個測試：掃描候選商品清單，
+     * 把找到的每一筆（資料夾名稱/連結/文案長度）印進debug log，方便確認掃描邏輯抓得對不對。
+     * 跟testMediaStoreRegistration()一樣，等階段2整個上架流程做完、這個函式跟
+     * FloatingButtonService.kt裡暫時加的呼叫都可以一起移除，不是正式功能的一部分。
+     */
+    fun testScanUploadCandidates() {
+        val candidates = scanUploadCandidates()
+        appendDebugLog("  → 【候選商品掃描測試】共找到 ${candidates.size} 筆待上架商品")
+        candidates.forEach { c ->
+            appendDebugLog("     - ${c.folder.name}｜連結=${c.promoLink}｜文案長度=${c.narrationText.length}字")
+        }
+    }
+
+    /**
      * 【階段2測試用】暫時借用「偵測」按鈕觸發這個測試：
      * 找CaptionQueue底下最新一個已經有output.mp4的商品資料夾，測試registerVideoInMediaStore()
      * 能不能成功把它登記進媒體庫，結果寫進debug log。等階段2整個上架流程做完、
