@@ -1246,6 +1246,373 @@ class ShopeeAccessibilityService : AccessibilityService() {
         return candidates
     }
 
+    // ===================== 階段2第3塊：上架自動化本體 =====================
+
+    private var uploadJob: Job? = null
+
+    fun isUploadAutomationRunning(): Boolean = uploadJob?.isActive == true
+
+    /**
+     * 啟動上架自動化。呼叫時機的前提：蝦皮App目前畫面必須已經在「分潤按讚好物」清單頁
+     * （這段導航——開啟蝦皮App→切到帳戶分頁→點分潤按讚好物——目前還沒自動化，
+     * 因為還沒有這幾個畫面的節點dump資料，先由使用者手動導航過去，之後有需要可以再補）。
+     * maxCount：本次最多處理幾筆候選商品（獨立於蝦皮平台本身「每日50支」的上限，
+     * 這裡只是呼叫端自己設定的批次大小，實際能不能發成功還是要看當下蝦皮還有沒有額度）。
+     */
+    fun startUploadAutomation(maxCount: Int, onEvent: (UploadEvent) -> Unit) {
+        if (isUploadAutomationRunning()) return
+        uploadJob = serviceScope.launch {
+            try {
+                uploadAutomationLoop(maxCount, onEvent)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                onEvent(UploadEvent.Log("已停止上架自動化"))
+            } catch (e: Exception) {
+                onEvent(UploadEvent.Log("發生未預期錯誤：${e.javaClass.simpleName} ${e.message}"))
+            }
+        }
+    }
+
+    fun stopUploadAutomation() {
+        uploadJob?.cancel()
+        uploadJob = null
+    }
+
+    private suspend fun uploadAutomationLoop(maxCount: Int, onEvent: (UploadEvent) -> Unit) {
+        appendDebugLog("===== 開始上架自動化，本次上限 $maxCount 支 =====")
+        onEvent(UploadEvent.Log("開始上架自動化，本次上限 $maxCount 支"))
+
+        val candidates = scanUploadCandidates()
+        if (candidates.isEmpty()) {
+            appendDebugLog("  → 上架自動化：沒有找到任何候選商品，結束")
+            onEvent(UploadEvent.Finished(0, 0, UploadFinishReason.NO_CANDIDATES))
+            return
+        }
+        appendDebugLog("  → 上架自動化：共 ${candidates.size} 筆候選，本次最多處理 $maxCount 支")
+
+        var successCount = 0
+        var failCount = 0
+        var reason = UploadFinishReason.ALL_DONE
+
+        for ((index, candidate) in candidates.withIndex()) {
+            if (successCount >= maxCount) {
+                reason = UploadFinishReason.MAX_COUNT_REACHED
+                break
+            }
+            onEvent(UploadEvent.Progress(index + 1, candidates.size))
+            appendDebugLog("  → [${index + 1}/${candidates.size}] 開始處理：${candidate.folder.name}")
+            onEvent(UploadEvent.Log("處理中：${candidate.folder.name}"))
+
+            val ok = try {
+                processOneUploadCandidate(candidate)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                appendDebugLog("  → [${candidate.folder.name}] 發生例外：${e.javaClass.simpleName} ${e.message}")
+                false
+            }
+
+            if (ok) {
+                successCount++
+                markShopeePosted(candidate.folder)
+                appendDebugLog("  → [${candidate.folder.name}] 上架成功，已標記 shopeePosted=true")
+                onEvent(UploadEvent.Log("✓ 上架成功：${candidate.folder.name}"))
+            } else {
+                failCount++
+                appendDebugLog("  → [${candidate.folder.name}] 上架失敗，停止本次批次（避免對同樣的錯誤/每日上限持續重試）")
+                onEvent(UploadEvent.Log("✗ 上架失敗：${candidate.folder.name}，停止本次批次"))
+                reason = UploadFinishReason.STOPPED_ON_FAILURE
+                break
+            }
+
+            if (successCount < maxCount) {
+                delay(Random.nextLong(2000, 4000))
+            }
+        }
+
+        appendDebugLog("===== 上架自動化結束：成功 $successCount／失敗 $failCount，原因=$reason =====")
+        onEvent(UploadEvent.Finished(successCount, failCount, reason))
+    }
+
+    /**
+     * 處理一筆候選商品的完整流程：匯入連結→勾選→分享→選短影音→媒體庫選片→撰寫內文→發佈。
+     * 任何一步逾時或失敗就回傳false並記錄詳細原因，不拋例外（呼叫端已包try/catch保護整批）。
+     */
+    private suspend fun processOneUploadCandidate(candidate: UploadCandidate): Boolean {
+        // 0. 確認目前在「分潤按讚好物」清單畫面
+        var root = rootInActiveWindow ?: run {
+            appendDebugLog("  → 讀不到目前畫面"); return false
+        }
+        if (root.findAccessibilityNodeInfosByText("分潤按讚好物").isEmpty()) {
+            appendDebugLog("  → 目前畫面不是「分潤按讚好物」清單，請先手動導航到這個畫面再啟動")
+            return false
+        }
+
+        // 1. 點「+」→「從匯入連結新增」
+        val addIconNode = findFirstNodeById(root, "AN_SellerInvitedOfferPage_AddIcon_Img")
+        if (addIconNode == null || !clickNodeBestEffort(addIconNode)) {
+            appendDebugLog("  → 找不到或點擊「+」按鈕失敗"); return false
+        }
+        if (!waitForAnyText(listOf("從匯入連結新增"), 3000)) {
+            appendDebugLog("  → 等不到「從匯入連結新增」選單"); return false
+        }
+        val importMenuNode = findNodeByTexts(rootInActiveWindow ?: return false, listOf("從匯入連結新增"))
+        if (importMenuNode == null || !clickNodeBestEffort(importMenuNode)) {
+            appendDebugLog("  → 點擊「從匯入連結新增」失敗"); return false
+        }
+
+        // 2. 貼上商品連結
+        if (!waitForAnyText(listOf("商品連結"), 3000)) {
+            appendDebugLog("  → 等不到「商品連結」輸入畫面"); return false
+        }
+        delay(400)
+        root = rootInActiveWindow ?: return false
+        val linkInput = findSearchBoxNode(root)
+        if (linkInput == null) {
+            appendDebugLog("  → 找不到商品連結輸入框"); return false
+        }
+        val linkBundle = android.os.Bundle().apply {
+            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, candidate.promoLink)
+        }
+        linkInput.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, linkBundle)
+        delay(500)
+
+        // 3. 點「新增至按讚好物」
+        root = rootInActiveWindow ?: return false
+        val addToListButton = findNodeByTexts(root, listOf("新增至按讚好物"))
+        if (addToListButton == null || !clickNodeBestEffort(addToListButton)) {
+            appendDebugLog("  → 找不到或點擊「新增至按讚好物」失敗"); return false
+        }
+        delay(1500)
+
+        // 4. 回到清單，勾選第一筆（排序：最新，剛新增的會排在最上面）
+        if (!waitForAnyText(listOf("分潤按讚好物"), 4000)) {
+            appendDebugLog("  → 新增連結後等不到回到清單畫面"); return false
+        }
+        delay(500)
+        root = rootInActiveWindow ?: return false
+        val firstCheckbox = findFirstNodeById(root, "AN_Checkbox_CheckedIconUnCheckIcon_Img")
+        if (firstCheckbox == null || !clickNodeBestEffort(firstCheckbox)) {
+            appendDebugLog("  → 找不到或點擊清單第一筆的勾選框失敗"); return false
+        }
+        delay(500)
+
+        // 5. 點「分享」
+        root = rootInActiveWindow ?: return false
+        val shareTextNode = root.findAccessibilityNodeInfosByText("分享").firstOrNull { it.text?.toString() == "分享" }
+        val shareButton = shareTextNode?.let { node ->
+            if (node.isClickable) node else {
+                var p = node.parent; var d = 0; var c: AccessibilityNodeInfo? = null
+                while (p != null && d < 6) { if (p.isClickable) { c = p; break }; p = p.parent; d++ }
+                c
+            }
+        }
+        if (shareButton == null || !clickNodeBestEffort(shareButton)) {
+            appendDebugLog("  → 找不到或點擊「分享」按鈕失敗"); return false
+        }
+
+        // 6. 等分享面板出現「蝦皮短影音」選項（等不到最常見原因：已達每日上架上限或商品已分享過）
+        if (!waitForAnyText(listOf("蝦皮短影音"), 4000)) {
+            appendDebugLog("  → 分享面板沒有出現「蝦皮短影音」選項，可能已達每日上架上限或其他限制")
+            return false
+        }
+        root = rootInActiveWindow ?: return false
+        val shortVideoOption = findNodeByTexts(root, listOf("蝦皮短影音"))
+        if (shortVideoOption == null || !clickNodeBestEffort(shortVideoOption)) {
+            appendDebugLog("  → 點擊「蝦皮短影音」失敗"); return false
+        }
+
+        // 7. 趁畫面切換的空檔，把影片登記進媒體庫，確保等一下的選片畫面找得到
+        delay(1500)
+        registerVideoInMediaStore(candidate.videoFile)
+        delay(500)
+
+        // 8. 點「媒體庫」
+        root = rootInActiveWindow ?: run { appendDebugLog("  → 等不到短影音錄影頁"); return false }
+        val galleryEntrance = findNodeByIdSuffix(root, "ll_gallery_entrance") ?: findNodeByTexts(root, listOf("媒體庫"))
+        if (galleryEntrance == null || !clickNodeBestEffort(galleryEntrance)) {
+            appendDebugLog("  → 找不到或點擊「媒體庫」入口失敗"); return false
+        }
+
+        // 9. 等媒體庫畫面出現，切到「短影音」分頁，選第一個（剛登記進媒體庫的最新影片會排最前面）
+        if (!waitForAnyText(listOf("相片集"), 4000)) {
+            appendDebugLog("  → 等不到媒體庫選片畫面"); return false
+        }
+        delay(500)
+        root = rootInActiveWindow ?: return false
+        val videoTab = root.findAccessibilityNodeInfosByText("短影音").firstOrNull { it.isClickable }
+        if (videoTab != null) {
+            clickNodeBestEffort(videoTab)
+            delay(800)
+        }
+        root = rootInActiveWindow ?: return false
+        val firstGalleryItem = findFirstNodeById(root, "check") ?: findFirstNodeById(root, "ll_check")
+        if (firstGalleryItem == null || !clickNodeBestEffort(firstGalleryItem)) {
+            appendDebugLog("  → 找不到或點擊媒體庫第一個項目失敗"); return false
+        }
+        delay(500)
+
+        // 10. 點「下一步」
+        root = rootInActiveWindow ?: return false
+        val nextButton = findNodeByIdSuffix(root, "tv_pick_top_next")
+        if (nextButton == null || !clickNodeBestEffort(nextButton)) {
+            appendDebugLog("  → 找不到或點擊「下一步」失敗"); return false
+        }
+
+        // 11. 等「撰寫內文」畫面，填入文案
+        if (!waitForAnyText(listOf("撰寫內文", "為您的短影音撰寫內文"), 5000)) {
+            appendDebugLog("  → 等不到「撰寫內文」畫面"); return false
+        }
+        delay(500)
+        root = rootInActiveWindow ?: return false
+        val captionInput = findNodeByIdSuffix(root, "et_caption")
+        if (captionInput == null) {
+            appendDebugLog("  → 找不到文案輸入框"); return false
+        }
+        if (candidate.narrationText.isNotBlank()) {
+            val captionBundle = android.os.Bundle().apply {
+                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, candidate.narrationText)
+            }
+            captionInput.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, captionBundle)
+            delay(500)
+        }
+
+        // 12. 確認商品卡是否自動帶入（只記錄不當失敗條件，避免因為判斷誤差擋住整個流程）
+        root = rootInActiveWindow ?: return false
+        val productCardPresent = findNodeByIdSuffix(root, "rl_product_item") != null
+        appendDebugLog("  → 撰寫內文畫面：商品卡${if (productCardPresent) "已自動帶入" else "沒看到（請留意，可能要手動補加）"}")
+
+        // 13. 調整三個開關：關閉「允許他人合拍」「允許他人拼接」、開啟「AI生成影片標記」。
+        // 這幾個開關在無障礙節點樹裡沒有獨立的可點擊元件（見開發時的dump診斷），
+        // 這裡先用「直接對文字標籤節點嘗試ACTION_CLICK」的方法1，不保證一定有效——
+        // 第一次實測後務必截圖確認這三個開關的實際狀態，如果沒反應，需要改用座標點擊備援方案。
+        root = rootInActiveWindow ?: return false
+        findNodeByIdSuffix(root, "tv_allow_duet")?.let {
+            val r = clickNodeBestEffort(it)
+            appendDebugLog("  → 嘗試關閉「允許他人合拍」：${if (r) "已送出點擊" else "點擊失敗"}")
+        }
+        delay(300)
+        root = rootInActiveWindow ?: return false
+        findNodeByIdSuffix(root, "tv_allow_stitch")?.let {
+            val r = clickNodeBestEffort(it)
+            appendDebugLog("  → 嘗試關閉「允許他人拼接」：${if (r) "已送出點擊" else "點擊失敗"}")
+        }
+        delay(300)
+        root = rootInActiveWindow ?: return false
+        findNodeByIdSuffix(root, "tv_ai_generated_title")?.let {
+            val r = clickNodeBestEffort(it)
+            appendDebugLog("  → 嘗試開啟「AI生成影片標記」：${if (r) "已送出點擊" else "點擊失敗"}")
+        }
+        delay(300)
+
+        // 14. 點「發佈」
+        root = rootInActiveWindow ?: return false
+        val postButton = findNodeByIdSuffix(root, "btn_post")
+        if (postButton == null || !clickNodeBestEffort(postButton)) {
+            appendDebugLog("  → 找不到或點擊「發佈」失敗"); return false
+        }
+
+        // 15. 判定成功的依據：按下發佈後，畫面上不再有文案輸入框（代表已經離開撰寫內文畫面）
+        delay(3000)
+        val stillOnCaptionScreen = rootInActiveWindow?.let { findNodeByIdSuffix(it, "et_caption") } != null
+        if (stillOnCaptionScreen) {
+            appendDebugLog("  → 按下發佈後仍停在撰寫內文畫面，判定失敗（可能跳出錯誤提示或達到每日上限）")
+            return false
+        }
+
+        return true
+    }
+
+    /**
+     * 依 viewIdResourceName「結尾」比對找節點——蝦皮不同畫面套件名稱前綴不一樣
+     * （例如 com.shopee.tw:id/xxx 跟 com.shopee.tw.dfpluginshopee16:id/xxx），
+     * 只比對冒號後面那段id本身。回傳畫面上第一個符合的節點（依樹狀結構的文件順序）。
+     */
+    private fun findNodeByIdSuffix(root: AccessibilityNodeInfo, idSuffix: String): AccessibilityNodeInfo? {
+        var found: AccessibilityNodeInfo? = null
+        fun walk(node: AccessibilityNodeInfo?, depth: Int) {
+            if (node == null || found != null || depth > 30) return
+            val id = node.viewIdResourceName
+            if (id != null && id.substringAfter(":id/", id) == idSuffix) {
+                found = node
+                return
+            }
+            for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
+        }
+        walk(root, 0)
+        return found
+    }
+
+    /**
+     * 依完整 viewIdResourceName 找第一個符合的節點（用於蝦皮自訂的語意id，例如AN_開頭這種
+     * 沒有套件名稱前綴的id）。回傳畫面上第一個符合的節點，依文件順序——
+     * 例如清單裡每一列商品都有一個同id的勾選框，用這個函式會拿到「最上面那一列」的。
+     */
+    private fun findFirstNodeById(root: AccessibilityNodeInfo, id: String): AccessibilityNodeInfo? {
+        var found: AccessibilityNodeInfo? = null
+        fun walk(node: AccessibilityNodeInfo?, depth: Int) {
+            if (node == null || found != null || depth > 30) return
+            if (node.viewIdResourceName == id) { found = node; return }
+            for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
+        }
+        walk(root, 0)
+        return found
+    }
+
+    /**
+     * 點擊節點：不管 isClickable 回報是不是true都直接嘗試ACTION_CLICK
+     * （Compose UI常見isClickable回報不準的狀況，findNodeByTexts也是同樣的處理方式），
+     * 失敗的話再往上找最多6層可點擊的祖先節點重試一次。
+     */
+    private fun clickNodeBestEffort(node: AccessibilityNodeInfo): Boolean {
+        if (node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+        var parent = node.parent
+        var depth = 0
+        while (parent != null && depth < 6) {
+            if (parent.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+            parent = parent.parent
+            depth++
+        }
+        return false
+    }
+
+    /**
+     * 標記某個商品資料夾已經上架成功：寫入 shopeePosted=true 跟時間戳記，
+     * 讓下次 scanUploadCandidates() 掃描時自動跳過這筆，避免重複上架同一支影片。
+     */
+    private fun markShopeePosted(folder: File) {
+        try {
+            val metaFile = File(folder, "meta.json")
+            if (!metaFile.isFile) return
+            val json = org.json.JSONObject(metaFile.readText())
+            json.put("shopeePosted", true)
+            json.put("shopeePostedAt", SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).format(Date()))
+            metaFile.writeText(json.toString(2))
+        } catch (e: Exception) {
+            appendDebugLog("  → 標記shopeePosted失敗（${folder.name}）：${e.javaClass.simpleName} ${e.message}")
+        }
+    }
+
+    /**
+     * 【階段2測試用】暫時借用「偵測」按鈕觸發：只處理1筆候選商品，方便小範圍實測整套流程。
+     * 確認流程穩定、開關調整也驗證有效後，之後可以在MainActivity.kt加專屬的「開始上架」按鈕
+     * 跟數量設定，取代這個暫時的測試掛鉤，跟其他test開頭的函式一起移除。
+     */
+    fun testUploadAutomation() {
+        if (isUploadAutomationRunning()) {
+            appendDebugLog("  → 【上架自動化測試】已經在執行中，本次觸發略過")
+            return
+        }
+        startUploadAutomation(1) { event ->
+            when (event) {
+                is UploadEvent.Log -> appendDebugLog("  → 【上架自動化測試】${event.message}")
+                is UploadEvent.Progress -> appendDebugLog("  → 【上架自動化測試】進度 ${event.current}/${event.total}")
+                is UploadEvent.Finished -> appendDebugLog(
+                    "  → 【上架自動化測試】結束：成功${event.successCount}／失敗${event.failCount}，原因=${event.reason}"
+                )
+            }
+        }
+    }
+
     /**
      * 【階段2開發用診斷工具】暫時借用「偵測」按鈕觸發：把當下畫面完整的無障礙節點樹
      * dump成一份文字檔，存到 Download/NodeTreeDump/dump_<時間戳記>.txt，用來確認

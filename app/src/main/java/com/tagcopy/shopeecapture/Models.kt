@@ -188,3 +188,26 @@ sealed class ServiceStatus {
     data object Ready : ServiceStatus()
     data class Capturing(val step: String) : ServiceStatus()
 }
+
+/**
+ * 上架自動化（階段2第3塊）結束的原因。
+ * STOPPED_ON_FAILURE：任何一筆處理失敗就整批停止，不繼續嘗試下一筆——
+ * 因為失敗最常見的原因是撞到蝦皮每日上架上限，一旦撞到，後面每一筆都會用同樣方式失敗，
+ * 繼續重試沒有意義還浪費時間，不如停下來讓使用者檢查狀況。
+ */
+enum class UploadFinishReason {
+    ALL_DONE,              // 候選清單全部處理完（不含被maxCount卡住的情況）
+    MAX_COUNT_REACHED,     // 達到本次呼叫設定的上限，正常停止
+    NO_CANDIDATES,         // 掃描候選清單時就是空的，一筆都沒處理
+    STOPPED_ON_FAILURE     // 某一筆失敗，整批停止
+}
+
+sealed class UploadEvent {
+    data class Log(val message: String) : UploadEvent()
+    data class Progress(val current: Int, val total: Int) : UploadEvent()
+    data class Finished(
+        val successCount: Int,
+        val failCount: Int,
+        val reason: UploadFinishReason
+    ) : UploadEvent()
+}
