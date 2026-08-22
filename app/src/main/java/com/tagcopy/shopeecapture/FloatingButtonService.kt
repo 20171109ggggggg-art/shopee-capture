@@ -182,12 +182,13 @@ class FloatingButtonService : Service() {
             Toast.makeText(this, getString(R.string.toast_need_accessibility), Toast.LENGTH_LONG).show()
             return
         }
-        // 【階段2測試，暫時加的】借用偵測按鈕順便測試影片登記進媒體庫功能+候選商品掃描，
+        // 【階段2測試，暫時加的】借用偵測按鈕順便測試影片登記進媒體庫功能+候選商品掃描+節點樹診斷，
         // 結果看debug log，不影響下面原本「顯示目前套件名稱」的功能。
-        // 這個上架自動化整個做完之後，這兩行連同ShopeeAccessibilityService.kt裡的
-        // testMediaStoreRegistration()/testScanUploadCandidates()都可以一起移除。
+        // 這個上架自動化整個做完之後，這幾行連同ShopeeAccessibilityService.kt裡的
+        // testMediaStoreRegistration()/testScanUploadCandidates()/dumpCurrentNodeTree()都可以一起移除。
         service.testMediaStoreRegistration()
         service.testScanUploadCandidates()
+        service.dumpCurrentNodeTree()
         val packageName = service.getCurrentPackageName()
         if (packageName == null) {
             Toast.makeText(this, getString(R.string.toast_no_package), Toast.LENGTH_LONG).show()

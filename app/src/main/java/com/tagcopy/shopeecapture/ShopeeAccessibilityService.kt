@@ -1247,6 +1247,65 @@ class ShopeeAccessibilityService : AccessibilityService() {
     }
 
     /**
+     * 【階段2開發用診斷工具】暫時借用「偵測」按鈕觸發：把當下畫面完整的無障礙節點樹
+     * dump成一份文字檔，存到 Download/NodeTreeDump/dump_<時間戳記>.txt，用來確認
+     * 「分潤按讚好物清單→匯入連結→勾選→分享→短影音錄製→撰寫內文」這幾個畫面的
+     * 節點id/文字/可點擊層級，寫第3塊自動化邏輯前先靠這個看清楚，不要用猜的
+     * （教訓見fix44~50）。每次呼叫只dump「當下這一個畫面」，所以要在流程走到
+     * 每一個關鍵畫面時各按一次「偵測」分別記錄。
+     * 這是暫時開發工具，等第3塊流程寫完可以跟FloatingButtonService.kt裡的呼叫一起移除。
+     */
+    fun dumpCurrentNodeTree() {
+        val root = rootInActiveWindow
+        if (root == null) {
+            appendDebugLog("  → 【節點樹診斷】rootInActiveWindow 是 null，抓不到目前畫面")
+            return
+        }
+        val sb = StringBuilder()
+        val packageName = root.packageName?.toString() ?: "(未知)"
+        sb.appendLine("===== 節點樹 dump：${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())} =====")
+        sb.appendLine("目前畫面套件名稱：$packageName")
+        sb.appendLine()
+        var nodeCount = 0
+        fun walk(node: AccessibilityNodeInfo, depth: Int) {
+            nodeCount++
+            if (nodeCount > 3000) return // 保險上限，避免極端情況dump過大
+            val indent = "  ".repeat(depth)
+            val id = node.viewIdResourceName ?: ""
+            val text = node.text?.toString()?.replace("\n", "\\n") ?: ""
+            val desc = node.contentDescription?.toString()?.replace("\n", "\\n") ?: ""
+            val bounds = Rect().also { node.getBoundsInScreen(it) }
+            val flags = buildString {
+                if (node.isClickable) append("[可點擊]")
+                if (node.isCheckable) append("[可勾選:${node.isChecked}]")
+                if (node.isEditable) append("[可輸入]")
+                if (!node.isVisibleToUser) append("[不可見]")
+            }
+            sb.appendLine("$indent${node.className}${if (id.isNotBlank()) " id=$id" else ""}${if (text.isNotBlank()) " text=\"$text\"" else ""}${if (desc.isNotBlank()) " desc=\"$desc\"" else ""} $flags bounds=$bounds")
+            for (i in 0 until node.childCount) {
+                node.getChild(i)?.let { walk(it, depth + 1) }
+            }
+        }
+        walk(root, 0)
+        sb.appendLine()
+        sb.appendLine("===== 共 $nodeCount 個節點 =====")
+
+        try {
+            val dumpDir = File(
+                android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
+                "NodeTreeDump"
+            )
+            if (!dumpDir.exists()) dumpDir.mkdirs()
+            val fileName = "dump_${SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.getDefault()).format(java.util.Date())}.txt"
+            val dumpFile = File(dumpDir, fileName)
+            dumpFile.writeText(sb.toString())
+            appendDebugLog("  → 【節點樹診斷】已存檔：NodeTreeDump/$fileName（畫面=$packageName，共 $nodeCount 個節點）")
+        } catch (e: Exception) {
+            appendDebugLog("  → 【節點樹診斷】存檔失敗：${e.javaClass.simpleName}：${e.message}")
+        }
+    }
+
+    /**
      * 【階段2測試用】暫時借用「偵測」按鈕觸發這個測試：掃描候選商品清單，
      * 把找到的每一筆（資料夾名稱/連結/文案長度）印進debug log，方便確認掃描邏輯抓得對不對。
      * 跟testMediaStoreRegistration()一樣，等階段2整個上架流程做完、這個函式跟
