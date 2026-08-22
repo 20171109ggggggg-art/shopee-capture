@@ -1339,11 +1339,16 @@ class ShopeeAccessibilityService : AccessibilityService() {
      */
     private suspend fun processOneUploadCandidate(candidate: UploadCandidate): Boolean {
         // 0. 確認目前在「分潤按讚好物」清單畫面
+        // 注意：不能只比對「分潤按讚好物」這幾個字，因為蝦皮首頁本身也有一個同名的功能入口
+        // （點進去才是清單頁），單純比對文字會把首頁誤判成已經在清單畫面。改用actionbar標題
+        // 節點比對，清單頁標題格式固定是「分潤按讚好物(數字)」帶括號，首頁選單項目不會是這個格式。
         var root = rootInActiveWindow ?: run {
             appendDebugLog("  → 讀不到目前畫面"); return false
         }
-        if (root.findAccessibilityNodeInfosByText("分潤按讚好物").isEmpty()) {
-            appendDebugLog("  → 目前畫面不是「分潤按讚好物」清單，請先手動導航到這個畫面再啟動")
+        val titleNode = findNodeByIdSuffix(root, "labelActionBarTitle")
+        val titleText = titleNode?.text?.toString() ?: findTextContaining(root, "分潤按讚好物(")
+        if (titleText == null || !titleText.contains("分潤按讚好物(")) {
+            appendDebugLog("  → 目前畫面不是「分潤按讚好物」清單（畫面標題=${titleText ?: "讀不到"}），請先手動導航到這個畫面再啟動")
             return false
         }
 
@@ -1520,6 +1525,26 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
 
         return true
+    }
+
+    /**
+     * 在整個節點樹裡找「文字包含指定子字串」的第一個節點文字內容（部分比對，
+     * 不是完全相等）。用在需要比對「文字開頭固定、後面帶動態數字」的情況，
+     * 例如清單畫面標題「分潤按讚好物(1000)」這種帶括號數字的格式。
+     */
+    private fun findTextContaining(root: AccessibilityNodeInfo, substring: String): String? {
+        var found: String? = null
+        fun walk(node: AccessibilityNodeInfo?, depth: Int) {
+            if (node == null || found != null || depth > 30) return
+            val text = node.text?.toString()
+            if (text != null && text.contains(substring)) {
+                found = text
+                return
+            }
+            for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
+        }
+        walk(root, 0)
+        return found
     }
 
     /**
