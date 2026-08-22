@@ -15,6 +15,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Rect
 import android.hardware.HardwareBuffer
+import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -1162,6 +1163,69 @@ class ShopeeAccessibilityService : AccessibilityService() {
             .addStroke(GestureDescription.StrokeDescription(path, 0, 400))
             .build()
         dispatchGesture(gesture, null, null)
+    }
+
+    /**
+     * 【階段2測試用】暫時借用「偵測」按鈕觸發這個測試：
+     * 找CaptionQueue底下最新一個已經有output.mp4的商品資料夾，測試registerVideoInMediaStore()
+     * 能不能成功把它登記進媒體庫，結果寫進debug log。等階段2整個上架流程做完、
+     * 這個函式跟FloatingButtonService.kt裡暫時加的呼叫都可以一起移除，不是正式功能的一部分。
+     */
+    fun testMediaStoreRegistration() {
+        serviceScope.launch {
+            val baseDir = File(
+                android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
+                "CaptionQueue"
+            )
+            val testVideo = baseDir.listFiles()
+                ?.filter { it.isDirectory }
+                ?.mapNotNull { dir -> File(dir, "output.mp4").takeIf { it.isFile } }
+                ?.maxByOrNull { it.lastModified() }
+            if (testVideo == null) {
+                appendDebugLog("  → 【媒體庫測試】找不到任何 output.mp4 可供測試（CaptionQueue底下沒有已生成的影片）")
+                return@launch
+            }
+            appendDebugLog("  → 【媒體庫測試】開始測試：${testVideo.absolutePath}")
+            registerVideoInMediaStore(testVideo)
+        }
+    }
+
+    /**
+     * 【階段2用】把已經寫入公開儲存空間的影片檔案「登記」進系統媒體庫(MediaStore)。
+     * 背景：擷取器寫檔案是直接用File API寫進Downloads資料夾，不是透過MediaStore.insert()，
+     * 這種寫法系統相簿/媒體庫選片器（包括蝦皮App的「媒體庫」選片畫面）預設不會自動看到這個檔案
+     * ——Android的媒體庫索引是靠MediaStore資料庫，不是單純掃資料夾內容。
+     * 用MediaScannerConnection主動觸發掃描這一個檔案，掃完系統才會把它加進MediaStore資料庫，
+     * 之後蝦皮的媒體庫選片畫面才找得到這支影片。
+     * 回傳掃描完成後系統給的content Uri（掃描失敗或逾時回傳null，不影響其他流程繼續執行）。
+     */
+    private suspend fun registerVideoInMediaStore(videoFile: File): Uri? {
+        if (!videoFile.exists()) {
+            appendDebugLog("  → 影片登記進媒體庫失敗：檔案不存在（${videoFile.absolutePath}）")
+            return null
+        }
+        val result = withTimeoutOrNull(8000) {
+            suspendCancellableCoroutine<Uri?> { continuation ->
+                try {
+                    MediaScannerConnection.scanFile(
+                        applicationContext,
+                        arrayOf(videoFile.absolutePath),
+                        arrayOf("video/mp4")
+                    ) { _, uri ->
+                        if (continuation.isActive) continuation.resume(uri)
+                    }
+                } catch (e: Exception) {
+                    appendDebugLog("  → 影片登記進媒體庫時發生例外：${e.javaClass.simpleName} ${e.message}")
+                    if (continuation.isActive) continuation.resume(null)
+                }
+            }
+        }
+        if (result == null) {
+            appendDebugLog("  → 影片登記進媒體庫：逾時或失敗（${videoFile.name}）")
+        } else {
+            appendDebugLog("  → 影片登記進媒體庫成功：${videoFile.name} -> $result")
+        }
+        return result
     }
 
     /** 查詢相簿裡「指定時間之後」新增的最新一張圖片，回傳它的 content Uri（讀不到就回傳 null）。 */
