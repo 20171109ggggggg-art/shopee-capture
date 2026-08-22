@@ -1462,7 +1462,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             delay(1200)
         }
         root = rootInActiveWindow ?: return false
-        val firstGalleryItem = findFirstNodeById(root, "check") ?: findFirstNodeById(root, "ll_check")
+        val firstGalleryItem = findNodeByIdSuffix(root, "ll_check")
         if (firstGalleryItem == null || !clickNodeBestEffort(firstGalleryItem)) {
             appendDebugLog("  → 找不到或點擊媒體庫第一個項目失敗"); return false
         }
@@ -1470,7 +1470,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
 
         // 10. 點「下一步」
         root = rootInActiveWindow ?: return false
-        val nextButton = findNodeByIdSuffix(root, "tv_pick_top_next")
+        val nextButton = findNodeByIdSuffix(root, "tv_pick_next")
         if (nextButton == null || !clickNodeBestEffort(nextButton)) {
             appendDebugLog("  → 找不到或點擊「下一步」失敗"); return false
         }
