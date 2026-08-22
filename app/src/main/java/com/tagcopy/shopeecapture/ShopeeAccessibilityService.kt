@@ -1401,15 +1401,31 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
         delay(2500)
 
-        // 4. 回到清單，勾選第一筆（排序：最新，剛新增的會排在最上面）
+        // 4. 回到清單，勾選第一筆（排序：最新，剛新增的理論上會排在最上面）
+        // 「新增至按讚好物」是打後端API，清單重新排序可能有延遲，等待時間要留寬一點，
+        // 不然抓到的可能還是舊排序、選到別的商品——這是之前實測發現商品對不上的根因，
+        // 所以特別拉長這裡的等待，並把選到的商品文字記進log，方便之後直接從log驗證選對了沒，
+        // 不用等整個流程跑完才能靠肉眼確認。
         if (!waitForAnyText(listOf("分潤按讚好物"), 4000)) {
             appendDebugLog("  → 新增連結後等不到回到清單畫面"); return false
         }
-        delay(1200)
+        delay(3500)
         root = rootInActiveWindow ?: return false
         val firstCheckbox = findFirstNodeById(root, "AN_Checkbox_CheckedIconUnCheckIcon_Img")
-        if (firstCheckbox == null || !clickNodeBestEffort(firstCheckbox)) {
-            appendDebugLog("  → 找不到或點擊清單第一筆的勾選框失敗"); return false
+        if (firstCheckbox == null) {
+            appendDebugLog("  → 找不到清單第一筆的勾選框"); return false
+        }
+        // 記錄這一列的文字內容（商品名稱等），讓debug log能驗證選到的是不是剛匯入的那筆
+        run {
+            var rowNode: AccessibilityNodeInfo? = firstCheckbox
+            var d = 0
+            while (rowNode?.parent != null && d < 5) { rowNode = rowNode.parent; d++ }
+            val rowTexts = mutableListOf<String>()
+            rowNode?.let { collectTextNodes(it, rowTexts, maxDepth = 8, maxNodes = 15) }
+            appendDebugLog("  → 清單第一筆內容（用來核對是否為剛匯入的商品，本次匯入連結=${candidate.promoLink}）：${rowTexts.joinToString(" | ")}")
+        }
+        if (!clickNodeBestEffort(firstCheckbox)) {
+            appendDebugLog("  → 點擊清單第一筆的勾選框失敗"); return false
         }
         delay(1200)
 
@@ -1470,7 +1486,10 @@ class ShopeeAccessibilityService : AccessibilityService() {
 
         // 10. 點「下一步」
         root = rootInActiveWindow ?: return false
-        val nextButton = findNodeByIdSuffix(root, "tv_pick_next")
+        // 「下一步」按鈕的id會隨選取狀態改變：還沒選任何項目時是tv_pick_next，
+        // 選了項目之後畫面版型會變（按鈕移到上方、顯示已選數量），id變成tv_pick_top_next。
+        // 這裡已經選好1個項目了，正常應該找tv_pick_top_next，但兩個都試一次比較保險。
+        val nextButton = findNodeByIdSuffix(root, "tv_pick_top_next") ?: findNodeByIdSuffix(root, "tv_pick_next")
         if (nextButton == null || !clickNodeBestEffort(nextButton)) {
             appendDebugLog("  → 找不到或點擊「下一步」失敗"); return false
         }
