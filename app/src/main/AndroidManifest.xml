@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
@@ -10,6 +11,13 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
+    <!-- 階段2上架自動化：scanUploadCandidates() 需要直接用 File API 讀取 CaptionQueue 底下
+         各商品資料夾的 meta.json（非媒體類型檔案）。純 READ_MEDIA_IMAGES/READ_EXTERNAL_STORAGE
+         在 Android 10+ scoped storage 下只保證媒體類型檔案的存取，.json/.txt 這類一般檔案即使是
+         App自己寫入的，仍可能被拒讀（EACCES）。加上這個特殊權限並在設定頁引導使用者開啟，
+         繞過這個限制，寫入行為不受影響（本來就正常）。 -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
 
     <application
         android:allowBackup="true"

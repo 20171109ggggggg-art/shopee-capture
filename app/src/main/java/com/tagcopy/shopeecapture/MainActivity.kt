@@ -54,6 +54,7 @@ fun RootScreen() {
     var overlayGranted by remember { mutableStateOf(false) }
     var floatingServiceRunning by remember { mutableStateOf(false) }
     var mediaPermissionGranted by remember { mutableStateOf(false) }
+    var allFilesAccessGranted by remember { mutableStateOf(false) }
     var queueItems by remember { mutableStateOf(listOf<QueueItem>()) }
 
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -80,6 +81,7 @@ fun RootScreen() {
                 accessibilityEnabled = isAccessibilityServiceEnabled(context)
                 overlayGranted = canDrawOverlays(context)
                 mediaPermissionGranted = hasMediaPermission(context)
+                allFilesAccessGranted = hasAllFilesAccess()
                 queueItems = loadQueueItems()
             }
         }
@@ -91,6 +93,7 @@ fun RootScreen() {
         accessibilityEnabled = isAccessibilityServiceEnabled(context)
         overlayGranted = canDrawOverlays(context)
         mediaPermissionGranted = hasMediaPermission(context)
+        allFilesAccessGranted = hasAllFilesAccess()
         queueItems = loadQueueItems()
     }
 
@@ -176,6 +179,25 @@ fun RootScreen() {
                     Manifest.permission.READ_EXTERNAL_STORAGE
                 }
                 mediaPermissionLauncher.launch(permission)
+            }
+        )
+
+        Spacer(Modifier.height(14.dp))
+
+        SetupStepCard(
+            stepNumber = "5",
+            title = "所有檔案存取權限",
+            description = "上架自動化需要讀取 CaptionQueue 底下每個商品的 meta.json，這類一般檔案沒開此權限會被系統擋掉（EACCES），影片與圖片存取不受影響。",
+            done = allFilesAccessGranted,
+            buttonText = "前往設定",
+            onClick = {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    val intent = Intent(
+                        Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                        Uri.parse("package:${context.packageName}")
+                    )
+                    context.startActivity(intent)
+                }
             }
         )
 
@@ -579,4 +601,16 @@ private fun hasMediaPermission(context: android.content.Context): Boolean {
         Manifest.permission.READ_EXTERNAL_STORAGE
     }
     return ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+}
+
+/** 階段2用：scanUploadCandidates() 讀 meta.json 需要「所有檔案存取」權限，
+ *  這個特殊權限不是跑一般的 runtime permission dialog，要去系統設定頁單獨開，
+ *  也只能用 Environment.isExternalStorageManager() 檢查目前狀態。
+ *  Android 11以下沒有這個限制，一律視為已授予。 */
+private fun hasAllFilesAccess(): Boolean {
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        android.os.Environment.isExternalStorageManager()
+    } else {
+        true
+    }
 }
