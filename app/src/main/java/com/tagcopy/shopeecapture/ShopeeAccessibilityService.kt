@@ -1192,20 +1192,33 @@ class ShopeeAccessibilityService : AccessibilityService() {
             "CaptionQueue"
         )
         val candidates = mutableListOf<UploadCandidate>()
-        val dirs = baseDir.listFiles()?.filter { it.isDirectory } ?: return candidates
+        val dirs = baseDir.listFiles()?.filter { it.isDirectory } ?: run {
+            appendDebugLog("  → 掃描候選商品：找不到 CaptionQueue 資料夾（${baseDir.absolutePath}）")
+            return candidates
+        }
+        appendDebugLog("  → 掃描候選商品：CaptionQueue 底下共 ${dirs.size} 個商品資料夾")
 
         for (dir in dirs) {
             val metaFile = File(dir, "meta.json")
-            if (!metaFile.isFile) continue
+            if (!metaFile.isFile) {
+                appendDebugLog("  → 掃描候選商品：${dir.name} 沒有 meta.json，跳過")
+                continue
+            }
             try {
                 val json = org.json.JSONObject(metaFile.readText())
 
                 val videoGeneratedAt = json.optString("videoGeneratedAt", "")
                     .takeIf { it.isNotBlank() && it != "null" }
-                if (videoGeneratedAt == null) continue // 影片還沒生成，不是候選
+                if (videoGeneratedAt == null) {
+                    appendDebugLog("  → 掃描候選商品：${dir.name} 影片還沒生成（videoGeneratedAt為空），跳過")
+                    continue
+                }
 
                 val shopeePosted = json.optBoolean("shopeePosted", false)
-                if (shopeePosted) continue // 已經上架過了，不是候選
+                if (shopeePosted) {
+                    appendDebugLog("  → 掃描候選商品：${dir.name} 已經上架過了（shopeePosted=true），跳過")
+                    continue
+                }
 
                 val promoLink = json.optString("promoLink", "")
                     .takeIf { it.isNotBlank() && it != "null" }
@@ -1223,11 +1236,13 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 val narrationText = json.optString("narrationText", "")
                     .takeIf { it.isNotBlank() && it != "null" } ?: ""
 
+                appendDebugLog("  → 掃描候選商品：${dir.name} 符合條件，加入候選清單（文案長度=${narrationText.length}字）")
                 candidates.add(UploadCandidate(dir, promoLink, narrationText, videoFile))
             } catch (e: Exception) {
                 appendDebugLog("  → 掃描候選商品：讀取 ${dir.name}/meta.json 失敗，跳過（${e.javaClass.simpleName}：${e.message}）")
             }
         }
+        appendDebugLog("  → 掃描候選商品：掃描完成，共 ${candidates.size} 筆符合條件的候選商品")
         return candidates
     }
 
