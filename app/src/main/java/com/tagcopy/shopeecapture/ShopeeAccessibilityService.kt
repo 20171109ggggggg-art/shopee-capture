@@ -1712,7 +1712,14 @@ class ShopeeAccessibilityService : AccessibilityService() {
      * 讓下一輪迴圈的起始畫面檢查（見processOneUploadCandidate開頭）決定要不要繼續。
      */
     private suspend fun navigateBackToLikesListAfterPost() {
-        delay(1500)
+        // 17a-0. 等畫面穩定下來——使用者實測發現，發佈成功後跳轉到「Live & Video」動態牆
+        // 的時間不固定（有時很快、有時明顯較慢），原本寫死delay(1500)不夠、常常太早去找
+        // 底部導覽列時畫面還沒渲染完成。改成輪詢等待底部導覽列的固定標記文字出現
+        // （"Home"或中文"首頁"，這兩個字不管在哪個分頁畫面都看得到），最長等10秒，
+        // 確保畫面真的穩定下來才繼續往下走。
+        waitForAnyText(listOf("Home", "首頁"), 10000)
+        delay(800)
+
         // 17a. 若跳出「Share to Whatsapp」分享詢問彈窗，點「Cancel」跳過（PH特有，目前未見TW版本）
         var root = rootInActiveWindow
         if (root != null && root.findAccessibilityNodeInfosByText("Share to Whatsapp").isNotEmpty()) {
@@ -1730,8 +1737,16 @@ class ShopeeAccessibilityService : AccessibilityService() {
         // 也可能標記含Me的描述），用一般的findNodeByTexts可能誤點到不是底部導覽列的那個。
         // 底部導覽列固定在螢幕最下方，改用「畫面上所有符合的候選節點裡，取bounds最靠近
         // 螢幕底部（top座標最大）的那個」來鎖定，比純文字比對可靠。
-        root = rootInActiveWindow
-        val meTab = root?.let { findBottommostNodeByTexts(it, listOf("我", "Me")) }
+        // 加上重試（最多3次、每次間隔1秒）：畫面偶爾在這個當下還沒完全穩定，第一次找不到
+        // 不代表真的沒有，稍等一下再試一次成功率高很多。
+        var meTab: AccessibilityNodeInfo? = null
+        for (attempt in 1..3) {
+            root = rootInActiveWindow
+            meTab = root?.let { findBottommostNodeByTexts(it, listOf("我", "Me")) }
+            if (meTab != null) break
+            appendDebugLog("  → [返回清單] 第${attempt}次找不到底部導覽列「我／Me」，1秒後重試")
+            delay(1000)
+        }
         if (meTab == null || !clickNodeBestEffort(meTab)) {
             appendDebugLog("  → [返回清單] 找不到或點擊底部導覽列「我／Me」失敗，請手動導航回清單畫面")
             return
