@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.content.ClipboardManager
 import android.content.ContentUris
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -837,6 +838,41 @@ class ShopeeAccessibilityService : AccessibilityService() {
         return cardCount > 0
     }
 
+    /**
+     * 在螢幕上「指定座標」直接點一下（方法2備援）：用於節點樹裡完全找不到可點擊元件的情況
+     * （例如撰寫內文畫面那三個開關，蝦皮這幾顆是自訂繪製元件，無障礙樹裡沒有暴露對應節點，
+     * 見開發時的dump診斷紀錄）。x/y吃「screenWidthRatio」「screenHeightRatio」這種佔螢幕
+     * 寬高的比例（0~1），不是寫死的像素值，不同解析度的手機上跑起來座標會自動換算，
+     * 比直接寫死pixel數字更耐用。
+     */
+    private fun tapAtScreenRatio(xRatio: Float, yRatio: Float) {
+        val metrics = resources.displayMetrics
+        val x = metrics.widthPixels * xRatio
+        val y = metrics.heightPixels * yRatio
+        val path = Path().apply { moveTo(x, y) }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, 80))
+            .build()
+        dispatchGesture(gesture, null, null)
+    }
+
+    /**
+     * 在「指定節點的Y座標」、「螢幕寬度的某個比例」處點一下——給撰寫內文畫面那三個開關用：
+     * Y座標從對應文字標籤節點的bounds算出來（每次執行都動態抓，不會跑掉），
+     * X座標用螢幕寬度比例（開關固定在畫面右側同一個相對位置，比例在不同解析度手機上比較準）。
+     */
+    private fun tapToggleNearLabel(labelNode: AccessibilityNodeInfo, xRatio: Float = 0.905f) {
+        val bounds = Rect().also { labelNode.getBoundsInScreen(it) }
+        val metrics = resources.displayMetrics
+        val x = metrics.widthPixels * xRatio
+        val y = bounds.centerY().toFloat()
+        val path = Path().apply { moveTo(x, y) }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, 80))
+            .build()
+        dispatchGesture(gesture, null, null)
+    }
+
     private fun performBack() {
         performGlobalAction(GLOBAL_ACTION_BACK)
     }
@@ -1330,7 +1366,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             }
 
             if (successCount < maxCount) {
-                delay(Random.nextLong(6000, 10000))
+                delay(Random.nextLong(9000, 15000))
             }
         }
 
@@ -1365,7 +1401,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (!waitForAnyText(listOf("從匯入連結新增"), 3000)) {
             appendDebugLog("  → 等不到「從匯入連結新增」選單"); return false
         }
-        delay(800)
+        delay(1200)
         val importMenuNode = findNodeByTexts(rootInActiveWindow ?: return false, listOf("從匯入連結新增"))
         if (importMenuNode == null || !clickNodeBestEffort(importMenuNode)) {
             appendDebugLog("  → 點擊「從匯入連結新增」失敗"); return false
@@ -1375,7 +1411,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (!waitForAnyText(listOf("商品連結"), 3000)) {
             appendDebugLog("  → 等不到「商品連結」輸入畫面"); return false
         }
-        delay(800)
+        delay(1200)
         root = rootInActiveWindow ?: return false
         val linkInput = findSearchBoxNode(root)
         if (linkInput == null) {
@@ -1385,18 +1421,18 @@ class ShopeeAccessibilityService : AccessibilityService() {
             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, candidate.promoLink)
         }
         linkInput.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, linkBundle)
-        delay(800)
+        delay(1200)
         // 填完文字後鍵盤還開著、輸入框還focus著，「新增至按讚好物」按鈕不會被觸發／可能被鍵盤蓋住，
         // 要主動清除焦點+收起鍵盤，模擬使用者「點輸入框外面一下」的動作，畫面才會切到確認狀態。
         linkInput.performAction(AccessibilityNodeInfo.ACTION_CLEAR_FOCUS)
-        delay(300)
+        delay(450)
         val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
         imm?.hideSoftInputFromWindow(null, 0)
-        delay(700)
+        delay(1050)
         // 保險再點一次畫面上方的「商品連結」標籤文字，確保焦點確實離開輸入框
         root = rootInActiveWindow ?: return false
         findNodeByTexts(root, listOf("商品連結"))?.let { clickNodeBestEffort(it) }
-        delay(700)
+        delay(1050)
 
         // 3. 點「新增至按讚好物」
         root = rootInActiveWindow ?: return false
@@ -1404,7 +1440,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (addToListButton == null || !clickNodeBestEffort(addToListButton)) {
             appendDebugLog("  → 找不到或點擊「新增至按讚好物」失敗"); return false
         }
-        delay(2500)
+        delay(3750)
 
         // 4. 回到清單，勾選第一筆（排序：最新，剛新增的理論上會排在最上面）
         // 「新增至按讚好物」是打後端API，清單重新排序可能有延遲，等待時間要留寬一點，
@@ -1414,7 +1450,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (!waitForAnyText(listOf("分潤按讚好物"), 4000)) {
             appendDebugLog("  → 新增連結後等不到回到清單畫面"); return false
         }
-        delay(3500)
+        delay(5250)
         root = rootInActiveWindow ?: return false
         val firstCheckbox = findFirstNodeById(root, "AN_Checkbox_CheckedIconUnCheckIcon_Img")
         if (firstCheckbox == null) {
@@ -1432,7 +1468,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (!clickNodeBestEffort(firstCheckbox)) {
             appendDebugLog("  → 點擊清單第一筆的勾選框失敗"); return false
         }
-        delay(1200)
+        delay(1800)
 
         // 5. 點「分享」
         root = rootInActiveWindow ?: return false
@@ -1460,9 +1496,9 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
 
         // 7. 趁畫面切換的空檔，把影片登記進媒體庫，確保等一下的選片畫面找得到
-        delay(2000)
+        delay(3000)
         registerVideoInMediaStore(candidate.videoFile)
-        delay(1000)
+        delay(1500)
 
         // 8. 點「媒體庫」
         root = rootInActiveWindow ?: run { appendDebugLog("  → 等不到短影音錄影頁"); return false }
@@ -1475,19 +1511,19 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (!waitForAnyText(listOf("相片集"), 4000)) {
             appendDebugLog("  → 等不到媒體庫選片畫面"); return false
         }
-        delay(1000)
+        delay(1500)
         root = rootInActiveWindow ?: return false
         val videoTab = root.findAccessibilityNodeInfosByText("短影音").firstOrNull { it.isClickable }
         if (videoTab != null) {
             clickNodeBestEffort(videoTab)
-            delay(1200)
+            delay(1800)
         }
         root = rootInActiveWindow ?: return false
         val firstGalleryItem = findNodeByIdSuffix(root, "ll_check")
         if (firstGalleryItem == null || !clickNodeBestEffort(firstGalleryItem)) {
             appendDebugLog("  → 找不到或點擊媒體庫第一個項目失敗"); return false
         }
-        delay(1000)
+        delay(1500)
 
         // 10. 點「下一步」
         root = rootInActiveWindow ?: return false
@@ -1503,13 +1539,13 @@ class ShopeeAccessibilityService : AccessibilityService() {
         // 這個畫面有自己獨立的「下一步」按鈕，要點過這關才會進到撰寫內文畫面——
         // 之前漏掉這一關，才會一直卡在「等不到撰寫內文畫面」。
         if (waitForAnyText(listOf("剪輯", "配音", "音效"), 5000)) {
-            delay(1500)
+            delay(2250)
             root = rootInActiveWindow ?: return false
             val editorNextButton = findNodeByTexts(root, listOf("下一步"))
             if (editorNextButton != null) {
                 clickNodeBestEffort(editorNextButton)
                 appendDebugLog("  → 影片編輯預覽畫面：已點擊下一步")
-                delay(1000)
+                delay(1500)
             } else {
                 appendDebugLog("  → 影片編輯預覽畫面：找不到「下一步」按鈕，嘗試繼續往下走")
             }
@@ -1521,7 +1557,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (!waitForAnyText(listOf("撰寫內文", "為您的短影音撰寫內文"), 5000)) {
             appendDebugLog("  → 等不到「撰寫內文」畫面"); return false
         }
-        delay(1000)
+        delay(1700)
         root = rootInActiveWindow ?: return false
         val captionInput = findNodeByIdSuffix(root, "et_caption")
         if (captionInput == null) {
@@ -1534,11 +1570,11 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, shortVideoCaption)
             }
             captionInput.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, captionBundle)
-            delay(1000)
+            delay(1700)
             captionInput.performAction(AccessibilityNodeInfo.ACTION_CLEAR_FOCUS)
             val imm2 = getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
             imm2?.hideSoftInputFromWindow(null, 0)
-            delay(700)
+            delay(1190)
         }
 
         // 12. 確認商品卡是否自動帶入（只記錄不當失敗條件，避免因為判斷誤差擋住整個流程）
@@ -1547,27 +1583,28 @@ class ShopeeAccessibilityService : AccessibilityService() {
         appendDebugLog("  → 撰寫內文畫面：商品卡${if (productCardPresent) "已自動帶入" else "沒看到（請留意，可能要手動補加）"}")
 
         // 13. 調整三個開關：關閉「允許他人合拍」「允許他人拼接」、開啟「AI生成影片標記」。
-        // 這幾個開關在無障礙節點樹裡沒有獨立的可點擊元件（見開發時的dump診斷），
-        // 這裡先用「直接對文字標籤節點嘗試ACTION_CLICK」的方法1，不保證一定有效——
-        // 第一次實測後務必截圖確認這三個開關的實際狀態，如果沒反應，需要改用座標點擊備援方案。
+        // 實測確認方法1（對文字標籤節點下ACTION_CLICK）完全無效——這幾個開關是蝦皮自訂繪製元件，
+        // 無障礙樹裡真的沒有暴露對應的可點擊節點。改用方法2：對開關實際所在的螢幕座標直接tap。
+        // Y座標從文字標籤節點的bounds動態算（不會跑掉），X座標用「螢幕寬度的比例」
+        // （固定在畫面右側同一個相對位置，比例在不同解析度手機上比寫死像素準）。
         root = rootInActiveWindow ?: return false
         findNodeByIdSuffix(root, "tv_allow_duet")?.let {
-            val r = clickNodeBestEffort(it)
-            appendDebugLog("  → 嘗試關閉「允許他人合拍」：${if (r) "已送出點擊" else "點擊失敗"}")
+            tapToggleNearLabel(it)
+            appendDebugLog("  → 已點擊「允許他人合拍」開關（座標點擊法）")
         }
-        delay(700)
+        delay(1190)
         root = rootInActiveWindow ?: return false
         findNodeByIdSuffix(root, "tv_allow_stitch")?.let {
-            val r = clickNodeBestEffort(it)
-            appendDebugLog("  → 嘗試關閉「允許他人拼接」：${if (r) "已送出點擊" else "點擊失敗"}")
+            tapToggleNearLabel(it)
+            appendDebugLog("  → 已點擊「允許他人拼接」開關（座標點擊法）")
         }
-        delay(700)
+        delay(1190)
         root = rootInActiveWindow ?: return false
         findNodeByIdSuffix(root, "tv_ai_generated_title")?.let {
-            val r = clickNodeBestEffort(it)
-            appendDebugLog("  → 嘗試開啟「AI生成影片標記」：${if (r) "已送出點擊" else "點擊失敗"}")
+            tapToggleNearLabel(it)
+            appendDebugLog("  → 已點擊「AI生成影片標記」開關（座標點擊法）")
         }
-        delay(1000)
+        delay(1700)
 
         // 14. 點「發佈」
         root = rootInActiveWindow ?: return false
@@ -1577,7 +1614,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
 
         // 15. 判定成功的依據：按下發佈後，畫面上不再有文案輸入框（代表已經離開撰寫內文畫面）
-        delay(3000)
+        delay(5100)
         val stillOnCaptionScreen = rootInActiveWindow?.let { findNodeByIdSuffix(it, "et_caption") } != null
         if (stillOnCaptionScreen) {
             appendDebugLog("  → 按下發佈後仍停在撰寫內文畫面，判定失敗（可能跳出錯誤提示或達到每日上限）")
@@ -1608,38 +1645,54 @@ class ShopeeAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * 依照「黃金前3秒抓眼球→中間快速痛點共鳴→結尾明確導購」公式，組出蝦皮短影音
-     * 「撰寫內文」要填的文案。素材來源：narrationText（TTS逐字稿，本身已經是用賣點口吻
-     * 寫成的句子，直接重組利用，不用另外呼叫AI生成）＋商品價格＋短連結。
-     * 不含 # 標籤（標籤要點另一個獨立按鈕輸入，這次先不自動化這塊）。
-     * narrationText是空字串時（例如舊資料還沒補這欄位）退回用商品名稱＋連結組最基本的一句，
-     * 避免內文整個空白。
+     * 依照「黃金前3秒抓眼球→中間一句痛點共鳴」公式，組出蝦皮短影音「撰寫內文」要填的文案，
+     * 控制在150字元上限內（畫面實測有這個限制）。不放價格跟連結——商品卡本身已經帶價格，
+     * 連結蝦皮平台也會自動附上，文字裡重複寫反而占用字數。結尾直接接5個#標籤
+     * （蝦皮這幾顆開關旁的「# 標籤」是獨立輸入按鈕，目前還沒有那個畫面的節點資訊，
+     * 先用「內文文字裡直接打#標籤」這個大部分短影音平台都通用的做法達到同樣效果）。
+     * narrationText是空字串時退回用商品名稱組最基本的一句，避免內文整個空白。
      */
     private fun buildShortVideoCaption(candidate: UploadCandidate): String {
+        val maxLength = 150
         val sentences = candidate.narrationText
             .split("。")
             .map { it.trim() }
             .filter { it.isNotBlank() }
 
-        val priceText = if (candidate.price > 0) "只要\$${candidate.price.toInt()}" else "現在下單"
+        val hook = sentences.firstOrNull()
+            ?: candidate.productName.ifBlank { "這個好物" }
+        val middle = sentences.getOrNull(1)
 
-        if (sentences.isEmpty()) {
-            val name = candidate.productName.ifBlank { "這個好物" }
-            return "真的好用！$name，$priceText，直接點下方連結去看看 👉 ${candidate.promoLink}"
+        val tags = buildHashtags(candidate)
+        val tagsLine = tags.joinToString(" ") { "#$it" }
+
+        // 先組「鉤子＋標籤」這個一定要保留的核心部分，字數還有剩才加中間痛點句
+        val core = "$hook！\n$tagsLine"
+        val withMiddle = if (!middle.isNullOrBlank()) "$hook！$middle。\n$tagsLine" else core
+
+        val result = if (withMiddle.length <= maxLength) withMiddle else core
+        return if (result.length <= maxLength) result else result.take(maxLength)
+    }
+
+    /**
+     * 生成5個標籤：優先取商品名稱裡看起來像品牌／品項的片段（用空白/常見分隔符切開，
+     * 取前面幾段有意義的中文詞），不夠5個的話用固定的蝦皮分潤短影音常用標籤補滿。
+     */
+    private fun buildHashtags(candidate: UploadCandidate): List<String> {
+        val fromName = candidate.productName
+            .split(" ", "　", "-", "/")
+            .map { it.trim() }
+            .filter { it.length in 2..8 }
+            .take(2)
+
+        val genericPool = listOf("蝦皮好物", "分潤推薦", "開箱推薦", "生活好物", "必買推薦", "好物分享")
+        val tags = mutableListOf<String>()
+        tags.addAll(fromName)
+        for (tag in genericPool) {
+            if (tags.size >= 5) break
+            if (!tags.contains(tag)) tags.add(tag)
         }
-
-        // 第一句當「黃金前3秒」的鉤子；中間句子當痛點共鳴；結尾自己組固定的導購句，
-        // 不用最後一句原本的內容（原本是TTS結尾語氣，不一定適合當書面文案的收尾）。
-        val hook = sentences.first()
-        val middle = if (sentences.size > 2) sentences.subList(1, sentences.size - 1) else emptyList()
-
-        val sb = StringBuilder()
-        sb.append(hook).append("！\n\n")
-        if (middle.isNotEmpty()) {
-            sb.append(middle.joinToString("。")).append("。\n\n")
-        }
-        sb.append("真的後悔沒有早點入手，$priceText，點下方連結直接下單 👉 ${candidate.promoLink}")
-        return sb.toString()
+        return tags.take(5)
     }
 
     /**
@@ -1840,11 +1893,47 @@ class ShopeeAccessibilityService : AccessibilityService() {
      * 之後蝦皮的媒體庫選片畫面才找得到這支影片。
      * 回傳掃描完成後系統給的content Uri（掃描失敗或逾時回傳null，不影響其他流程繼續執行）。
      */
+    /**
+     * 把影片登記進媒體庫，並確保它在蝦皮「短影音」選片畫面（照最新排序）真的排在最前面。
+     * 關鍵：如果MediaStore裡已經有這個檔案的紀錄（例如之前擷取/測試時就登記過），
+     * 單純呼叫MediaScannerConnection.scanFile()只會確認/回傳既有的Uri，
+     * 不會更新DATE_ADDED這個排序用的時間欄位——這是候選商品的影片明明剛登記過，
+     * 選片畫面卻選到別支（時間更新的其他候選）影片的根本原因。
+     * 修法：先查有沒有既有紀錄，有的話直接把DATE_ADDED／DATE_MODIFIED強制更新成現在；
+     * 沒有的話才走原本MediaScannerConnection首次掃描的路徑（首次掃描本來就會是最新時間）。
+     */
     private suspend fun registerVideoInMediaStore(videoFile: File): Uri? {
         if (!videoFile.exists()) {
             appendDebugLog("  → 影片登記進媒體庫失敗：檔案不存在（${videoFile.absolutePath}）")
             return null
         }
+        try { videoFile.setLastModified(System.currentTimeMillis()) } catch (_: Exception) { /* 部分機型/儲存權限下可能不允許，忽略即可 */ }
+
+        val nowSeconds = System.currentTimeMillis() / 1000
+        try {
+            val collection = MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+            val projection = arrayOf(MediaStore.Video.Media._ID)
+            val selection = "${MediaStore.Video.Media.DATA} = ?"
+            val selectionArgs = arrayOf(videoFile.absolutePath)
+            val existingUri: Uri? = contentResolver.query(collection, projection, selection, selectionArgs, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Video.Media._ID))
+                    ContentUris.withAppendedId(collection, id)
+                } else null
+            }
+            if (existingUri != null) {
+                val values = ContentValues().apply {
+                    put(MediaStore.Video.Media.DATE_ADDED, nowSeconds)
+                    put(MediaStore.Video.Media.DATE_MODIFIED, nowSeconds)
+                }
+                val updated = contentResolver.update(existingUri, values, null, null)
+                appendDebugLog("  → 影片已存在媒體庫，強制更新時間戳記讓它排到最新（更新筆數=$updated）：${videoFile.name}")
+                return existingUri
+            }
+        } catch (e: Exception) {
+            appendDebugLog("  → 查詢/更新媒體庫既有紀錄時發生例外：${e.javaClass.simpleName} ${e.message}")
+        }
+
         val result = withTimeoutOrNull(8000) {
             suspendCancellableCoroutine<Uri?> { continuation ->
                 try {
