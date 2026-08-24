@@ -1855,6 +1855,11 @@ class ShopeeAccessibilityService : AccessibilityService() {
      *        風險：如果兩次都生效，狀態會被切回原本開啟，這是刻意接受的實驗性風險，
      *        重點是觀察「點兩次前後」狀態到底有沒有變化，藉此判斷是不是這個原因
      * 每次點擊後都記錄座標到debug log，實際成功與否要使用者自己截圖確認畫面。
+     * 【2026-08-24追加】網路查到兩個關鍵線索：(1) 有開發者反應dispatchGesture連續呼叫時，
+     * 系統的手勢處理狀態有時沒有正確清空，需要一個「真實觸控事件」介入才會恢復正常，
+     * 手動滑一下螢幕後同樣的程式碼就能生效；(2) 我們之前呼叫dispatchGesture時
+     * callback都傳null，從來不知道每次手勢系統到底是「真的執行了」還是「直接取消」，
+     * 這次全部加上GestureResultCallback記錄onCompleted/onCancelled，才能真正對症下藥。
      */
     fun testDuetToggleGestures() {
         serviceScope.launch {
@@ -1869,18 +1874,26 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 return@launch
             }
 
-            appendDebugLog("  → 【合拍測試】開始，共測試3種手法，中間都有間隔方便你截圖確認狀態")
+            appendDebugLog("  → 【合拍測試】開始，共測試5種手法，中間都有間隔方便你截圖確認狀態")
 
-            fun tapDuetOnce(durationMs: Long, offsetX: Float, offsetY: Float, label: String): Boolean {
+            // 手勢執行結果callback：記錄系統到底是「真的完成」還是「直接取消」這個手勢，
+            // 這是之前完全沒有的資訊——過去callback都傳null，等於盲測。
+            suspend fun tapDuetOnceWithResult(
+                durationMs: Long,
+                offsetX: Float,
+                offsetY: Float,
+                startTime: Long,
+                label: String
+            ) {
                 val rootNow = rootInActiveWindow
                 if (rootNow == null) {
                     appendDebugLog("  → 【合拍測試】$label 前讀不到畫面，跳過")
-                    return false
+                    return
                 }
                 val duetNodeNow = findNodeByIdSuffix(rootNow, "tv_allow_duet")
                 if (duetNodeNow == null) {
                     appendDebugLog("  → 【合拍測試】$label 前找不到節點，跳過")
-                    return false
+                    return
                 }
                 val bounds = Rect()
                 duetNodeNow.getBoundsInScreen(bounds)
@@ -1892,28 +1905,64 @@ class ShopeeAccessibilityService : AccessibilityService() {
                     if (offsetX != 0f || offsetY != 0f) lineTo(x + offsetX, y + offsetY)
                 }
                 val gesture = GestureDescription.Builder()
-                    .addStroke(GestureDescription.StrokeDescription(path, 0, durationMs))
+                    .addStroke(GestureDescription.StrokeDescription(path, startTime, durationMs))
                     .build()
-                dispatchGesture(gesture, null, null)
-                appendDebugLog("  → 【合拍測試】$label 已送出，X=%.1f Y=%.1f 停留=${durationMs}ms".format(x, y))
-                return true
+                val result = withTimeoutOrNull(3000) {
+                    suspendCancellableCoroutine<String> { continuation ->
+                        val dispatched = dispatchGesture(gesture, object : GestureResultCallback() {
+                            override fun onCompleted(gestureDescription: GestureDescription?) {
+                                if (continuation.isActive) continuation.resume("onCompleted（系統回報手勢有真的執行完成）")
+                            }
+                            override fun onCancelled(gestureDescription: GestureDescription?) {
+                                if (continuation.isActive) continuation.resume("onCancelled（系統回報手勢被取消，沒有真的執行）")
+                            }
+                        }, null)
+                        if (!dispatched && continuation.isActive) {
+                            continuation.resume("dispatchGesture()呼叫本身就回傳false（連送出都失敗）")
+                        }
+                    }
+                } ?: "等待callback逾時（3秒內沒收到onCompleted/onCancelled）"
+                appendDebugLog("  → 【合拍測試】$label 已送出，X=%.1f Y=%.1f 停留=${durationMs}ms startTime=${startTime}ms → 結果：$result".format(x, y))
             }
 
             // 手法A：純單點（原本的做法，當對照組）
-            tapDuetOnce(durationMs = 150, offsetX = 0f, offsetY = 0f, label = "手法A（純單點）")
+            tapDuetOnceWithResult(durationMs = 150, offsetX = 0f, offsetY = 0f, startTime = 0, label = "手法A（純單點）")
             delay(2000)
 
             // 手法B：模擬真人手指輕微位移（DOWN→小幅度MOVE→UP），停留拉長到400ms
-            tapDuetOnce(durationMs = 400, offsetX = 8f, offsetY = 4f, label = "手法B（帶輕微位移+400ms停留）")
+            tapDuetOnceWithResult(durationMs = 400, offsetX = 8f, offsetY = 4f, startTime = 0, label = "手法B（帶輕微位移+400ms停留）")
             delay(2000)
 
             // 手法C：連續點擊2次，中間間隔約1秒
             appendDebugLog("  → 【合拍測試】手法C開始：連續點擊2次，中間間隔1秒")
-            tapDuetOnce(durationMs = 150, offsetX = 0f, offsetY = 0f, label = "手法C第1次點擊")
+            tapDuetOnceWithResult(durationMs = 150, offsetX = 0f, offsetY = 0f, startTime = 0, label = "手法C第1次點擊")
             delay(1000)
-            tapDuetOnce(durationMs = 150, offsetX = 0f, offsetY = 0f, label = "手法C第2次點擊")
+            tapDuetOnceWithResult(durationMs = 150, offsetX = 0f, offsetY = 0f, startTime = 0, label = "手法C第2次點擊")
+            delay(2000)
 
-            appendDebugLog("  → 【合拍測試】結束，麻煩截圖給我看每個手法測試後的開關實際狀態")
+            // 手法D：網路查到的線索——先送一個「無害的」手勢到畫面空白處，
+            // 懷疑這能讓系統的手勢處理管線恢復正常狀態，再點合拍可能就會生效
+            appendDebugLog("  → 【合拍測試】手法D開始：先點空白處喚醒手勢管線，再點合拍")
+            run {
+                val metrics = resources.displayMetrics
+                val wakeX = metrics.widthPixels * 0.85f
+                val wakeY = metrics.heightPixels * 0.09f // 畫面右上角字數統計附近，非互動區域，比較安全
+                val wakePath = Path().apply { moveTo(wakeX, wakeY) }
+                val wakeGesture = GestureDescription.Builder()
+                    .addStroke(GestureDescription.StrokeDescription(wakePath, 0, 100))
+                    .build()
+                dispatchGesture(wakeGesture, null, null)
+                appendDebugLog("  → 【合拍測試】手法D：已送出喚醒手勢（空白處點擊）X=%.1f Y=%.1f".format(wakeX, wakeY))
+            }
+            delay(500)
+            tapDuetOnceWithResult(durationMs = 150, offsetX = 0f, offsetY = 0f, startTime = 0, label = "手法D（喚醒後點合拍）")
+            delay(2000)
+
+            // 手法E：調整StrokeDescription的startTime參數（從0改成10ms），
+            // 網路上找到的範例程式碼都是用startTime=10而不是0，可能有微妙差異
+            tapDuetOnceWithResult(durationMs = 150, offsetX = 0f, offsetY = 0f, startTime = 10, label = "手法E（startTime=10ms）")
+
+            appendDebugLog("  → 【合拍測試】5種手法全部結束，麻煩截圖給我看每個手法測試後的開關實際狀態")
         }
     }
 
