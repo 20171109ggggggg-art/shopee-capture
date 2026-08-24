@@ -861,14 +861,25 @@ class ShopeeAccessibilityService : AccessibilityService() {
      * Y座標從對應文字標籤節點的bounds算出來（每次執行都動態抓，不會跑掉），
      * X座標用螢幕寬度比例（開關固定在畫面右側同一個相對位置，比例在不同解析度手機上比較準）。
      */
-    private fun tapToggleNearLabel(labelNode: AccessibilityNodeInfo, xRatio: Float = 0.905f) {
+    /**
+     * 在「指定節點的Y座標」、「螢幕右側固定dp留白距離」處點一下——給撰寫內文畫面那三個開關用。
+     * 改用dp（跟解析度無關的邏輯像素）而不是「螢幕寬度佔比」：Android原生排版本來就是用
+     * 固定dp留白對齊邊界，不是用百分比，用dp換算在不同手機（不同螢幕密度/解析度）上
+     * 才會準確對齊到同一個相對位置，不用每台手機重新校正。
+     * marginDp的值是從這次實測校正抓出來的估計值，如果之後在別的裝置上測試偏了，
+     * 只要調整這一個數字就好，其他邏輯不用動。
+     * 點擊持續時間從80ms拉長到150ms：太短的觸控可能被系統判定成無效點擊，
+     * 有機率造成同樣的座標點擊卻沒生效（懷疑是這次三顆只中一顆的原因之一）。
+     */
+    private fun tapToggleNearLabel(labelNode: AccessibilityNodeInfo, marginDp: Float = 40f) {
         val bounds = Rect().also { labelNode.getBoundsInScreen(it) }
         val metrics = resources.displayMetrics
-        val x = metrics.widthPixels * xRatio
+        val marginPx = marginDp * metrics.density
+        val x = metrics.widthPixels - marginPx
         val y = bounds.centerY().toFloat()
         val path = Path().apply { moveTo(x, y) }
         val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0, 80))
+            .addStroke(GestureDescription.StrokeDescription(path, 0, 150))
             .build()
         dispatchGesture(gesture, null, null)
     }
