@@ -205,6 +205,10 @@ fun RootScreen() {
 
         AutoCaptureSettingsCard(context)
 
+        Spacer(Modifier.height(14.dp))
+
+        UploadAutomationSettingsCard(context)
+
         Spacer(Modifier.height(32.dp))
 
         Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
@@ -447,6 +451,40 @@ fun AutoCaptureSettingsCard(context: android.content.Context) {
             singleLine = true,
             enabled = timeLimitEnabled,
             label = { Text(stringResource(R.string.time_limit_hint)) },
+            shape = RoundedCornerShape(0.dp)
+        )
+    }
+}
+
+@Composable
+fun UploadAutomationSettingsCard(context: android.content.Context) {
+    var countText by remember { mutableStateOf(UploadAutomationPrefs.getTargetCount(context).toString()) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White)
+            .padding(16.dp)
+    ) {
+        Text(stringResource(R.string.upload_settings_title), fontSize = 15.sp, fontWeight = FontWeight.Bold, color = InkColor)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            stringResource(R.string.upload_settings_desc),
+            fontSize = 12.sp, color = MutedColor, lineHeight = 17.sp
+        )
+        Spacer(Modifier.height(14.dp))
+
+        Text(stringResource(R.string.upload_target_count_label), fontSize = 12.sp, color = InkColor, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(6.dp))
+        OutlinedTextField(
+            value = countText,
+            onValueChange = { newValue ->
+                countText = newValue
+                val count = newValue.toIntOrNull()?.coerceIn(1, 50)
+                if (count != null) UploadAutomationPrefs.setTargetCount(context, count)
+            },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
             shape = RoundedCornerShape(0.dp)
         )
     }
