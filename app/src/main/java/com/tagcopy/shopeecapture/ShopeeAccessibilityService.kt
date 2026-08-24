@@ -1749,6 +1749,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
         if (meTab == null || !clickNodeBestEffort(meTab)) {
             appendDebugLog("  → [返回清單] 找不到或點擊底部導覽列「我／Me」失敗，請手動導航回清單畫面")
+            rootInActiveWindow?.let { dumpClickableNodesToLog(it) }
             return
         }
         delay(1500)
@@ -2793,25 +2794,34 @@ class ShopeeAccessibilityService : AccessibilityService() {
      * 找不到任何候選時回傳null。
      */
     private fun findBottommostNodeByTexts(root: AccessibilityNodeInfo, texts: List<String>): AccessibilityNodeInfo? {
+        // 原本用 findAccessibilityNodeInfosByText 做子字串比對，抓「Me」這種短字串時
+        // 會誤配對到「Home」（Home 這個字本身就包含「me」子字串！），導致找到/點到錯的分頁。
+        // 改成手動walk整棵樹，只挑「節點自己的文字或描述，去除頭尾空白後跟目標字串完全相等」
+        // 的節點（不分大小寫），比對更嚴謹，不會被字串包含關係誤觸。
         val candidates = mutableListOf<AccessibilityNodeInfo>()
-        for (text in texts) {
-            val matches = root.findAccessibilityNodeInfosByText(text)
-            for (node in matches) {
+        val targets = texts.map { it.trim().lowercase() }
+        fun walk(node: AccessibilityNodeInfo?, depth: Int) {
+            if (node == null || depth > 30) return
+            val text = node.text?.toString()?.trim()?.lowercase()
+            val desc = node.contentDescription?.toString()?.trim()?.lowercase()
+            if ((text != null && text in targets) || (desc != null && desc in targets)) {
                 if (node.isClickable) {
                     candidates.add(node)
-                    continue
+                } else {
+                    var parent = node.parent
+                    var d = 0
+                    var found: AccessibilityNodeInfo? = null
+                    while (parent != null && d < 10) {
+                        if (parent.isClickable) { found = parent; break }
+                        parent = parent.parent
+                        d++
+                    }
+                    candidates.add(found ?: node)
                 }
-                var parent = node.parent
-                var depth = 0
-                var found: AccessibilityNodeInfo? = null
-                while (parent != null && depth < 10) {
-                    if (parent.isClickable) { found = parent; break }
-                    parent = parent.parent
-                    depth++
-                }
-                candidates.add(found ?: node)
             }
+            for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
         }
+        walk(root, 0)
         if (candidates.isEmpty()) return null
         return candidates.maxByOrNull { node ->
             val bounds = Rect()
