@@ -26,7 +26,10 @@ class FloatingButtonService : Service() {
     // Service 生命週期內只會有一個實例，onCreate 設定、onDestroy 清除。
     private var windowManager: WindowManager? = null
     private var floatingView: View? = null
+    private var floatingViewParams: WindowManager.LayoutParams? = null
     private var calibrationOverlayView: View? = null
+    private val calibrationTimeoutHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var calibrationTimeoutRunnable: Runnable? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -44,6 +47,8 @@ class FloatingButtonService : Service() {
         floatingView = null
         calibrationOverlayView?.let { windowManager?.removeView(it) }
         calibrationOverlayView = null
+        calibrationTimeoutRunnable?.let { calibrationTimeoutHandler.removeCallbacks(it) }
+        calibrationTimeoutRunnable = null
     }
 
     private fun startForegroundWithNotification() {
@@ -190,6 +195,7 @@ class FloatingButtonService : Service() {
         calibrateButton.setOnTouchListener(dragListener)
 
         floatingView = container
+        floatingViewParams = params
         windowManager?.addView(container, params)
     }
 
@@ -203,9 +209,7 @@ class FloatingButtonService : Service() {
     private fun toggleCoordinateCalibrationOverlay() {
         val existing = calibrationOverlayView
         if (existing != null) {
-            windowManager?.removeView(existing)
-            calibrationOverlayView = null
-            Toast.makeText(this, "座標校正模式：已關閉", Toast.LENGTH_SHORT).show()
+            disableCalibrationOverlay()
             return
         }
 
@@ -241,7 +245,36 @@ class FloatingButtonService : Service() {
 
         calibrationOverlayView = overlay
         windowManager?.addView(overlay, overlayParams)
-        Toast.makeText(this, "座標校正模式：已開啟，點畫面任意處會記錄座標（再按一次校正鈕關閉）", Toast.LENGTH_LONG).show()
+
+        // 關鍵修正：overlay是後加的視窗，z-order會蓋在浮動按鈕上面，導致想再點「校正」關閉
+        // 都會被overlay攔截、完全點不到按鈕（先前實測發生過這個問題，只能重開機解決）。
+        // 這裡把浮動按鈕層移除再重新加回去，讓它回到最上層，全程保持可以點得到。
+        floatingView?.let { fv ->
+            windowManager?.removeView(fv)
+            windowManager?.addView(fv, floatingViewParams)
+        }
+
+        // 安全機制：就算上面的置頂補救萬一還是失效，30秒後也會自動關閉校正模式，
+        // 不會再發生「整個畫面點不到任何東西、只能重開機」的狀況。
+        calibrationTimeoutRunnable?.let { calibrationTimeoutHandler.removeCallbacks(it) }
+        val timeoutRunnable = Runnable {
+            if (calibrationOverlayView != null) {
+                Toast.makeText(this, "座標校正模式：逾時自動關閉", Toast.LENGTH_LONG).show()
+                disableCalibrationOverlay()
+            }
+        }
+        calibrationTimeoutRunnable = timeoutRunnable
+        calibrationTimeoutHandler.postDelayed(timeoutRunnable, 30000)
+
+        Toast.makeText(this, "座標校正模式：已開啟，點畫面任意處會記錄座標（再按一次校正鈕關閉，30秒後也會自動關閉）", Toast.LENGTH_LONG).show()
+    }
+
+    private fun disableCalibrationOverlay() {
+        calibrationOverlayView?.let { windowManager?.removeView(it) }
+        calibrationOverlayView = null
+        calibrationTimeoutRunnable?.let { calibrationTimeoutHandler.removeCallbacks(it) }
+        calibrationTimeoutRunnable = null
+        Toast.makeText(this, "座標校正模式：已關閉", Toast.LENGTH_SHORT).show()
     }
 
     private fun onDetectButtonTapped() {

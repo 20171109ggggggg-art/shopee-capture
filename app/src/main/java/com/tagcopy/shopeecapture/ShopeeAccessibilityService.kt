@@ -871,11 +871,16 @@ class ShopeeAccessibilityService : AccessibilityService() {
      * 點擊持續時間從80ms拉長到150ms：太短的觸控可能被系統判定成無效點擊，
      * 有機率造成同樣的座標點擊卻沒生效（懷疑是這次三顆只中一顆的原因之一）。
      */
-    private fun tapToggleNearLabel(labelNode: AccessibilityNodeInfo, marginDp: Float = 40f) {
+    /**
+     * 在「指定節點的Y座標」、「螢幕寬度的實測比例」處點一下——給撰寫內文畫面的開關用。
+     * xRatio=0.921是用App內建的「校正」工具實測量出來的精確值（不是估算），
+     * 比先前用dp留白理論推算的0.905更準確——目前只有這一台裝置的實測資料，
+     * 如果之後在別的裝置上跑偏了，同樣用「校正」工具重新量一次，改這個數字就好。
+     */
+    private fun tapToggleNearLabel(labelNode: AccessibilityNodeInfo, xRatio: Float = 0.921f) {
         val bounds = Rect().also { labelNode.getBoundsInScreen(it) }
         val metrics = resources.displayMetrics
-        val marginPx = marginDp * metrics.density
-        val x = metrics.widthPixels - marginPx
+        val x = metrics.widthPixels * xRatio
         val y = bounds.centerY().toFloat()
         val path = Path().apply { moveTo(x, y) }
         val gesture = GestureDescription.Builder()
@@ -1627,9 +1632,28 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
         delay(1190)
         root = rootInActiveWindow ?: return false
-        findNodeByIdSuffix(root, "tv_ai_generated_title")?.let {
-            tapToggleNearLabel(it)
-            appendDebugLog("  → 已點擊「AI生成影片標記」開關（座標點擊法）")
+        findNodeByIdSuffix(root, "tv_ai_generated_title")?.let { titleNode ->
+            // 實測校正發現：這顆開關的垂直位置不是對齊標題那一行，而是對齊「標題+底下
+            // 說明文字」整塊區域的中點（說明文字很長，開關視覺上對齊在偏中間、偏下的位置）。
+            // 用標題node跟說明node合併起來的bounds算中點，比只用標題一行準確很多。
+            val descNode = findNodeByIdSuffix(root, "tv_ai_generated_desc")
+            if (descNode != null) {
+                val titleBounds = Rect().also { titleNode.getBoundsInScreen(it) }
+                val descBounds = Rect().also { descNode.getBoundsInScreen(it) }
+                val combinedTop = titleBounds.top
+                val combinedBottom = descBounds.bottom
+                val metrics = resources.displayMetrics
+                val x = metrics.widthPixels * 0.921f
+                val y = ((combinedTop + combinedBottom) / 2).toFloat()
+                val path = Path().apply { moveTo(x, y) }
+                val gesture = GestureDescription.Builder()
+                    .addStroke(GestureDescription.StrokeDescription(path, 0, 150))
+                    .build()
+                dispatchGesture(gesture, null, null)
+            } else {
+                tapToggleNearLabel(titleNode)
+            }
+            appendDebugLog("  → 已點擊「AI生成影片標記」開關（座標點擊法，標題+說明文字合併中點）")
         }
         delay(1700)
 
