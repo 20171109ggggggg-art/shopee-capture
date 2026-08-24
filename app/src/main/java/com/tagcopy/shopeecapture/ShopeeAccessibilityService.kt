@@ -1174,7 +1174,9 @@ class ShopeeAccessibilityService : AccessibilityService() {
         val folder: File,
         val promoLink: String,
         val narrationText: String,
-        val videoFile: File
+        val videoFile: File,
+        val productName: String,
+        val price: Double
     )
 
     /**
@@ -1235,9 +1237,12 @@ class ShopeeAccessibilityService : AccessibilityService() {
 
                 val narrationText = json.optString("narrationText", "")
                     .takeIf { it.isNotBlank() && it != "null" } ?: ""
+                val productName = json.optString("productName", "")
+                    .takeIf { it.isNotBlank() && it != "null" } ?: ""
+                val price = json.optDouble("price", 0.0)
 
                 appendDebugLog("  → 掃描候選商品：${dir.name} 符合條件，加入候選清單（文案長度=${narrationText.length}字）")
-                candidates.add(UploadCandidate(dir, promoLink, narrationText, videoFile))
+                candidates.add(UploadCandidate(dir, promoLink, narrationText, videoFile, productName, price))
             } catch (e: Exception) {
                 appendDebugLog("  → 掃描候選商品：讀取 ${dir.name}/meta.json 失敗，跳過（${e.javaClass.simpleName}：${e.message}）")
             }
@@ -1494,6 +1499,24 @@ class ShopeeAccessibilityService : AccessibilityService() {
             appendDebugLog("  → 找不到或點擊「下一步」失敗"); return false
         }
 
+        // 10.5 選片後蝦皮會先進到一個「影片編輯預覽」畫面（剪輯／文字／貼紙／配音／音效），
+        // 這個畫面有自己獨立的「下一步」按鈕，要點過這關才會進到撰寫內文畫面——
+        // 之前漏掉這一關，才會一直卡在「等不到撰寫內文畫面」。
+        if (waitForAnyText(listOf("剪輯", "配音", "音效"), 5000)) {
+            delay(1500)
+            root = rootInActiveWindow ?: return false
+            val editorNextButton = findNodeByTexts(root, listOf("下一步"))
+            if (editorNextButton != null) {
+                clickNodeBestEffort(editorNextButton)
+                appendDebugLog("  → 影片編輯預覽畫面：已點擊下一步")
+                delay(1000)
+            } else {
+                appendDebugLog("  → 影片編輯預覽畫面：找不到「下一步」按鈕，嘗試繼續往下走")
+            }
+        } else {
+            appendDebugLog("  → 沒看到影片編輯預覽畫面，可能版面不同或已跳過，嘗試繼續往下走")
+        }
+
         // 11. 等「撰寫內文」畫面，填入文案
         if (!waitForAnyText(listOf("撰寫內文", "為您的短影音撰寫內文"), 5000)) {
             appendDebugLog("  → 等不到「撰寫內文」畫面"); return false
@@ -1504,9 +1527,11 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (captionInput == null) {
             appendDebugLog("  → 找不到文案輸入框"); return false
         }
-        if (candidate.narrationText.isNotBlank()) {
+        val shortVideoCaption = buildShortVideoCaption(candidate)
+        appendDebugLog("  → 撰寫內文：套用黃金3秒/痛點/導購格式文案（長度=${shortVideoCaption.length}字）")
+        run {
             val captionBundle = android.os.Bundle().apply {
-                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, candidate.narrationText)
+                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, shortVideoCaption)
             }
             captionInput.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, captionBundle)
             delay(1000)
@@ -1580,6 +1605,41 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
         walk(root, 0)
         return found
+    }
+
+    /**
+     * 依照「黃金前3秒抓眼球→中間快速痛點共鳴→結尾明確導購」公式，組出蝦皮短影音
+     * 「撰寫內文」要填的文案。素材來源：narrationText（TTS逐字稿，本身已經是用賣點口吻
+     * 寫成的句子，直接重組利用，不用另外呼叫AI生成）＋商品價格＋短連結。
+     * 不含 # 標籤（標籤要點另一個獨立按鈕輸入，這次先不自動化這塊）。
+     * narrationText是空字串時（例如舊資料還沒補這欄位）退回用商品名稱＋連結組最基本的一句，
+     * 避免內文整個空白。
+     */
+    private fun buildShortVideoCaption(candidate: UploadCandidate): String {
+        val sentences = candidate.narrationText
+            .split("。")
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+
+        val priceText = if (candidate.price > 0) "只要\$${candidate.price.toInt()}" else "現在下單"
+
+        if (sentences.isEmpty()) {
+            val name = candidate.productName.ifBlank { "這個好物" }
+            return "真的好用！$name，$priceText，直接點下方連結去看看 👉 ${candidate.promoLink}"
+        }
+
+        // 第一句當「黃金前3秒」的鉤子；中間句子當痛點共鳴；結尾自己組固定的導購句，
+        // 不用最後一句原本的內容（原本是TTS結尾語氣，不一定適合當書面文案的收尾）。
+        val hook = sentences.first()
+        val middle = if (sentences.size > 2) sentences.subList(1, sentences.size - 1) else emptyList()
+
+        val sb = StringBuilder()
+        sb.append(hook).append("！\n\n")
+        if (middle.isNotEmpty()) {
+            sb.append(middle.joinToString("。")).append("。\n\n")
+        }
+        sb.append("真的後悔沒有早點入手，$priceText，點下方連結直接下單 👉 ${candidate.promoLink}")
+        return sb.toString()
     }
 
     /**
