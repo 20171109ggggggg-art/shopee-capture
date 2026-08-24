@@ -1416,17 +1416,17 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (addIconNode == null || !clickNodeBestEffort(addIconNode)) {
             appendDebugLog("  → 找不到或點擊「+」按鈕失敗"); return false
         }
-        if (!waitForAnyText(listOf("從匯入連結新增"), 3000)) {
+        if (!waitForAnyText(listOf("從匯入連結新增", "Add by Import Link"), 3000)) {
             appendDebugLog("  → 等不到「從匯入連結新增」選單"); return false
         }
         delay(1200)
-        val importMenuNode = findNodeByTexts(rootInActiveWindow ?: return false, listOf("從匯入連結新增"))
+        val importMenuNode = findNodeByTexts(rootInActiveWindow ?: return false, listOf("從匯入連結新增", "Add by Import Link"))
         if (importMenuNode == null || !clickNodeBestEffort(importMenuNode)) {
             appendDebugLog("  → 點擊「從匯入連結新增」失敗"); return false
         }
 
         // 2. 貼上商品連結
-        if (!waitForAnyText(listOf("商品連結"), 3000)) {
+        if (!waitForAnyText(listOf("商品連結", "Products URL"), 3000)) {
             appendDebugLog("  → 等不到「商品連結」輸入畫面"); return false
         }
         delay(1200)
@@ -1449,12 +1449,12 @@ class ShopeeAccessibilityService : AccessibilityService() {
         delay(1050)
         // 保險再點一次畫面上方的「商品連結」標籤文字，確保焦點確實離開輸入框
         root = rootInActiveWindow ?: return false
-        findNodeByTexts(root, listOf("商品連結"))?.let { clickNodeBestEffort(it) }
+        findNodeByTexts(root, listOf("商品連結", "Products URL"))?.let { clickNodeBestEffort(it) }
         delay(1050)
 
         // 3. 點「新增至按讚好物」
         root = rootInActiveWindow ?: return false
-        val addToListButton = findNodeByTexts(root, listOf("新增至按讚好物"))
+        val addToListButton = findNodeByTexts(root, listOf("新增至按讚好物", "Add to My Likes"))
         if (addToListButton == null || !clickNodeBestEffort(addToListButton)) {
             appendDebugLog("  → 找不到或點擊「新增至按讚好物」失敗"); return false
         }
@@ -1465,7 +1465,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         // 不然抓到的可能還是舊排序、選到別的商品——這是之前實測發現商品對不上的根因，
         // 所以特別拉長這裡的等待，並把選到的商品文字記進log，方便之後直接從log驗證選對了沒，
         // 不用等整個流程跑完才能靠肉眼確認。
-        if (!waitForAnyText(listOf("分潤按讚好物"), 4000)) {
+        if (!waitForAnyText(listOf("分潤按讚好物", "My Likes"), 4000)) {
             appendDebugLog("  → 新增連結後等不到回到清單畫面"); return false
         }
         delay(5250)
@@ -1490,7 +1490,8 @@ class ShopeeAccessibilityService : AccessibilityService() {
 
         // 5. 點「分享」
         root = rootInActiveWindow ?: return false
-        val shareTextNode = root.findAccessibilityNodeInfosByText("分享").firstOrNull { it.text?.toString() == "分享" }
+        val shareTextNode = (root.findAccessibilityNodeInfosByText("分享") + root.findAccessibilityNodeInfosByText("Share"))
+            .firstOrNull { it.text?.toString() == "分享" || it.text?.toString() == "Share" }
         val shareButton = shareTextNode?.let { node ->
             if (node.isClickable) node else {
                 var p = node.parent; var d = 0; var c: AccessibilityNodeInfo? = null
@@ -1503,12 +1504,12 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
 
         // 6. 等分享面板出現「蝦皮短影音」選項（等不到最常見原因：已達每日上架上限或商品已分享過）
-        if (!waitForAnyText(listOf("蝦皮短影音"), 4000)) {
+        if (!waitForAnyText(listOf("蝦皮短影音", "Shopee Video"), 4000)) {
             appendDebugLog("  → 分享面板沒有出現「蝦皮短影音」選項，可能已達每日上架上限或其他限制")
             return false
         }
         root = rootInActiveWindow ?: return false
-        val shortVideoOption = findNodeByTexts(root, listOf("蝦皮短影音"))
+        val shortVideoOption = findNodeByTexts(root, listOf("蝦皮短影音", "Shopee Video"))
         if (shortVideoOption == null || !clickNodeBestEffort(shortVideoOption)) {
             appendDebugLog("  → 點擊「蝦皮短影音」失敗"); return false
         }
@@ -1520,18 +1521,19 @@ class ShopeeAccessibilityService : AccessibilityService() {
 
         // 8. 點「媒體庫」
         root = rootInActiveWindow ?: run { appendDebugLog("  → 等不到短影音錄影頁"); return false }
-        val galleryEntrance = findNodeByIdSuffix(root, "ll_gallery_entrance") ?: findNodeByTexts(root, listOf("媒體庫"))
+        val galleryEntrance = findNodeByIdSuffix(root, "ll_gallery_entrance") ?: findNodeByTexts(root, listOf("媒體庫", "Library"))
         if (galleryEntrance == null || !clickNodeBestEffort(galleryEntrance)) {
             appendDebugLog("  → 找不到或點擊「媒體庫」入口失敗"); return false
         }
 
         // 9. 等媒體庫畫面出現，切到「短影音」分頁，選第一個（剛登記進媒體庫的最新影片會排最前面）
-        if (!waitForAnyText(listOf("相片集"), 4000)) {
+        if (!waitForAnyText(listOf("相片集", "Gallery"), 4000)) {
             appendDebugLog("  → 等不到媒體庫選片畫面"); return false
         }
         delay(1500)
         root = rootInActiveWindow ?: return false
-        val videoTab = root.findAccessibilityNodeInfosByText("短影音").firstOrNull { it.isClickable }
+        val videoTab = (root.findAccessibilityNodeInfosByText("短影音") + root.findAccessibilityNodeInfosByText("Video"))
+            .firstOrNull { it.isClickable }
         if (videoTab != null) {
             clickNodeBestEffort(videoTab)
             delay(1800)
@@ -1556,10 +1558,10 @@ class ShopeeAccessibilityService : AccessibilityService() {
         // 10.5 選片後蝦皮會先進到一個「影片編輯預覽」畫面（剪輯／文字／貼紙／配音／音效），
         // 這個畫面有自己獨立的「下一步」按鈕，要點過這關才會進到撰寫內文畫面——
         // 之前漏掉這一關，才會一直卡在「等不到撰寫內文畫面」。
-        if (waitForAnyText(listOf("剪輯", "配音", "音效"), 5000)) {
+        if (waitForAnyText(listOf("剪輯", "配音", "音效", "Trimmer", "Voiceover", "Stickers"), 5000)) {
             delay(2250)
             root = rootInActiveWindow ?: return false
-            val editorNextButton = findNodeByTexts(root, listOf("下一步"))
+            val editorNextButton = findNodeByTexts(root, listOf("下一步", "Next"))
             if (editorNextButton != null) {
                 clickNodeBestEffort(editorNextButton)
                 appendDebugLog("  → 影片編輯預覽畫面：已點擊下一步")
@@ -1572,7 +1574,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
 
         // 11. 等「撰寫內文」畫面
-        if (!waitForAnyText(listOf("撰寫內文", "為您的短影音撰寫內文"), 5000)) {
+        if (!waitForAnyText(listOf("撰寫內文", "為您的短影音撰寫內文", "Add Caption", "Add caption to your videos"), 5000)) {
             appendDebugLog("  → 等不到「撰寫內文」畫面"); return false
         }
         delay(1700)
@@ -1654,7 +1656,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             // 導致後面點發佈其實點在這層看不見的選取狀態上、完全沒反應。
             // 比照之前處理「貼連結」畫面的做法，額外點一下畫面上安全的文字區塊，確保真的跳出選取模式。
             rootInActiveWindow?.let { r ->
-                val safeAnchor = findNodeByTexts(r, listOf("新增商品"))
+                val safeAnchor = findNodeByTexts(r, listOf("新增商品", "Add product"))
                 if (safeAnchor != null) {
                     clickNodeBestEffort(safeAnchor)
                     appendDebugLog("  → 已點擊「新增商品」標題，確保跳出文字選取模式")
