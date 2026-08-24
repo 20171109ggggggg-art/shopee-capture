@@ -95,15 +95,19 @@ def build_prompt(product_info: str, num_sentences: int, region: str) -> str:
     不像規則模板只講類別——AI生成的品牌+特徵敘述夠自然，不會像規則模板那樣生硬，值得善用"""
     if region == "PH":
         return (
-            f"You are a professional voice-over scriptwriter for short product videos. "
-            f"Based on the product info below, write {num_sentences} conversational narration sentences.\n\n"
+            f"You are a professional voice-over scriptwriter for short product videos targeting "
+            f"Filipino Shopee shoppers. Based on the product info below, write {num_sentences} "
+            f"conversational narration sentences in natural Taglish (the everyday mix of Tagalog "
+            f"and English that Filipinos actually speak/type online — not pure English, and not "
+            f"formal/textbook Tagalog).\n\n"
             f"Product info:\n{product_info}\n\n"
             f"Rules:\n"
             f"- Naturally weave in the brand name and 1-2 concrete, distinguishing selling points per "
             f"sentence (specific features from the product info), avoid vague adjectives\n"
-            f"- Natural spoken tone, like a friend recommending something, no hype openers like "
-            f'"Hey check this out"\n'
-            f"- Each sentence 10-18 words, avoid repeating the same selling point across sentences\n"
+            f"- Natural spoken Taglish tone, like a friend recommending something (e.g. mixing words "
+            f'like "sobrang", "grabe", "talaga", "kasi", "na", "pa" naturally with English product '
+            f'terms), no hype openers like "Hey check this out"\n'
+            f"- Each sentence 10-18 words total, avoid repeating the same selling point across sentences\n"
             f"- Output exactly {num_sentences} sentences, one per line, no numbering, no quotes, "
             f"no extra explanation"
         )
