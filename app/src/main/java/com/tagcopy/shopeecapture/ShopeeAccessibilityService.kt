@@ -1797,6 +1797,20 @@ class ShopeeAccessibilityService : AccessibilityService() {
      * 確認流程穩定、開關調整也驗證有效後，之後可以在MainActivity.kt加專屬的「開始上架」按鈕
      * 跟數量設定，取代這個暫時的測試掛鉤，跟其他test開頭的函式一起移除。
      */
+    /**
+     * 【座標校正用】把使用者在校正模式下點擊的螢幕座標記進debug log，
+     * 供FloatingButtonService的校正覆蓋層呼叫。用來精準測量像撰寫內文畫面那三個開關
+     * 這種無障礙節點樹完全抓不到的自訂元件，實際落在螢幕上的哪個位置。
+     */
+    fun logCalibrationTap(x: Float, y: Float) {
+        val metrics = resources.displayMetrics
+        val xRatio = x / metrics.widthPixels
+        val yRatio = y / metrics.heightPixels
+        appendDebugLog("  → 【座標校正】點擊位置 X=%.1f Y=%.1f（螢幕解析度 %dx%d，比例 X=%.4f Y=%.4f）".format(
+            x, y, metrics.widthPixels, metrics.heightPixels, xRatio, yRatio
+        ))
+    }
+
     fun testUploadAutomation() {
         if (isUploadAutomationRunning()) {
             appendDebugLog("  → 【上架自動化測試】已經在執行中，本次觸發略過")

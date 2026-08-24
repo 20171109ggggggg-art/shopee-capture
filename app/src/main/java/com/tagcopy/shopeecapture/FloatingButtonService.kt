@@ -26,6 +26,7 @@ class FloatingButtonService : Service() {
     // Service 生命週期內只會有一個實例，onCreate 設定、onDestroy 清除。
     private var windowManager: WindowManager? = null
     private var floatingView: View? = null
+    private var calibrationOverlayView: View? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -41,6 +42,8 @@ class FloatingButtonService : Service() {
         if (instance === this) instance = null
         floatingView?.let { windowManager?.removeView(it) }
         floatingView = null
+        calibrationOverlayView?.let { windowManager?.removeView(it) }
+        calibrationOverlayView = null
     }
 
     private fun startForegroundWithNotification() {
@@ -108,9 +111,21 @@ class FloatingButtonService : Service() {
             setPadding(36, 24, 36, 24)
         }
 
+        // 【暫時加的座標校正按鈕】用來精準測量撰寫內文畫面那三個開關的實際螢幕座標
+        // （無障礙節點樹完全抓不到這幾個自訂元件，只能靠實際點擊測量）。
+        // 校正完成、開關點擊邏輯穩定驗證有效之後，這顆按鈕可以移除。
+        val calibrateButton = TextView(this).apply {
+            text = "校正"
+            setBackgroundColor(0xFF7A4FBF.toInt())
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 14f
+            setPadding(36, 24, 36, 24)
+        }
+
         container.addView(captureButton)
         container.addView(autoButton)
         container.addView(detectButton)
+        container.addView(calibrateButton)
 
         val layoutFlag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -161,6 +176,7 @@ class FloatingButtonService : Service() {
                             captureButton -> onCaptureButtonTapped()
                             autoButton -> onAutoButtonTapped(autoButton)
                             detectButton -> onDetectButtonTapped()
+                            calibrateButton -> toggleCoordinateCalibrationOverlay()
                         }
                     }
                     true
@@ -171,9 +187,61 @@ class FloatingButtonService : Service() {
         captureButton.setOnTouchListener(dragListener)
         autoButton.setOnTouchListener(dragListener)
         detectButton.setOnTouchListener(dragListener)
+        calibrateButton.setOnTouchListener(dragListener)
 
         floatingView = container
         windowManager?.addView(container, params)
+    }
+
+    /**
+     * 【暫時加的座標校正功能】開/關一個全螢幕透明覆蓋層：開啟後，接下來每點一下螢幕
+     * （不管點在畫面上什麼東西上面），座標都會記進debug log，不會真的把觸控傳給
+     * 底下的蝦皮App（校正模式下點擊到的開關不會真的被切換，純粹只是量測座標）。
+     * 再點一次「校正」按鈕就會關閉覆蓋層，恢復正常操作。
+     * 校正完成、開關點擊邏輯穩定驗證有效之後，這個功能可以整個移除。
+     */
+    private fun toggleCoordinateCalibrationOverlay() {
+        val existing = calibrationOverlayView
+        if (existing != null) {
+            windowManager?.removeView(existing)
+            calibrationOverlayView = null
+            Toast.makeText(this, "座標校正模式：已關閉", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val service = ShopeeAccessibilityService.instance
+        if (service == null) {
+            Toast.makeText(this, getString(R.string.toast_need_accessibility), Toast.LENGTH_LONG).show()
+            return
+        }
+
+        val overlay = View(this)
+        overlay.setOnTouchListener { _, event ->
+            if (event.action == MotionEvent.ACTION_DOWN) {
+                service.logCalibrationTap(event.rawX, event.rawY)
+                Toast.makeText(this, "已記錄：X=${event.rawX.toInt()} Y=${event.rawY.toInt()}", Toast.LENGTH_SHORT).show()
+            }
+            true
+        }
+
+        val layoutFlag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        } else {
+            @Suppress("DEPRECATION")
+            WindowManager.LayoutParams.TYPE_PHONE
+        }
+        val overlayParams = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            layoutFlag,
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            PixelFormat.TRANSLUCENT
+        )
+        overlayParams.gravity = Gravity.TOP or Gravity.START
+
+        calibrationOverlayView = overlay
+        windowManager?.addView(overlay, overlayParams)
+        Toast.makeText(this, "座標校正模式：已開啟，點畫面任意處會記錄座標（再按一次校正鈕關閉）", Toast.LENGTH_LONG).show()
     }
 
     private fun onDetectButtonTapped() {
