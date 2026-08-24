@@ -1575,6 +1575,22 @@ class ShopeeAccessibilityService : AccessibilityService() {
             val imm2 = getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
             imm2?.hideSoftInputFromWindow(null, 0)
             delay(1190)
+            // 填完文案後，畫面有時會卡在「文字選取模式」（螢幕上出現綠色選取控點、背景變暗），
+            // 這是ACTION_CLEAR_FOCUS在部分機型上被系統誤判成長按選取文字，沒有真的跳出來，
+            // 導致後面點開關／發佈其實都點在這層看不見的選取狀態上、完全沒反應。
+            // 比照之前處理「貼連結」畫面的做法，額外點一下畫面上安全的文字區塊，確保真的跳出選取模式。
+            rootInActiveWindow?.let { r ->
+                val safeAnchor = findNodeByTexts(r, listOf("新增商品"))
+                if (safeAnchor != null) {
+                    clickNodeBestEffort(safeAnchor)
+                    appendDebugLog("  → 已點擊「新增商品」標題，確保跳出文字選取模式")
+                } else {
+                    // 找不到就退回對螢幕上方偏空白處點一下（大約在商品卡上方的空白區域）
+                    tapAtScreenRatio(0.5f, 0.62f)
+                    appendDebugLog("  → 找不到安全錨點文字，改用座標點擊跳出文字選取模式")
+                }
+            }
+            delay(1190)
         }
 
         // 12. 確認商品卡是否自動帶入（只記錄不當失敗條件，避免因為判斷誤差擋住整個流程）
