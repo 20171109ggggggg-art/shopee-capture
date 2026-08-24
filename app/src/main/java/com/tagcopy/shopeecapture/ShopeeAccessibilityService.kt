@@ -1623,7 +1623,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         // 合拍是三顆裡第一個點的，多輪實測發現只有它持續失敗（拼接/AI標記都成功），
         // 懷疑是緊接在填文案→收鍵盤→點安全錨點這串動作後面，畫面/回彈動畫還沒完全穩定，
         // 這裡多加一段專門的穩定等待，只影響合拍這一顆，不拖慢後面兩顆的節奏。
-        delay(1200)
+        delay(2500)
         root = rootInActiveWindow ?: return false
         findNodeByIdSuffix(root, "tv_allow_duet")?.let {
             tapToggleNearLabel(it)
