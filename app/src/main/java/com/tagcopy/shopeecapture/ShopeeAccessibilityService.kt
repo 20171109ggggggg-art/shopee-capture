@@ -1845,13 +1845,16 @@ class ShopeeAccessibilityService : AccessibilityService() {
     /**
      * 【開發除錯用，獨立測試】不用跑完整套上架流程，假設呼叫當下畫面已經在
      * 「撰寫內文」畫面（使用者自己手動導航過去），只單獨測試「允許他人合拍」開關的
-     * 點擊手法，省去每次都要重跑前面14步的時間。連續嘗試2種手法，中間有間隔：
+     * 點擊手法，省去每次都要重跑前面14步的時間。連續嘗試3種手法，中間都有間隔：
      * 手法A：純單點（原本的做法，維持150ms停留，當作對照組）
-     * 手法B：模擬真人手指按下後有輕微位移（DOWN在某點，MOVE到附近5~10px，再UP），
+     * 手法B：模擬真人手指按下後有輕微位移（DOWN在某點，MOVE到附近8px，再UP，停留400ms），
      *        懷疑蝦皮的偵測邏輯可能是「完美靜止的單點=判定為程式模擬」，真人手指
      *        按下去幾乎不可能完全不動，這個手法試著讓觸控軌跡更像真人
-     * 每次點擊後都截圖記錄目前開關狀態（讀不到switch本身的on/off，
-     * 但至少會記錄有沒有正確找到節點跟送出手勢），實際成功與否要使用者自己截圖確認畫面。
+     * 手法C：連續點擊2次，中間間隔約1秒——如果單點其實有效但這個開關的render/rebind
+     *        有延遲、第一次點擊被「畫面還沒完全準備好接受輸入」吃掉，點第二次可能就會生效；
+     *        風險：如果兩次都生效，狀態會被切回原本開啟，這是刻意接受的實驗性風險，
+     *        重點是觀察「點兩次前後」狀態到底有沒有變化，藉此判斷是不是這個原因
+     * 每次點擊後都記錄座標到debug log，實際成功與否要使用者自己截圖確認畫面。
      */
     fun testDuetToggleGestures() {
         serviceScope.launch {
@@ -1866,33 +1869,18 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 return@launch
             }
 
-            appendDebugLog("  → 【合拍測試】開始，共測試2種手法，中間間隔2秒方便你截圖確認狀態")
+            appendDebugLog("  → 【合拍測試】開始，共測試3種手法，中間都有間隔方便你截圖確認狀態")
 
-            // 手法A：純單點（原本的做法，當對照組）
-            run {
-                val bounds = Rect()
-                duetNode.getBoundsInScreen(bounds)
-                val metrics = resources.displayMetrics
-                val x = metrics.widthPixels * 0.9298f
-                val y = bounds.centerY().toFloat()
-                val path = Path().apply { moveTo(x, y) }
-                val gesture = GestureDescription.Builder()
-                    .addStroke(GestureDescription.StrokeDescription(path, 0, 150))
-                    .build()
-                dispatchGesture(gesture, null, null)
-                appendDebugLog("  → 【合拍測試】手法A（純單點）已送出，X=%.1f Y=%.1f".format(x, y))
-            }
-            delay(2000)
-
-            // 手法B：模擬真人手指輕微位移（DOWN→小幅度MOVE→UP），停留拉長到400ms
-            run {
-                val rootNow = rootInActiveWindow ?: run {
-                    appendDebugLog("  → 【合拍測試】手法B前讀不到畫面，中止"); return@run
+            fun tapDuetOnce(durationMs: Long, offsetX: Float, offsetY: Float, label: String): Boolean {
+                val rootNow = rootInActiveWindow
+                if (rootNow == null) {
+                    appendDebugLog("  → 【合拍測試】$label 前讀不到畫面，跳過")
+                    return false
                 }
                 val duetNodeNow = findNodeByIdSuffix(rootNow, "tv_allow_duet")
                 if (duetNodeNow == null) {
-                    appendDebugLog("  → 【合拍測試】手法B前找不到節點，中止")
-                    return@run
+                    appendDebugLog("  → 【合拍測試】$label 前找不到節點，跳過")
+                    return false
                 }
                 val bounds = Rect()
                 duetNodeNow.getBoundsInScreen(bounds)
@@ -1901,16 +1889,31 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 val y = bounds.centerY().toFloat()
                 val path = Path().apply {
                     moveTo(x, y)
-                    lineTo(x + 8f, y + 4f) // 輕微位移8px，模擬真人手指按下時的自然抖動
+                    if (offsetX != 0f || offsetY != 0f) lineTo(x + offsetX, y + offsetY)
                 }
                 val gesture = GestureDescription.Builder()
-                    .addStroke(GestureDescription.StrokeDescription(path, 0, 400))
+                    .addStroke(GestureDescription.StrokeDescription(path, 0, durationMs))
                     .build()
                 dispatchGesture(gesture, null, null)
-                appendDebugLog("  → 【合拍測試】手法B（帶輕微位移+400ms停留）已送出，起點X=%.1f Y=%.1f".format(x, y))
+                appendDebugLog("  → 【合拍測試】$label 已送出，X=%.1f Y=%.1f 停留=${durationMs}ms".format(x, y))
+                return true
             }
 
-            appendDebugLog("  → 【合拍測試】結束，麻煩截圖給我看兩次測試後的開關實際狀態")
+            // 手法A：純單點（原本的做法，當對照組）
+            tapDuetOnce(durationMs = 150, offsetX = 0f, offsetY = 0f, label = "手法A（純單點）")
+            delay(2000)
+
+            // 手法B：模擬真人手指輕微位移（DOWN→小幅度MOVE→UP），停留拉長到400ms
+            tapDuetOnce(durationMs = 400, offsetX = 8f, offsetY = 4f, label = "手法B（帶輕微位移+400ms停留）")
+            delay(2000)
+
+            // 手法C：連續點擊2次，中間間隔約1秒
+            appendDebugLog("  → 【合拍測試】手法C開始：連續點擊2次，中間間隔1秒")
+            tapDuetOnce(durationMs = 150, offsetX = 0f, offsetY = 0f, label = "手法C第1次點擊")
+            delay(1000)
+            tapDuetOnce(durationMs = 150, offsetX = 0f, offsetY = 0f, label = "手法C第2次點擊")
+
+            appendDebugLog("  → 【合拍測試】結束，麻煩截圖給我看每個手法測試後的開關實際狀態")
         }
     }
 
