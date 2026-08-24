@@ -876,7 +876,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
      * 比先前用dp留白理論推算的0.905更準確——目前只有這一台裝置的實測資料，
      * 如果之後在別的裝置上跑偏了，同樣用「校正」工具重新量一次，改這個數字就好。
      */
-    private fun tapToggleNearLabel(labelNode: AccessibilityNodeInfo, xRatio: Float = 0.9298f) {
+    private fun tapToggleNearLabel(labelNode: AccessibilityNodeInfo, xRatio: Float = 0.9298f): Pair<Float, Float> {
         val bounds = Rect().also { labelNode.getBoundsInScreen(it) }
         val metrics = resources.displayMetrics
         val x = metrics.widthPixels * xRatio
@@ -886,6 +886,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             .addStroke(GestureDescription.StrokeDescription(path, 0, 150))
             .build()
         dispatchGesture(gesture, null, null)
+        return Pair(x, y)
     }
 
     private fun performBack() {
@@ -1626,14 +1627,14 @@ class ShopeeAccessibilityService : AccessibilityService() {
         delay(2500)
         root = rootInActiveWindow ?: return false
         findNodeByIdSuffix(root, "tv_allow_duet")?.let {
-            tapToggleNearLabel(it)
-            appendDebugLog("  → 已點擊「允許他人合拍」開關（座標點擊法）")
+            val (tapX, tapY) = tapToggleNearLabel(it)
+            appendDebugLog("  → 已點擊「允許他人合拍」開關（座標點擊法，實際點擊位置 X=%.1f Y=%.1f）".format(tapX, tapY))
         }
         delay(1190)
         root = rootInActiveWindow ?: return false
         findNodeByIdSuffix(root, "tv_allow_stitch")?.let {
-            tapToggleNearLabel(it)
-            appendDebugLog("  → 已點擊「允許他人拼接」開關（座標點擊法）")
+            val (tapX, tapY) = tapToggleNearLabel(it)
+            appendDebugLog("  → 已點擊「允許他人拼接」開關（座標點擊法，實際點擊位置 X=%.1f Y=%.1f）".format(tapX, tapY))
         }
         delay(1190)
         root = rootInActiveWindow ?: return false
@@ -1642,7 +1643,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             // 說明文字」整塊區域的中點（說明文字很長，開關視覺上對齊在偏中間、偏下的位置）。
             // 用標題node跟說明node合併起來的bounds算中點，比只用標題一行準確很多。
             val descNode = findNodeByIdSuffix(root, "tv_ai_generated_desc")
-            if (descNode != null) {
+            val (aiTapX, aiTapY) = if (descNode != null) {
                 val titleBounds = Rect().also { titleNode.getBoundsInScreen(it) }
                 val descBounds = Rect().also { descNode.getBoundsInScreen(it) }
                 val combinedTop = titleBounds.top
@@ -1655,10 +1656,11 @@ class ShopeeAccessibilityService : AccessibilityService() {
                     .addStroke(GestureDescription.StrokeDescription(path, 0, 150))
                     .build()
                 dispatchGesture(gesture, null, null)
+                Pair(x, y)
             } else {
                 tapToggleNearLabel(titleNode)
             }
-            appendDebugLog("  → 已點擊「AI生成影片標記」開關（座標點擊法，標題+說明文字合併中點）")
+            appendDebugLog("  → 已點擊「AI生成影片標記」開關（座標點擊法，標題+說明文字合併中點，實際點擊位置 X=%.1f Y=%.1f）".format(aiTapX, aiTapY))
         }
         delay(1700)
 
