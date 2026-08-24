@@ -229,8 +229,8 @@ def generate_ai_sentences(folder: str):
     if not caption:
         return None
 
-    product_info = extract_product_info(caption)
     region = load_region(folder)
+    product_info = extract_product_info(caption, region)
     num_images = count_images(folder)
     num_sentences = determine_ai_sentence_count(num_images)
 

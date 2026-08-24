@@ -141,13 +141,27 @@ def load_region(folder: str) -> str:
     return "TW"
 
 
-def extract_product_info(caption: str) -> str:
+# PH版「Copy Info」真實格式：「Check out 商品標題 for ₱X - ₱Y. Get it on Shopee now! https://s.shopee.ph/xxx」
+# 跟TW格式一樣有固定的開場白/價格/連結，同樣不是賣點，直接丟棄，只留中間的商品標題部分
+QUOTE_PATTERN_EN = re.compile(
+    r"^Check out\s+(.+?)\s+for\s+[₱$][\d,.]+\s*-?\s*[₱$]?[\d,.]*\.\s*Get it on Shopee now!",
+    re.IGNORECASE
+)
+
+
+def extract_product_info(caption: str, region: str = "TW") -> str:
     """
     真實caption.txt格式：「嗨！快來看看『商品資訊』，售價只要$X-$Y！立即上蝦皮購物逛逛 => 連結」
     只取『』內的商品資訊，前後的話術開場白/價格/連結一律丟棄——這樣「嗨！快來看看」這類
     話術從源頭就不會進到後續解析，比事後用黑名單關鍵字濾除更根本可靠。
     抓不到『』（可能是舊格式或例外情況）就退回整段原文，交給後續步驟繼續處理。
+
+    PH版格式不一樣（沒有『』，是「Check out 標題 for ₱X - ₱Y. Get it on Shopee now! 連結」），
+    用專屬的英文正則抓中間的標題部分，同樣抓不到就退回整段原文。
     """
+    if region == "PH":
+        m_en = QUOTE_PATTERN_EN.search(caption)
+        return m_en.group(1).strip() if m_en else caption
     m = QUOTE_PATTERN.search(caption)
     return m.group(1) if m else caption
 
@@ -284,7 +298,7 @@ def build_narration_sentences(folder: str) -> list:
         return []
 
     region = load_region(folder)
-    product_info = extract_product_info(caption)
+    product_info = extract_product_info(caption, region)
     title_part, tags = split_title_and_tags(product_info)
     title_features = clean_title_features(title_part)
     category, remaining_tags = detect_category(title_part, tags)
