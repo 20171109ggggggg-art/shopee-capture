@@ -1405,8 +1405,10 @@ class ShopeeAccessibilityService : AccessibilityService() {
             appendDebugLog("  → 讀不到目前畫面"); return false
         }
         val titleNode = findNodeByIdSuffix(root, "labelActionBarTitle")
-        val titleText = titleNode?.text?.toString() ?: findTextContaining(root, "分潤按讚好物(")
-        if (titleText == null || !titleText.contains("分潤按讚好物(")) {
+        val titleText = titleNode?.text?.toString()
+            ?: findTextContaining(root, "分潤按讚好物(")
+            ?: findTextContaining(root, "My Likes(")
+        if (titleText == null || !(titleText.contains("分潤按讚好物(") || titleText.contains("My Likes("))) {
             appendDebugLog("  → 目前畫面不是「分潤按讚好物」清單（畫面標題=${titleText ?: "讀不到"}），請先手動導航到這個畫面再啟動")
             return false
         }
