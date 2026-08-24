@@ -109,7 +109,11 @@ def build_prompt(product_info: str, num_sentences: int, region: str) -> str:
             f'terms), no hype openers like "Hey check this out"\n'
             f"- Each sentence 10-18 words total, avoid repeating the same selling point across sentences\n"
             f"- Output exactly {num_sentences} sentences, one per line, no numbering, no quotes, "
-            f"no extra explanation"
+            f"no extra explanation\n"
+            f"- After the sentences, add one final line starting with \"HASHTAGS:\" followed by exactly "
+            f"5 short English hashtag words relevant to this product category (no # symbol, "
+            f"space-separated, e.g. \"HASHTAGS: ShopeeFinds MustHave HomeEssentials TechGadget "
+            f"AffiliateFind\")"
         )
     return (
         f"你是短影音商品旁白文案的專業寫手。請根據以下商品資訊，寫出 {num_sentences} 句口語化的旁白文案。\n\n"
@@ -119,7 +123,9 @@ def build_prompt(product_info: str, num_sentences: int, region: str) -> str:
         f"避免空泛的形容詞（如「品質優良」「CP值高」）\n"
         f"- 語氣自然口語，像朋友介紹商品，不要有「嗨！快來看看」這種業配開場白\n"
         f"- 每句15~25個中文字，句子之間不要重複相同的賣點\n"
-        f"- 直接輸出{num_sentences}句話，每句一行，不要加編號、不要加引號、不要有其他說明文字"
+        f"- 直接輸出{num_sentences}句話，每句一行，不要加編號、不要加引號、不要有其他說明文字\n"
+        f"- 句子輸出完後，最後加一行以「HASHTAGS:」開頭，接5個跟這個商品類別相關的中文標籤詞"
+        f"（不含#符號、用空格分隔，例如「HASHTAGS: 居家好物 分潤推薦 開箱心得 生活選物 蝦皮好物」）"
     )
 
 
@@ -197,11 +203,25 @@ PROVIDER_FUNCS = {
 }
 
 
-def parse_sentences(raw_text: str, expected_count: int) -> list:
-    """把AI回傳的原始文字拆成句子清單，順便防呆去掉AI可能自己加的編號/引號/多餘空白"""
+def parse_sentences(raw_text: str, expected_count: int) -> tuple:
+    """
+    把AI回傳的原始文字拆成 (句子清單, hashtag清單) 兩份，順便防呆去掉AI可能自己加的
+    編號/引號/多餘空白。以「HASHTAGS:」開頭的那一行單獨抽出來當hashtag清單
+    （用空白切開、去掉可能誤加的#符號），其餘行才是旁白句子。
+    抓不到HASHTAGS那行時，hashtag清單回傳空list，呼叫端會退回規則模板的預設標籤池。
+    """
     lines = [line.strip() for line in raw_text.strip().split("\n") if line.strip()]
-    cleaned = []
+    hashtags = []
+    sentence_lines = []
     for line in lines:
+        if line.upper().startswith("HASHTAGS:"):
+            tag_part = line.split(":", 1)[1] if ":" in line else ""
+            hashtags = [t.strip().lstrip("#") for t in tag_part.split() if t.strip().lstrip("#")]
+        else:
+            sentence_lines.append(line)
+
+    cleaned = []
+    for line in sentence_lines:
         # 去掉「1. 」「1、」這類編號前綴
         for sep in (". ", "、", ") ", "） "):
             if len(line) > 2 and line[0].isdigit() and sep in line[:4]:
@@ -211,27 +231,30 @@ def parse_sentences(raw_text: str, expected_count: int) -> list:
         line = line.strip("「」『』\"'")
         if line:
             cleaned.append(line)
-    return cleaned[:expected_count] if cleaned else []
+    sentences = cleaned[:expected_count] if cleaned else []
+    return sentences, hashtags[:5]
 
 
 def generate_ai_sentences(folder: str):
     """
-    主要對外函式：讀AI設定檔＋商品資料，呼叫對應供應商API生成旁白句子清單。
-    任何一步失敗（沒設定檔/沒套件/連線失敗/回應格式不對/句子數量不足）都回傳 None，
+    主要對外函式：讀AI設定檔＋商品資料，呼叫對應供應商API生成旁白句子清單與5個hashtag。
+    任何一步失敗（沒設定檔/沒套件/連線失敗/回應格式不對/句子數量不足）都回傳 (None, None)，
     呼叫端看到 None 就會自動改用規則模板，不會中斷。
+    回傳格式：(sentences: list, hashtags: list)，hashtags 若AI沒給或解析失敗會是空list
+    （不是None——句子生成成功但hashtag缺漏時，呼叫端仍可採用AI句子＋退回預設hashtag池）。
     """
     config = load_ai_config()
     if not config:
-        return None
+        return None, None
 
     if requests is None:
         print("⚠ 找不到 requests 套件，無法呼叫AI文案API，改用規則模板")
         print("  請先執行：pip install requests")
-        return None
+        return None, None
 
     caption = load_caption(folder)
     if not caption:
-        return None
+        return None, None
 
     region = load_region(folder)
     product_info = extract_product_info(caption, region)
@@ -243,20 +266,20 @@ def generate_ai_sentences(folder: str):
     call_func = PROVIDER_FUNCS.get(provider)
     if call_func is None:
         print(f"⚠ 不支援的AI供應商「{provider}」，改用規則模板")
-        return None
+        return None, None
 
     try:
         raw_text = call_func(prompt, config["api_key"], config["model"])
     except Exception as e:
         print(f"⚠ AI文案生成失敗（{provider}：{e.__class__.__name__} {e}），改用規則模板")
-        return None
+        return None, None
 
-    sentences = parse_sentences(raw_text, num_sentences)
+    sentences, hashtags = parse_sentences(raw_text, num_sentences)
     if not sentences:
         print(f"⚠ AI回應解析不到有效句子，改用規則模板")
-        return None
+        return None, None
 
-    return sentences
+    return sentences, hashtags
 
 
 def main():
@@ -277,13 +300,14 @@ def main():
         sys.exit(1)
 
     print(f"→ 使用供應商：{config['provider']}，模型：{config['model']}")
-    sentences = generate_ai_sentences(folder)
+    sentences, hashtags = generate_ai_sentences(folder)
     if not sentences:
         print("（AI生成失敗，實際跑影片時會自動退回規則模板，這裡僅顯示失敗，不做退回示範）")
     else:
         print(f"→ 產生的旁白文案（{len(sentences)}句）：")
         for s in sentences:
             print(f"    {s}")
+        print(f"→ 產生的hashtag（{len(hashtags or [])}個）：{hashtags}")
 
 
 if __name__ == "__main__":

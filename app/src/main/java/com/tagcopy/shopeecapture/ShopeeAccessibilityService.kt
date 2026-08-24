@@ -1228,7 +1228,8 @@ class ShopeeAccessibilityService : AccessibilityService() {
         val narrationText: String,
         val videoFile: File,
         val productName: String,
-        val price: Double
+        val price: Double,
+        val hashtags: List<String>
     )
 
     /**
@@ -1292,9 +1293,17 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 val productName = json.optString("productName", "")
                     .takeIf { it.isNotBlank() && it != "null" } ?: ""
                 val price = json.optDouble("price", 0.0)
+                val hashtagsArray = json.optJSONArray("hashtags")
+                val hashtags = if (hashtagsArray != null) {
+                    (0 until hashtagsArray.length()).mapNotNull { i ->
+                        hashtagsArray.optString(i, "").takeIf { it.isNotBlank() && it != "null" }
+                    }
+                } else {
+                    emptyList()
+                }
 
-                appendDebugLog("  → 掃描候選商品：${dir.name} 符合條件，加入候選清單（文案長度=${narrationText.length}字）")
-                candidates.add(UploadCandidate(dir, promoLink, narrationText, videoFile, productName, price))
+                appendDebugLog("  → 掃描候選商品：${dir.name} 符合條件，加入候選清單（文案長度=${narrationText.length}字，hashtags=${hashtags.size}個）")
+                candidates.add(UploadCandidate(dir, promoLink, narrationText, videoFile, productName, price, hashtags))
             } catch (e: Exception) {
                 appendDebugLog("  → 掃描候選商品：讀取 ${dir.name}/meta.json 失敗，跳過（${e.javaClass.simpleName}：${e.message}）")
             }
@@ -1790,31 +1799,37 @@ class ShopeeAccessibilityService : AccessibilityService() {
      */
     private fun buildShortVideoCaption(candidate: UploadCandidate): String {
         val maxLength = 150
+        // narrationText現在用換行符號分隔句子（Python端make_video.py已改成"\n".join()，
+        // 不再用中文句號「。」——PH版是英文/Taglish句子，中文句號分隔會混進不必要的中文標點）
         val sentences = candidate.narrationText
-            .split("。")
+            .split("\n")
             .map { it.trim() }
             .filter { it.isNotBlank() }
 
-        val hook = sentences.firstOrNull()
-            ?: candidate.productName.ifBlank { "這個好物" }
+        val hook = sentences.firstOrNull() ?: candidate.productName
         val middle = sentences.getOrNull(1)
 
         val tags = buildHashtags(candidate)
         val tagsLine = tags.joinToString(" ") { "#$it" }
 
-        // 先組「鉤子＋標籤」這個一定要保留的核心部分，字數還有剩才加中間痛點句
-        val core = "$hook！\n$tagsLine"
-        val withMiddle = if (!middle.isNullOrBlank()) "$hook！$middle。\n$tagsLine" else core
+        // AI／規則模板產生的句子本身已經帶有完整標點（問號、句號等），不再額外附加中文標點，
+        // 先組「鉤子＋標籤」這個一定要保留的核心部分，字數還有剩才加中間句
+        val core = "$hook\n$tagsLine"
+        val withMiddle = if (!middle.isNullOrBlank()) "$hook $middle\n$tagsLine" else core
 
         val result = if (withMiddle.length <= maxLength) withMiddle else core
         return if (result.length <= maxLength) result else result.take(maxLength)
     }
 
     /**
-     * 生成5個標籤：優先取商品名稱裡看起來像品牌／品項的片段（用空白/常見分隔符切開，
-     * 取前面幾段有意義的中文詞），不夠5個的話用固定的蝦皮分潤短影音常用標籤補滿。
+     * 產生5個標籤：優先使用meta.json裡AI（或規則模板）已經生成好的hashtags欄位
+     * （Python端make_video.py已經依地區產生對應語言的標籤，不再需要這裡另外拼湊）。
+     * candidate.hashtags為空時（例如舊資料、meta.json缺欄位）才退回：從商品名稱抽取候選詞
+     * 補上固定的中文標籤池（僅適用TW舊資料的相容性備援，PH資料應該都會有hashtags欄位）。
      */
     private fun buildHashtags(candidate: UploadCandidate): List<String> {
+        if (candidate.hashtags.isNotEmpty()) return candidate.hashtags.take(5)
+
         val fromName = candidate.productName
             .split(" ", "　", "-", "/")
             .map { it.trim() }

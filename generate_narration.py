@@ -253,6 +253,49 @@ def count_images(folder: str) -> int:
     return min(len(files), 10)
 
 
+HASHTAG_POOL_ZH = ["蝦皮好物", "分潤推薦", "開箱推薦", "生活好物", "必買推薦", "好物分享"]
+HASHTAG_POOL_EN = ["ShopeeFinds", "MustHave", "AffiliateFind", "ShopSmart", "TrendingNow", "HomeEssentials"]
+
+
+def default_hashtags(region: str) -> list:
+    """region沒有可用hashtag時的預設標籤池（前5個），TW中文/PH英文各一組"""
+    pool = HASHTAG_POOL_EN if region == "PH" else HASHTAG_POOL_ZH
+    return pool[:5]
+
+
+def build_hashtags(folder: str) -> list:
+    """
+    規則模板路徑（AI沒生成hashtag時）用的hashtag清單：優先從商品標題抽取1~2個有意義的詞，
+    不夠5個時用地區對應的預設標籤池（TW中文／PH英文）補滿。
+    """
+    caption = load_caption(folder)
+    region = load_region(folder)
+    if not caption:
+        return default_hashtags(region)
+
+    product_info = extract_product_info(caption, region)
+    title_part, _ = split_title_and_tags(product_info)
+
+    if region == "PH":
+        # 英文標題沒有「含中文字」這種過濾依據可用，改成挑長度4個字母以上的單字當候選
+        words = [w.strip(",.!?()") for w in title_part.split()]
+        picked = [w for w in words if len(w) >= 4][:2]
+    else:
+        picked = clean_title_features(title_part)[:2]
+
+    result = []
+    for f in picked:
+        f = f.strip()
+        if f and f not in result:
+            result.append(f)
+    for tag in default_hashtags(region):
+        if len(result) >= 5:
+            break
+        if tag not in result:
+            result.append(tag)
+    return result[:5]
+
+
 def determine_sentence_count(num_images: int) -> int:
     """
     圖片張數決定旁白句數，讓旁白長度跟著影片長度連動，避免「圖片多但旁白只有

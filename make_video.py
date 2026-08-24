@@ -39,7 +39,7 @@ try:
 except ImportError:
     edge_tts = None
 
-from generate_narration import build_narration_sentences, load_region
+from generate_narration import build_narration_sentences, build_hashtags, load_region
 
 try:
     from ai_narration import generate_ai_sentences
@@ -363,13 +363,17 @@ def build_ffmpeg_command(
     return cmd
 
 
-def update_meta_video_generated(folder: str, sentences: list = None) -> None:
+def update_meta_video_generated(folder: str, sentences: list = None, hashtags: list = None) -> None:
     """
     影片生成成功後，回寫 meta.json 的 videoGeneratedAt 欄位（ISO時間字串），
     同時把這次實際使用的旁白文案（不管是AI生成還是規則模板）合併成一段文字，
     寫進 narrationText 欄位——上架自動化「撰寫內文」那步要用AI文案，但AI文案
     只在生成影片當下用來做TTS、用完就丟，沒有另外存檔，這裡補上讓上架流程讀得到。
-    這個欄位由擷取器App端初始化成null，這裡是唯一負責填入實際值的地方。
+    句子之間改用換行符號分隔（不再用中文句號「。」），因為PH版是英文/Taglish句子，
+    句號分隔會混進不必要的中文標點；換行對中英文句子都適用，Kotlin端據此切開句子。
+    hashtags 欄位存這次使用的5個標籤（不含#符號），供上架流程「撰寫內文」直接讀取使用，
+    不用再自己從商品名稱土法重新拆解。
+    這兩個欄位由擷取器App端初始化成null，這裡是唯一負責填入實際值的地方。
     之後的蝦皮上架自動化可以直接掃這個資料夾，找「videoGeneratedAt有值但
     shopeePosted還是false」的就是待上架清單，不用另外維護清單、不用複製移動影片檔案。
     寫入失敗（meta.json不存在、格式錯誤等）只印警告，不影響影片生成本身的成功狀態。
@@ -382,11 +386,13 @@ def update_meta_video_generated(folder: str, sentences: list = None) -> None:
             data = json.load(f)
         data["videoGeneratedAt"] = datetime.now().isoformat()
         if sentences:
-            data["narrationText"] = "。".join(sentences)
+            data["narrationText"] = "\n".join(sentences)
+        if hashtags:
+            data["hashtags"] = hashtags
         with open(meta_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
     except Exception as e:
-        print(f"⚠ 回寫 meta.json 的 videoGeneratedAt/narrationText 失敗（{e}），不影響影片本身生成結果")
+        print(f"⚠ 回寫 meta.json 的 videoGeneratedAt/narrationText/hashtags 失敗（{e}），不影響影片本身生成結果")
 
 
 def process_folder(folder: str, force: bool = False) -> dict:
@@ -413,9 +419,10 @@ def process_folder(folder: str, force: bool = False) -> dict:
     print(f"→ 輸出路徑：{output_path}")
 
     sentences = None
+    hashtags = None
     if generate_ai_sentences:
         try:
-            sentences = generate_ai_sentences(folder)
+            sentences, hashtags = generate_ai_sentences(folder)
             if sentences:
                 print(f"→ AI文案生成成功（{len(sentences)}句）：")
         except Exception as e:
@@ -429,6 +436,10 @@ def process_folder(folder: str, force: bool = False) -> dict:
             print(f"    {s}")
     else:
         print("→ 抽取不到有效旁白文案（caption.txt 空白或格式不符），將輸出無聲版本")
+
+    if not hashtags:
+        hashtags = build_hashtags(folder)
+    print(f"→ 標籤（{len(hashtags)}個）：{' '.join('#' + h for h in hashtags)}")
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         audio_segments = None
@@ -491,7 +502,7 @@ def process_folder(folder: str, force: bool = False) -> dict:
     if result.returncode != 0:
         return {"status": "error", "message": result.stderr[-1000:], "output_path": None}
 
-    update_meta_video_generated(folder, sentences)
+    update_meta_video_generated(folder, sentences, hashtags)
     return {"status": "ok", "message": "", "output_path": output_path}
 
 
