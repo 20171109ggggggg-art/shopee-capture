@@ -1726,8 +1726,12 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
 
         // 17b. 點底部導覽列「我／Me」
+        // 注意：畫面上可能不只一個地方文字/描述含「Me」（例如某些頁面右上角個人頭像icon
+        // 也可能標記含Me的描述），用一般的findNodeByTexts可能誤點到不是底部導覽列的那個。
+        // 底部導覽列固定在螢幕最下方，改用「畫面上所有符合的候選節點裡，取bounds最靠近
+        // 螢幕底部（top座標最大）的那個」來鎖定，比純文字比對可靠。
         root = rootInActiveWindow
-        val meTab = root?.let { findNodeByTexts(it, listOf("我", "Me")) }
+        val meTab = root?.let { findBottommostNodeByTexts(it, listOf("我", "Me")) }
         if (meTab == null || !clickNodeBestEffort(meTab)) {
             appendDebugLog("  → [返回清單] 找不到或點擊底部導覽列「我／Me」失敗，請手動導航回清單畫面")
             return
@@ -2643,30 +2647,53 @@ class ShopeeAccessibilityService : AccessibilityService() {
         return "(無標題)|$bounds"
     }
 
+    /**
+     * 找分享／立即推廣按鈕。之前實測發現bug：商品詳情頁中段常有「Learn From Creator」
+     * 相關影片推薦區塊，這個區塊部分元件的文字/描述也可能被寬鬆的關鍵字（如單獨的「Share」
+     * 「分享」）誤配對到，導致點進別人的短影音貼文而不是本商品自己的分享按鈕。
+     * 真正的分享按鈕（「立即推廣」／「Share to Earn」）固定在畫面最下方的操作列，
+     * 改成收集所有符合文字/描述的候選節點，取螢幕bounds最靠近底部（top座標最大）的那個，
+     * 用位置而不是「第一個比對到的」來鎖定目標，比純文字比對可靠。
+     */
     private fun findNodeByDescriptors(root: AccessibilityNodeInfo, texts: List<String>): AccessibilityNodeInfo? {
-        findNodeByTexts(root, texts)?.let { return it }
-        var found: AccessibilityNodeInfo? = null
+        val candidates = mutableListOf<AccessibilityNodeInfo>()
+
+        fun resolveClickable(node: AccessibilityNodeInfo, maxDepth: Int): AccessibilityNodeInfo {
+            if (node.isClickable) return node
+            var parent = node.parent
+            var depth = 0
+            while (parent != null && depth < maxDepth) {
+                if (parent.isClickable) return parent
+                parent = parent.parent
+                depth++
+            }
+            return node
+        }
+
+        // 文字比對候選
+        for (text in texts) {
+            for (node in root.findAccessibilityNodeInfosByText(text)) {
+                candidates.add(resolveClickable(node, 10))
+            }
+        }
+
+        // 內容描述（contentDescription）比對候選
         fun walk(node: AccessibilityNodeInfo?, depth: Int) {
-            if (node == null || found != null || depth > 25) return
+            if (node == null || depth > 25) return
             val cd = node.contentDescription?.toString()
             if (cd != null && texts.any { cd.contains(it, ignoreCase = true) }) {
-                found = if (node.isClickable) node else {
-                    var p = node.parent
-                    var d = 0
-                    var candidate: AccessibilityNodeInfo? = null
-                    while (p != null && d < 4) {
-                        if (p.isClickable) { candidate = p; break }
-                        p = p.parent
-                        d++
-                    }
-                    candidate ?: node
-                }
-                return
+                candidates.add(resolveClickable(node, 4))
             }
             for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
         }
         walk(root, 0)
-        return found
+
+        if (candidates.isEmpty()) return null
+        return candidates.maxByOrNull { node ->
+            val bounds = Rect()
+            node.getBoundsInScreen(bounds)
+            bounds.top
+        }
     }
 
     private suspend fun captureScreenshotSuspend(): Bitmap? {
@@ -2741,6 +2768,41 @@ class ShopeeAccessibilityService : AccessibilityService() {
             }
         }
         return fallbackNode
+    }
+
+    /**
+     * 專用於「底部導覽列」這類畫面上可能有多個同文字節點的情境（例如某頁面上方也有
+     * 含「Me」文字/描述的圖示，跟底下導覽列的「Me」分頁搞混）。在所有符合文字的候選節點
+     * （含往上找可點擊祖先，邏輯同findNodeByTexts）裡，取螢幕bounds的top座標最大（也就是
+     * 最靠近畫面底部）的那一個——底部導覽列固定貼在螢幕最下方，這個位置特徵比純文字比對可靠。
+     * 找不到任何候選時回傳null。
+     */
+    private fun findBottommostNodeByTexts(root: AccessibilityNodeInfo, texts: List<String>): AccessibilityNodeInfo? {
+        val candidates = mutableListOf<AccessibilityNodeInfo>()
+        for (text in texts) {
+            val matches = root.findAccessibilityNodeInfosByText(text)
+            for (node in matches) {
+                if (node.isClickable) {
+                    candidates.add(node)
+                    continue
+                }
+                var parent = node.parent
+                var depth = 0
+                var found: AccessibilityNodeInfo? = null
+                while (parent != null && depth < 10) {
+                    if (parent.isClickable) { found = parent; break }
+                    parent = parent.parent
+                    depth++
+                }
+                candidates.add(found ?: node)
+            }
+        }
+        if (candidates.isEmpty()) return null
+        return candidates.maxByOrNull { node ->
+            val bounds = Rect()
+            node.getBoundsInScreen(bounds)
+            bounds.top
+        }
     }
 
     /**
