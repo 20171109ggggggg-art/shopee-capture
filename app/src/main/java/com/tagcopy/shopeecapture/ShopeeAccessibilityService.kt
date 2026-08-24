@@ -1874,7 +1874,35 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 return@launch
             }
 
-            appendDebugLog("  → 【合拍測試】開始，共測試5種手法，中間都有間隔方便你截圖確認狀態")
+            // 這個開關的實際on/off狀態完全沒有暴露在無障礙節點樹裡，log沒辦法記錄狀態變化，
+            // 只能用截圖留存證據。這裡自動截圖存檔，不用再靠使用者眼睛盯著螢幕即時抓時機。
+            val sessionId = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+            val screenshotDir = File(
+                android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
+                "DuetTestScreenshots/$sessionId"
+            )
+            if (!screenshotDir.exists()) screenshotDir.mkdirs()
+
+            suspend fun captureAndSave(label: String) {
+                val bitmap = withTimeoutOrNull(4000) { captureScreenshotSuspend() }
+                if (bitmap == null) {
+                    appendDebugLog("  → 【合拍測試】$label 後截圖失敗或逾時")
+                    return
+                }
+                try {
+                    val safeLabel = label.replace(Regex("[^A-Za-z0-9\\u4e00-\\u9fa5]"), "_")
+                    val imgFile = File(screenshotDir, "${safeLabel}.jpg")
+                    FileOutputStream(imgFile).use { out ->
+                        bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
+                    }
+                    appendDebugLog("  → 【合拍測試】$label 後截圖已存檔：${imgFile.absolutePath}")
+                } catch (e: Exception) {
+                    appendDebugLog("  → 【合拍測試】$label 後截圖存檔失敗：${e.javaClass.simpleName} ${e.message}")
+                }
+            }
+
+            appendDebugLog("  → 【合拍測試】開始，共測試5種手法，每個手法點擊後都自動截圖存到 Download/DuetTestScreenshots/$sessionId/")
+            captureAndSave("00_測試開始前")
 
             // 手勢執行結果callback：記錄系統到底是「真的完成」還是「直接取消」這個手勢，
             // 這是之前完全沒有的資訊——過去callback都傳null，等於盲測。
@@ -1923,6 +1951,8 @@ class ShopeeAccessibilityService : AccessibilityService() {
                     }
                 } ?: "等待callback逾時（3秒內沒收到onCompleted/onCancelled）"
                 appendDebugLog("  → 【合拍測試】$label 已送出，X=%.1f Y=%.1f 停留=${durationMs}ms startTime=${startTime}ms → 結果：$result".format(x, y))
+                delay(300) // 讓畫面有時間反映點擊後的視覺變化，再截圖
+                captureAndSave(label)
             }
 
             // 手法A：純單點（原本的做法，當對照組）
