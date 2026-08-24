@@ -1620,6 +1620,10 @@ class ShopeeAccessibilityService : AccessibilityService() {
         // 無障礙樹裡真的沒有暴露對應的可點擊節點。改用方法2：對開關實際所在的螢幕座標直接tap。
         // Y座標從文字標籤節點的bounds動態算（不會跑掉），X座標用「螢幕寬度的比例」
         // （固定在畫面右側同一個相對位置，比例在不同解析度手機上比寫死像素準）。
+        // 合拍是三顆裡第一個點的，多輪實測發現只有它持續失敗（拼接/AI標記都成功），
+        // 懷疑是緊接在填文案→收鍵盤→點安全錨點這串動作後面，畫面/回彈動畫還沒完全穩定，
+        // 這裡多加一段專門的穩定等待，只影響合拍這一顆，不拖慢後面兩顆的節奏。
+        delay(1200)
         root = rootInActiveWindow ?: return false
         findNodeByIdSuffix(root, "tv_allow_duet")?.let {
             tapToggleNearLabel(it)
