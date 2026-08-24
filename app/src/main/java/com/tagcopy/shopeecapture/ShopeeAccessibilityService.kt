@@ -1571,45 +1571,11 @@ class ShopeeAccessibilityService : AccessibilityService() {
             appendDebugLog("  → 沒看到影片編輯預覽畫面，可能版面不同或已跳過，嘗試繼續往下走")
         }
 
-        // 11. 等「撰寫內文」畫面，填入文案
+        // 11. 等「撰寫內文」畫面
         if (!waitForAnyText(listOf("撰寫內文", "為您的短影音撰寫內文"), 5000)) {
             appendDebugLog("  → 等不到「撰寫內文」畫面"); return false
         }
         delay(1700)
-        root = rootInActiveWindow ?: return false
-        val captionInput = findNodeByIdSuffix(root, "et_caption")
-        if (captionInput == null) {
-            appendDebugLog("  → 找不到文案輸入框"); return false
-        }
-        val shortVideoCaption = buildShortVideoCaption(candidate)
-        appendDebugLog("  → 撰寫內文：套用黃金3秒/痛點/導購格式文案（長度=${shortVideoCaption.length}字）")
-        run {
-            val captionBundle = android.os.Bundle().apply {
-                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, shortVideoCaption)
-            }
-            captionInput.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, captionBundle)
-            delay(1700)
-            captionInput.performAction(AccessibilityNodeInfo.ACTION_CLEAR_FOCUS)
-            val imm2 = getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
-            imm2?.hideSoftInputFromWindow(null, 0)
-            delay(1190)
-            // 填完文案後，畫面有時會卡在「文字選取模式」（螢幕上出現綠色選取控點、背景變暗），
-            // 這是ACTION_CLEAR_FOCUS在部分機型上被系統誤判成長按選取文字，沒有真的跳出來，
-            // 導致後面點開關／發佈其實都點在這層看不見的選取狀態上、完全沒反應。
-            // 比照之前處理「貼連結」畫面的做法，額外點一下畫面上安全的文字區塊，確保真的跳出選取模式。
-            rootInActiveWindow?.let { r ->
-                val safeAnchor = findNodeByTexts(r, listOf("新增商品"))
-                if (safeAnchor != null) {
-                    clickNodeBestEffort(safeAnchor)
-                    appendDebugLog("  → 已點擊「新增商品」標題，確保跳出文字選取模式")
-                } else {
-                    // 找不到就退回對螢幕上方偏空白處點一下（大約在商品卡上方的空白區域）
-                    tapAtScreenRatio(0.5f, 0.62f)
-                    appendDebugLog("  → 找不到安全錨點文字，改用座標點擊跳出文字選取模式")
-                }
-            }
-            delay(1190)
-        }
 
         // 12. 確認商品卡是否自動帶入（只記錄不當失敗條件，避免因為判斷誤差擋住整個流程）
         root = rootInActiveWindow ?: return false
@@ -1617,6 +1583,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         appendDebugLog("  → 撰寫內文畫面：商品卡${if (productCardPresent) "已自動帶入" else "沒看到（請留意，可能要手動補加）"}")
 
         // 13. 調整三個開關：關閉「允許他人合拍」「允許他人拼接」、開啟「AI生成影片標記」。
+        // 【順序調整】改到填文案之前執行，避免文字輸入框的焦點/選取狀態干擾開關點擊。
         // 實測確認方法1（對文字標籤節點下ACTION_CLICK）完全無效——這幾個開關是蝦皮自訂繪製元件，
         // 無障礙樹裡真的沒有暴露對應的可點擊節點。改用方法2：對開關實際所在的螢幕座標直接tap。
         // Y座標從文字標籤節點的bounds動態算（不會跑掉），X座標用「螢幕寬度的比例」
@@ -1664,14 +1631,50 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
         delay(1700)
 
-        // 14. 點「發佈」
+        // 14. 填入文案（【順序調整】改到最後，緊接著點「發佈」之前）
+        root = rootInActiveWindow ?: return false
+        val captionInput = findNodeByIdSuffix(root, "et_caption")
+        if (captionInput == null) {
+            appendDebugLog("  → 找不到文案輸入框"); return false
+        }
+        val shortVideoCaption = buildShortVideoCaption(candidate)
+        appendDebugLog("  → 撰寫內文：套用黃金3秒/痛點/導購格式文案（長度=${shortVideoCaption.length}字）")
+        run {
+            val captionBundle = android.os.Bundle().apply {
+                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, shortVideoCaption)
+            }
+            captionInput.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, captionBundle)
+            delay(1700)
+            captionInput.performAction(AccessibilityNodeInfo.ACTION_CLEAR_FOCUS)
+            val imm2 = getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
+            imm2?.hideSoftInputFromWindow(null, 0)
+            delay(1190)
+            // 填完文案後，畫面有時會卡在「文字選取模式」（螢幕上出現綠色選取控點、背景變暗），
+            // 這是ACTION_CLEAR_FOCUS在部分機型上被系統誤判成長按選取文字，沒有真的跳出來，
+            // 導致後面點發佈其實點在這層看不見的選取狀態上、完全沒反應。
+            // 比照之前處理「貼連結」畫面的做法，額外點一下畫面上安全的文字區塊，確保真的跳出選取模式。
+            rootInActiveWindow?.let { r ->
+                val safeAnchor = findNodeByTexts(r, listOf("新增商品"))
+                if (safeAnchor != null) {
+                    clickNodeBestEffort(safeAnchor)
+                    appendDebugLog("  → 已點擊「新增商品」標題，確保跳出文字選取模式")
+                } else {
+                    // 找不到就退回對螢幕上方偏空白處點一下（大約在商品卡上方的空白區域）
+                    tapAtScreenRatio(0.5f, 0.62f)
+                    appendDebugLog("  → 找不到安全錨點文字，改用座標點擊跳出文字選取模式")
+                }
+            }
+            delay(1190)
+        }
+
+        // 15. 點「發佈」
         root = rootInActiveWindow ?: return false
         val postButton = findNodeByIdSuffix(root, "btn_post")
         if (postButton == null || !clickNodeBestEffort(postButton)) {
             appendDebugLog("  → 找不到或點擊「發佈」失敗"); return false
         }
 
-        // 15. 判定成功的依據：按下發佈後，畫面上不再有文案輸入框（代表已經離開撰寫內文畫面）
+        // 16. 判定成功的依據：按下發佈後，畫面上不再有文案輸入框（代表已經離開撰寫內文畫面）
         delay(5100)
         val stillOnCaptionScreen = rootInActiveWindow?.let { findNodeByIdSuffix(it, "et_caption") } != null
         if (stillOnCaptionScreen) {
