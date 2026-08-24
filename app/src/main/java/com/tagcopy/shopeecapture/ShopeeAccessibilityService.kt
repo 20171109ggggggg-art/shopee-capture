@@ -1621,20 +1621,20 @@ class ShopeeAccessibilityService : AccessibilityService() {
         // 無障礙樹裡真的沒有暴露對應的可點擊節點。改用方法2：對開關實際所在的螢幕座標直接tap。
         // Y座標從文字標籤節點的bounds動態算（不會跑掉），X座標用「螢幕寬度的比例」
         // （固定在畫面右側同一個相對位置，比例在不同解析度手機上比寫死像素準）。
-        // 合拍是三顆裡第一個點的，多輪實測發現只有它持續失敗（拼接/AI標記都成功），
-        // 懷疑是緊接在填文案→收鍵盤→點安全錨點這串動作後面，畫面/回彈動畫還沒完全穩定，
-        // 這裡多加一段專門的穩定等待，只影響合拍這一顆，不拖慢後面兩顆的節奏。
+        // 【診斷用，暫時對調順序】懷疑蝦皮可能有「合拍／拼接至少要保留一個開啟」的隱藏驗證規則，
+        // 先關閉的那個會被系統改回開啟——這次先點拼接、再點合拍，用來驗證這個猜測，
+        // 如果猜測成立，這次應該會變成「拼接」被改回開啟、「合拍」關閉成功（順序互換）。
         delay(2500)
-        root = rootInActiveWindow ?: return false
-        findNodeByIdSuffix(root, "tv_allow_duet")?.let {
-            val (tapX, tapY) = tapToggleNearLabel(it)
-            appendDebugLog("  → 已點擊「允許他人合拍」開關（座標點擊法，實際點擊位置 X=%.1f Y=%.1f）".format(tapX, tapY))
-        }
-        delay(1190)
         root = rootInActiveWindow ?: return false
         findNodeByIdSuffix(root, "tv_allow_stitch")?.let {
             val (tapX, tapY) = tapToggleNearLabel(it)
             appendDebugLog("  → 已點擊「允許他人拼接」開關（座標點擊法，實際點擊位置 X=%.1f Y=%.1f）".format(tapX, tapY))
+        }
+        delay(1190)
+        root = rootInActiveWindow ?: return false
+        findNodeByIdSuffix(root, "tv_allow_duet")?.let {
+            val (tapX, tapY) = tapToggleNearLabel(it)
+            appendDebugLog("  → 已點擊「允許他人合拍」開關（座標點擊法，實際點擊位置 X=%.1f Y=%.1f）".format(tapX, tapY))
         }
         delay(1190)
         root = rootInActiveWindow ?: return false
@@ -1840,6 +1840,78 @@ class ShopeeAccessibilityService : AccessibilityService() {
         appendDebugLog("  → 【座標校正】點擊位置 X=%.1f Y=%.1f（螢幕解析度 %dx%d，比例 X=%.4f Y=%.4f）".format(
             x, y, metrics.widthPixels, metrics.heightPixels, xRatio, yRatio
         ))
+    }
+
+    /**
+     * 【開發除錯用，獨立測試】不用跑完整套上架流程，假設呼叫當下畫面已經在
+     * 「撰寫內文」畫面（使用者自己手動導航過去），只單獨測試「允許他人合拍」開關的
+     * 點擊手法，省去每次都要重跑前面14步的時間。連續嘗試2種手法，中間有間隔：
+     * 手法A：純單點（原本的做法，維持150ms停留，當作對照組）
+     * 手法B：模擬真人手指按下後有輕微位移（DOWN在某點，MOVE到附近5~10px，再UP），
+     *        懷疑蝦皮的偵測邏輯可能是「完美靜止的單點=判定為程式模擬」，真人手指
+     *        按下去幾乎不可能完全不動，這個手法試著讓觸控軌跡更像真人
+     * 每次點擊後都截圖記錄目前開關狀態（讀不到switch本身的on/off，
+     * 但至少會記錄有沒有正確找到節點跟送出手勢），實際成功與否要使用者自己截圖確認畫面。
+     */
+    fun testDuetToggleGestures() {
+        serviceScope.launch {
+            val root = rootInActiveWindow
+            if (root == null) {
+                appendDebugLog("  → 【合拍測試】讀不到目前畫面")
+                return@launch
+            }
+            val duetNode = findNodeByIdSuffix(root, "tv_allow_duet")
+            if (duetNode == null) {
+                appendDebugLog("  → 【合拍測試】目前畫面找不到「允許他人合拍」節點，請確認已經在撰寫內文畫面")
+                return@launch
+            }
+
+            appendDebugLog("  → 【合拍測試】開始，共測試2種手法，中間間隔2秒方便你截圖確認狀態")
+
+            // 手法A：純單點（原本的做法，當對照組）
+            run {
+                val bounds = Rect()
+                duetNode.getBoundsInScreen(bounds)
+                val metrics = resources.displayMetrics
+                val x = metrics.widthPixels * 0.9298f
+                val y = bounds.centerY().toFloat()
+                val path = Path().apply { moveTo(x, y) }
+                val gesture = GestureDescription.Builder()
+                    .addStroke(GestureDescription.StrokeDescription(path, 0, 150))
+                    .build()
+                dispatchGesture(gesture, null, null)
+                appendDebugLog("  → 【合拍測試】手法A（純單點）已送出，X=%.1f Y=%.1f".format(x, y))
+            }
+            delay(2000)
+
+            // 手法B：模擬真人手指輕微位移（DOWN→小幅度MOVE→UP），停留拉長到400ms
+            run {
+                val rootNow = rootInActiveWindow ?: run {
+                    appendDebugLog("  → 【合拍測試】手法B前讀不到畫面，中止"); return@run
+                }
+                val duetNodeNow = findNodeByIdSuffix(rootNow, "tv_allow_duet")
+                if (duetNodeNow == null) {
+                    appendDebugLog("  → 【合拍測試】手法B前找不到節點，中止")
+                    return@run
+                }
+                val bounds = Rect()
+                duetNodeNow.getBoundsInScreen(bounds)
+                val metrics = resources.displayMetrics
+                val x = metrics.widthPixels * 0.9298f
+                val y = bounds.centerY().toFloat()
+                val path = Path().apply {
+                    moveTo(x, y)
+                    lineTo(x + 8f, y + 4f) // 輕微位移8px，模擬真人手指按下時的自然抖動
+                }
+                val gesture = GestureDescription.Builder()
+                    .addStroke(GestureDescription.StrokeDescription(path, 0, 400))
+                    .build()
+                dispatchGesture(gesture, null, null)
+                appendDebugLog("  → 【合拍測試】手法B（帶輕微位移+400ms停留）已送出，起點X=%.1f Y=%.1f".format(x, y))
+            }
+
+            appendDebugLog("  → 【合拍測試】結束，麻煩截圖給我看兩次測試後的開關實際狀態")
+        }
     }
 
     fun testUploadAutomation() {
