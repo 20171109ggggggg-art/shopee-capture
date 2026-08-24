@@ -4,7 +4,6 @@ import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.content.ClipboardManager
 import android.content.ContentUris
-import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -877,7 +876,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
      * 比先前用dp留白理論推算的0.905更準確——目前只有這一台裝置的實測資料，
      * 如果之後在別的裝置上跑偏了，同樣用「校正」工具重新量一次，改這個數字就好。
      */
-    private fun tapToggleNearLabel(labelNode: AccessibilityNodeInfo, xRatio: Float = 0.921f) {
+    private fun tapToggleNearLabel(labelNode: AccessibilityNodeInfo, xRatio: Float = 0.9298f) {
         val bounds = Rect().also { labelNode.getBoundsInScreen(it) }
         val metrics = resources.displayMetrics
         val x = metrics.widthPixels * xRatio
@@ -1643,7 +1642,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 val combinedTop = titleBounds.top
                 val combinedBottom = descBounds.bottom
                 val metrics = resources.displayMetrics
-                val x = metrics.widthPixels * 0.921f
+                val x = metrics.widthPixels * 0.9298f
                 val y = ((combinedTop + combinedBottom) / 2).toFloat()
                 val path = Path().apply { moveTo(x, y) }
                 val gesture = GestureDescription.Builder()
@@ -1964,8 +1963,11 @@ class ShopeeAccessibilityService : AccessibilityService() {
      * 單純呼叫MediaScannerConnection.scanFile()只會確認/回傳既有的Uri，
      * 不會更新DATE_ADDED這個排序用的時間欄位——這是候選商品的影片明明剛登記過，
      * 選片畫面卻選到別支（時間更新的其他候選）影片的根本原因。
-     * 修法：先查有沒有既有紀錄，有的話直接把DATE_ADDED／DATE_MODIFIED強制更新成現在；
-     * 沒有的話才走原本MediaScannerConnection首次掃描的路徑（首次掃描本來就會是最新時間）。
+     * 原本的修法是「查有沒有既有紀錄，用UPDATE強制把DATE_ADDED改成現在」，
+     * 但實測發現這個UPDATE在這個Android版本上完全無效（回報更新筆數永遠是0，
+     * 疑似系統對DATE_ADDED這種欄位的UPDATE做了額外限制，不會報錯但也不會真的生效）。
+     * 改成更直接的做法：既有紀錄直接刪除，再重新登記一次——全新登記（不管是首次
+     * 掃描還是重新掃描）DATE_ADDED一定會確實是「現在」，不會被系統靜默擋掉。
      */
     private suspend fun registerVideoInMediaStore(videoFile: File): Uri? {
         if (!videoFile.exists()) {
@@ -1974,7 +1976,6 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
         try { videoFile.setLastModified(System.currentTimeMillis()) } catch (_: Exception) { /* 部分機型/儲存權限下可能不允許，忽略即可 */ }
 
-        val nowSeconds = System.currentTimeMillis() / 1000
         try {
             val collection = MediaStore.Video.Media.EXTERNAL_CONTENT_URI
             val projection = arrayOf(MediaStore.Video.Media._ID)
@@ -1987,16 +1988,11 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 } else null
             }
             if (existingUri != null) {
-                val values = ContentValues().apply {
-                    put(MediaStore.Video.Media.DATE_ADDED, nowSeconds)
-                    put(MediaStore.Video.Media.DATE_MODIFIED, nowSeconds)
-                }
-                val updated = contentResolver.update(existingUri, values, null, null)
-                appendDebugLog("  → 影片已存在媒體庫，強制更新時間戳記讓它排到最新（更新筆數=$updated）：${videoFile.name}")
-                return existingUri
+                val deleted = contentResolver.delete(existingUri, null, null)
+                appendDebugLog("  → 影片已存在媒體庫的舊紀錄，先刪除再重新登記（刪除筆數=$deleted）：${videoFile.name}")
             }
         } catch (e: Exception) {
-            appendDebugLog("  → 查詢/更新媒體庫既有紀錄時發生例外：${e.javaClass.simpleName} ${e.message}")
+            appendDebugLog("  → 查詢/刪除媒體庫既有紀錄時發生例外：${e.javaClass.simpleName} ${e.message}")
         }
 
         val result = withTimeoutOrNull(8000) {
