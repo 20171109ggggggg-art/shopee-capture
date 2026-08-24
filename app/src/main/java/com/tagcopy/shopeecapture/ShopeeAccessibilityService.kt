@@ -1365,6 +1365,8 @@ class ShopeeAccessibilityService : AccessibilityService() {
             } catch (e: Exception) {
                 appendDebugLog("  → [${candidate.folder.name}] 發生例外：${e.javaClass.simpleName} ${e.message}")
                 false
+            } finally {
+                cleanupTempUploadCopy()
             }
 
             if (ok) {
@@ -1945,6 +1947,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             }
             appendDebugLog("  → 【媒體庫測試】開始測試：${testVideo.absolutePath}")
             registerVideoInMediaStore(testVideo)
+            cleanupTempUploadCopy()
         }
     }
 
@@ -1969,38 +1972,49 @@ class ShopeeAccessibilityService : AccessibilityService() {
      * 改成更直接的做法：既有紀錄直接刪除，再重新登記一次——全新登記（不管是首次
      * 掃描還是重新掃描）DATE_ADDED一定會確實是「現在」，不會被系統靜默擋掉。
      */
+    /**
+     * 【安全性重大修正】上一版做法是「查到既有紀錄就contentResolver.delete()刪掉再重新登記」，
+     * 原本以為delete()只會清掉MediaStore的索引紀錄，但實測發現：在有完整儲存權限
+     * （MANAGE_EXTERNAL_STORAGE）的情況下，delete()會把「實體檔案」一併刪除，
+     * 不只是索引！這個bug已經造成使用者的候選影片檔案被意外刪除，必須立刻修正。
+     *
+     * 現在改用完全不會動到原始檔案的做法：複製一份暫時的影片副本（檔名帶時間戳記，
+     * 不會跟任何既有檔案衝突），登記這份副本進媒體庫（全新檔案，時間戳記保證是最新，
+     * 不需要delete或update任何既有紀錄）。副本用完後（呼叫端在選片流程結束、
+     * 不管成功失敗）記得呼叫 cleanupTempUploadCopy() 清掉，不會留下垃圾檔案，
+     * 但整個過程完全不會刪除或修改原始 output.mp4。
+     */
+    private var lastTempUploadCopy: File? = null
+
     private suspend fun registerVideoInMediaStore(videoFile: File): Uri? {
         if (!videoFile.exists()) {
             appendDebugLog("  → 影片登記進媒體庫失敗：檔案不存在（${videoFile.absolutePath}）")
             return null
         }
-        try { videoFile.setLastModified(System.currentTimeMillis()) } catch (_: Exception) { /* 部分機型/儲存權限下可能不允許，忽略即可 */ }
 
-        try {
-            val collection = MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-            val projection = arrayOf(MediaStore.Video.Media._ID)
-            val selection = "${MediaStore.Video.Media.DATA} = ?"
-            val selectionArgs = arrayOf(videoFile.absolutePath)
-            val existingUri: Uri? = contentResolver.query(collection, projection, selection, selectionArgs, null)?.use { cursor ->
-                if (cursor.moveToFirst()) {
-                    val id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Video.Media._ID))
-                    ContentUris.withAppendedId(collection, id)
-                } else null
-            }
-            if (existingUri != null) {
-                val deleted = contentResolver.delete(existingUri, null, null)
-                appendDebugLog("  → 影片已存在媒體庫的舊紀錄，先刪除再重新登記（刪除筆數=$deleted）：${videoFile.name}")
-            }
+        val tempCopy = try {
+            val tempDir = File(
+                android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
+                "ShopeeUploadTemp"
+            )
+            if (!tempDir.exists()) tempDir.mkdirs()
+            val tempFile = File(tempDir, "upload_${System.currentTimeMillis()}.mp4")
+            videoFile.copyTo(tempFile, overwrite = true)
+            tempFile
         } catch (e: Exception) {
-            appendDebugLog("  → 查詢/刪除媒體庫既有紀錄時發生例外：${e.javaClass.simpleName} ${e.message}")
+            appendDebugLog("  → 複製暫時上架副本失敗，改直接用原始檔案登記（風險：時間戳記可能不是最新）：${e.javaClass.simpleName} ${e.message}")
+            null
         }
+
+        val fileToRegister = tempCopy ?: videoFile
+        lastTempUploadCopy = tempCopy
 
         val result = withTimeoutOrNull(8000) {
             suspendCancellableCoroutine<Uri?> { continuation ->
                 try {
                     MediaScannerConnection.scanFile(
                         applicationContext,
-                        arrayOf(videoFile.absolutePath),
+                        arrayOf(fileToRegister.absolutePath),
                         arrayOf("video/mp4")
                     ) { _, uri ->
                         if (continuation.isActive) continuation.resume(uri)
@@ -2012,11 +2026,29 @@ class ShopeeAccessibilityService : AccessibilityService() {
             }
         }
         if (result == null) {
-            appendDebugLog("  → 影片登記進媒體庫：逾時或失敗（${videoFile.name}）")
+            appendDebugLog("  → 影片登記進媒體庫：逾時或失敗（${fileToRegister.name}）")
         } else {
-            appendDebugLog("  → 影片登記進媒體庫成功：${videoFile.name} -> $result")
+            appendDebugLog("  → 影片登記進媒體庫成功（暫時副本）：${fileToRegister.name} -> $result")
         }
         return result
+    }
+
+    /**
+     * 清掉registerVideoInMediaStore()複製的暫時上架副本（只刪副本，不動原始output.mp4）。
+     * 呼叫端在每次處理完一筆候選商品（不管成功失敗）都要呼叫這個，避免暫時副本累積佔空間。
+     */
+    private fun cleanupTempUploadCopy() {
+        lastTempUploadCopy?.let { temp ->
+            try {
+                if (temp.exists()) {
+                    val deleted = temp.delete()
+                    appendDebugLog("  → 清除暫時上架副本：${temp.name}（成功=$deleted）")
+                }
+            } catch (e: Exception) {
+                appendDebugLog("  → 清除暫時上架副本失敗（不影響原始檔案）：${e.javaClass.simpleName} ${e.message}")
+            }
+        }
+        lastTempUploadCopy = null
     }
 
     /** 查詢相簿裡「指定時間之後」新增的最新一張圖片，回傳它的 content Uri（讀不到就回傳 null）。 */
