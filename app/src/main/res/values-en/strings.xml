@@ -21,6 +21,13 @@
     <string name="btn_stop">Stop</string>
     <string name="btn_start">Start</string>
 
+    <string name="step4_title">Read Photo Library Permission</string>
+    <string name="step4_desc">The share panel\'s download button captures the original image — reading the photo library is needed to fetch the file just saved.</string>
+    <string name="btn_grant_permission">Grant Permission</string>
+
+    <string name="step5_title">All Files Access Permission</string>
+    <string name="step5_desc">Upload automation needs to read each product\'s meta.json under CaptionQueue. Without this permission, regular files like these get blocked by the system (EACCES); video and image access is unaffected.</string>
+
     <string name="captured_products_title">Captured Products</string>
     <string name="btn_refresh">Refresh</string>
     <string name="empty_queue_text">No products captured yet</string>
@@ -65,6 +72,7 @@
     <string name="btn_capture">Capture</string>
     <string name="btn_auto">Auto</string>
     <string name="btn_detect">Detect</string>
+    <string name="btn_calibrate">Calibrate</string>
 
     <string name="toast_need_accessibility">Please enable \"Accessibility Service\" first</string>
     <string name="toast_no_package">Couldn\'t read the current app\'s package name</string>

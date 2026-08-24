@@ -120,7 +120,7 @@ class FloatingButtonService : Service() {
         // （無障礙節點樹完全抓不到這幾個自訂元件，只能靠實際點擊測量）。
         // 校正完成、開關點擊邏輯穩定驗證有效之後，這顆按鈕可以移除。
         val calibrateButton = TextView(this).apply {
-            text = "校正"
+            text = getString(R.string.btn_calibrate)
             setBackgroundColor(0xFF7A4FBF.toInt())
             setTextColor(0xFFFFFFFF.toInt())
             textSize = 14f

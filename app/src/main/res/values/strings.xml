@@ -21,6 +21,13 @@
     <string name="btn_stop">停止</string>
     <string name="btn_start">啟動</string>
 
+    <string name="step4_title">讀取相簿權限</string>
+    <string name="step4_desc">分享面板下載鈕擷取原圖，需要讀取相簿才能抓到剛存下的圖片檔案。</string>
+    <string name="btn_grant_permission">授予權限</string>
+
+    <string name="step5_title">所有檔案存取權限</string>
+    <string name="step5_desc">上架自動化需要讀取 CaptionQueue 底下每個商品的 meta.json，這類一般檔案沒開此權限會被系統擋掉（EACCES），影片與圖片存取不受影響。</string>
+
     <string name="captured_products_title">已擷取商品</string>
     <string name="btn_refresh">重新整理</string>
     <string name="empty_queue_text">還沒有擷取任何商品</string>
@@ -65,6 +72,7 @@
     <string name="btn_capture">擷取</string>
     <string name="btn_auto">自動</string>
     <string name="btn_detect">偵測</string>
+    <string name="btn_calibrate">校正</string>
 
     <string name="toast_need_accessibility">請先開啟「無障礙服務」權限</string>
     <string name="toast_no_package">讀不到目前 App 的套件名稱</string>
