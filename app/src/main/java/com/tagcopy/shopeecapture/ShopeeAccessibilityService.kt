@@ -1686,7 +1686,78 @@ class ShopeeAccessibilityService : AccessibilityService() {
             return false
         }
 
+        // 17. 發佈成功後導航回「分潤按讚好物」清單畫面，讓下一筆候選商品能接續處理
+        // （目前的路徑是PH實測確認：可能會先跳出「Share to Whatsapp」分享詢問彈窗（PH特有，
+        // 點Cancel跳過）→ 點底部導覽列「我／Me」→ 點「Affiliate Program」卡片進分潤首頁
+        // →點「My Likes／分潤按讚好物」圖示。TW是否走同一條路徑尚未實測確認，這裡中英文都先列，
+        // 之後TW／PH都要驗證這段。任何一步失敗都不當作整體上架失敗（商品本身已經發佈成功），
+        // 只記錄log，讓使用者知道需要手動導航。
+        navigateBackToLikesListAfterPost()
+
         return true
+    }
+
+    /**
+     * 發佈成功後導航回「分潤按讚好物」清單畫面。任何一步失敗都只記錄log、不影響
+     * processOneUploadCandidate()的回傳結果（該筆商品已經算發佈成功），
+     * 讓下一輪迴圈的起始畫面檢查（見processOneUploadCandidate開頭）決定要不要繼續。
+     */
+    private suspend fun navigateBackToLikesListAfterPost() {
+        delay(1500)
+        // 17a. 若跳出「Share to Whatsapp」分享詢問彈窗，點「Cancel」跳過（PH特有，目前未見TW版本）
+        var root = rootInActiveWindow
+        if (root != null && root.findAccessibilityNodeInfosByText("Share to Whatsapp").isNotEmpty()) {
+            val cancelBtn = findNodeByTexts(root, listOf("Cancel", "取消"))
+            if (cancelBtn != null && clickNodeBestEffort(cancelBtn)) {
+                appendDebugLog("  → [返回清單] 偵測到「Share to Whatsapp」彈窗，已點擊Cancel跳過")
+            } else {
+                appendDebugLog("  → [返回清單] 偵測到「Share to Whatsapp」彈窗，但點擊Cancel失敗")
+            }
+            delay(1200)
+        }
+
+        // 17b. 點底部導覽列「我／Me」
+        root = rootInActiveWindow
+        val meTab = root?.let { findNodeByTexts(it, listOf("我", "Me")) }
+        if (meTab == null || !clickNodeBestEffort(meTab)) {
+            appendDebugLog("  → [返回清單] 找不到或點擊底部導覽列「我／Me」失敗，請手動導航回清單畫面")
+            return
+        }
+        delay(1500)
+
+        // 17c. 等「Affiliate Program／聯盟計畫」卡片出現並點擊
+        if (!waitForAnyText(listOf("Affiliate Program", "聯盟計畫", "聯盟合作"), 3000)) {
+            appendDebugLog("  → [返回清單] 等不到「Affiliate Program」卡片，請手動導航回清單畫面")
+            return
+        }
+        root = rootInActiveWindow
+        val affiliateProgramCard = root?.let { findNodeByTexts(it, listOf("Affiliate Program", "聯盟計畫", "聯盟合作")) }
+        if (affiliateProgramCard == null || !clickNodeBestEffort(affiliateProgramCard)) {
+            appendDebugLog("  → [返回清單] 點擊「Affiliate Program」卡片失敗，請手動導航回清單畫面")
+            return
+        }
+        delay(1800)
+
+        // 17d. 等分潤首頁出現，點「My Likes／分潤按讚好物」圖示進清單畫面
+        if (!waitForAnyText(listOf("My Likes", "分潤按讚好物"), 3000)) {
+            appendDebugLog("  → [返回清單] 等不到分潤首頁的「My Likes」入口，請手動導航回清單畫面")
+            return
+        }
+        root = rootInActiveWindow
+        val myLikesEntry = root?.let { findNodeByTexts(it, listOf("My Likes", "分潤按讚好物")) }
+        if (myLikesEntry == null || !clickNodeBestEffort(myLikesEntry)) {
+            appendDebugLog("  → [返回清單] 點擊「My Likes」入口失敗，請手動導航回清單畫面")
+            return
+        }
+        delay(1500)
+
+        // 17e. 確認真的回到清單畫面（標題含括號數字）
+        val backOk = waitForAnyText(listOf("My Likes(", "分潤按讚好物("), 3000)
+        if (backOk) {
+            appendDebugLog("  → [返回清單] 已成功導航回「My Likes」清單畫面，可接續處理下一筆")
+        } else {
+            appendDebugLog("  → [返回清單] 導航完成但畫面標題不符預期，請確認目前畫面")
+        }
     }
 
     /**
