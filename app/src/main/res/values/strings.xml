@@ -162,4 +162,6 @@
     <string name="simple_upload_instr_3">3. 點浮動按鈕裡的「上架」，就會自動連續發佈短影音</string>
     <string name="simple_pending_count">目前有 %1$d 支影片還沒上架</string>
     <string name="simple_warn_need_accessibility_upload">尚未開啟無障礙服務權限，上架功能無法運作，請到「進階設定」開啟</string>
+    <string name="btn_save_params">儲存參數</string>
+    <string name="toast_params_saved">已儲存 ✓</string>
 </resources>

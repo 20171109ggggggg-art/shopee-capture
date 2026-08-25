@@ -162,4 +162,6 @@
     <string name="simple_upload_instr_3">3. Tap \"Post\" on the floating button to keep publishing videos automatically</string>
     <string name="simple_pending_count">%1$d videos are waiting to be posted</string>
     <string name="simple_warn_need_accessibility_upload">Accessibility permission isn\'t on yet, so posting won\'t work — enable it under \"Advanced Settings\"</string>
+    <string name="btn_save_params">Save Settings</string>
+    <string name="toast_params_saved">Saved ✓</string>
 </resources>

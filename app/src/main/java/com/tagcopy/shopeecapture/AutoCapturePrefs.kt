@@ -20,7 +20,18 @@ object AutoCapturePrefs {
     private const val KEY_MAX_ATTEMPTS_ENABLED = "max_attempts_enabled"
     private const val KEY_TIME_LIMIT_ENABLED = "time_limit_enabled"
 
-    private fun getDoubleOrNull(sp: android.content.SharedPreferences, key: String): Double? {
+    /**
+     * 讀取一個「可能是null（不限制）」的Double欄位，並正確分辨兩種情況：
+     * 1. 這個key從來沒被save()寫過（例如App第一次安裝、使用者從沒碰過這個欄位）→ 回傳呼叫端給的預設值
+     * 2. 這個key曾經被save()寫過，且當時使用者把欄位清空代表「不限制」→ 回傳null，不套用預設值
+     * 舊版只用Float.NaN當作「null」的標記，沒辦法分辨這兩種情況（都讀到NaN），
+     * 導致使用者主動清空成「不限制」後，只要畫面重新讀取一次就會被預設值蓋回去。
+     * 用sp.contains(key)先判斷這個key有沒有真的被寫過，兩種情況才分得開。
+     */
+    private fun getDoubleOrNullWithDefault(
+        sp: android.content.SharedPreferences, key: String, default: Double?
+    ): Double? {
+        if (!sp.contains(key)) return default
         val v = sp.getFloat(key, Float.NaN)
         return if (v.isNaN()) null else v.toDouble()
     }
@@ -29,7 +40,11 @@ object AutoCapturePrefs {
         editor.putFloat(key, value?.toFloat() ?: Float.NaN)
     }
 
-    private fun getIntOrNull(sp: android.content.SharedPreferences, key: String): Int? {
+    /** Int版本，邏輯跟getDoubleOrNullWithDefault完全對應，見上方註解 */
+    private fun getIntOrNullWithDefault(
+        sp: android.content.SharedPreferences, key: String, default: Int?
+    ): Int? {
+        if (!sp.contains(key)) return default
         val v = sp.getInt(key, Int.MIN_VALUE)
         return if (v == Int.MIN_VALUE) null else v
     }
@@ -41,14 +56,14 @@ object AutoCapturePrefs {
     fun load(context: Context): AutoCaptureConfig {
         val sp = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val filter = ProductFilterConfig(
-            minCommissionPercent = getDoubleOrNull(sp, KEY_MIN_COMMISSION) ?: 1.0,
-            maxCommissionPercent = getDoubleOrNull(sp, KEY_MAX_COMMISSION),
-            minPrice = getDoubleOrNull(sp, KEY_MIN_PRICE) ?: 50.0,
-            maxPrice = getDoubleOrNull(sp, KEY_MAX_PRICE),
-            minSoldCount = getIntOrNull(sp, KEY_MIN_SOLD) ?: 10,
-            maxSoldCount = getIntOrNull(sp, KEY_MAX_SOLD),
-            minPromoterCount = getIntOrNull(sp, KEY_MIN_PROMOTER),
-            maxPromoterCount = getIntOrNull(sp, KEY_MAX_PROMOTER) ?: 100
+            minCommissionPercent = getDoubleOrNullWithDefault(sp, KEY_MIN_COMMISSION, 1.0),
+            maxCommissionPercent = getDoubleOrNullWithDefault(sp, KEY_MAX_COMMISSION, null),
+            minPrice = getDoubleOrNullWithDefault(sp, KEY_MIN_PRICE, 50.0),
+            maxPrice = getDoubleOrNullWithDefault(sp, KEY_MAX_PRICE, null),
+            minSoldCount = getIntOrNullWithDefault(sp, KEY_MIN_SOLD, 10),
+            maxSoldCount = getIntOrNullWithDefault(sp, KEY_MAX_SOLD, null),
+            minPromoterCount = getIntOrNullWithDefault(sp, KEY_MIN_PROMOTER, null),
+            maxPromoterCount = getIntOrNullWithDefault(sp, KEY_MAX_PROMOTER, 100)
         )
         return AutoCaptureConfig(
             targetCount = sp.getInt(KEY_TARGET_COUNT, 10),

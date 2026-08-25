@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.text.TextUtils
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -474,6 +475,22 @@ fun AutoCaptureSettingsCard(context: android.content.Context) {
             label = { Text(stringResource(R.string.time_limit_hint)) },
             shape = RoundedCornerShape(0.dp)
         )
+
+        // 每個欄位的onValueChange其實已經呼叫persist()即時存檔，這顆按鈕主要是讓使用者
+        // 明確「按了才安心」——按下去除了再存一次（保險，避免任何漏接的欄位）,
+        // 還會跳Toast明確告知「已儲存」，解決使用者反映看不出來有沒有真的存到的疑慮。
+        Spacer(Modifier.height(16.dp))
+        Button(
+            onClick = {
+                persist()
+                Toast.makeText(context, context.getString(R.string.toast_params_saved), Toast.LENGTH_SHORT).show()
+            },
+            colors = ButtonDefaults.buttonColors(containerColor = InkColor),
+            shape = RoundedCornerShape(0.dp),
+            modifier = Modifier.fillMaxWidth().height(48.dp)
+        ) {
+            Text(stringResource(R.string.btn_save_params), fontSize = 15.sp, fontWeight = FontWeight.Bold)
+        }
     }
 }
 
