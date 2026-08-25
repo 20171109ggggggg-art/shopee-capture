@@ -4,6 +4,8 @@
 
     <queries>
         <package android:name="com.termux" />
+        <package android:name="com.shopee.tw" />
+        <package android:name="com.shopee.ph" />
     </queries>
 
     <uses-permission android:name="android.permission.INTERNET" />
