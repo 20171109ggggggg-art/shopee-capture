@@ -394,6 +394,27 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
 
             Spacer(Modifier.height(20.dp))
 
+            // 轉動指示：跟progress區塊分開獨立顯示，因為isRunning=true的當下progress可能
+            // 還沒有第一次輪詢結果（剛按下開始那一瞬間），這裡只要isRunning就先讓使用者
+            // 看到明確的「還在跑」視覺回饋，不用等進度資料到位。isRunning變false（完成或
+            // 停止）時這個轉動動畫會立刻消失，跟下方resultText的文字說明一起構成
+            // 「有轉動＝還在生成／沒轉動＋文字＝已經停止」的明確狀態指示。
+            if (isRunning) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp,
+                        color = SimpleAccent
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        stringResource(R.string.simple_generating),
+                        fontSize = 14.sp, color = SimpleInk, fontWeight = FontWeight.Bold
+                    )
+                }
+                Spacer(Modifier.height(16.dp))
+            }
+
             progress?.let { p ->
                 if (p.total > 0) {
                     Text(
