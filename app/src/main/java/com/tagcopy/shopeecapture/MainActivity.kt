@@ -72,6 +72,20 @@ fun RootScreen() {
         mediaPermissionGranted = granted
     }
 
+    // Termux的RUN_COMMAND權限是「dangerous」等級（跟相機/定位同一類），必須跑時動態請求，
+    // 不是裝App時自動授予的一般權限——一開始漏掉這步，導致背景觸發Termux指令一律送出失敗。
+    var termuxRunCommandGranted by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, "com.termux.permission.RUN_COMMAND") ==
+                PackageManager.PERMISSION_GRANTED
+        )
+    }
+    val termuxPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        termuxRunCommandGranted = granted
+    }
+
     // 從系統設定頁（開啟無障礙服務／懸浮視窗權限）切回這個畫面時，
     // 重新檢查一次狀態 —— 否則「前往設定」的完成勾勾不會更新，要重啟 App 才會抓到。
     val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
@@ -82,6 +96,9 @@ fun RootScreen() {
                 overlayGranted = canDrawOverlays(context)
                 mediaPermissionGranted = hasMediaPermission(context)
                 allFilesAccessGranted = hasAllFilesAccess()
+                termuxRunCommandGranted = ContextCompat.checkSelfPermission(
+                    context, "com.termux.permission.RUN_COMMAND"
+                ) == PackageManager.PERMISSION_GRANTED
                 queueItems = loadQueueItems()
             }
         }
@@ -211,7 +228,7 @@ fun RootScreen() {
 
         Spacer(Modifier.height(14.dp))
 
-        TermuxTestCard(context)
+        TermuxTestCard(context, termuxRunCommandGranted, termuxPermissionLauncher)
 
         Spacer(Modifier.height(32.dp))
 
@@ -461,7 +478,11 @@ fun AutoCaptureSettingsCard(context: android.content.Context) {
 }
 
 @Composable
-fun TermuxTestCard(context: android.content.Context) {
+fun TermuxTestCard(
+    context: android.content.Context,
+    termuxRunCommandGranted: Boolean,
+    termuxPermissionLauncher: androidx.activity.result.ActivityResultLauncher<String>
+) {
     var testStatus by remember { mutableStateOf("尚未測試") }
     var isPolling by remember { mutableStateOf(false) }
     var pollTarget by remember { mutableStateOf("") } // "echo" 或 "batch"
@@ -516,10 +537,31 @@ fun TermuxTestCard(context: android.content.Context) {
             "Termux安裝狀態：${if (TermuxRunner.isTermuxInstalled(context)) "✓ 已安裝" else "✗ 未安裝"}",
             fontSize = 13.sp, color = InkColor
         )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "RUN_COMMAND權限：${if (termuxRunCommandGranted) "✓ 已授權" else "✗ 尚未授權"}",
+            fontSize = 13.sp, color = InkColor
+        )
         Spacer(Modifier.height(10.dp))
+
+        if (!termuxRunCommandGranted) {
+            Button(
+                onClick = { termuxPermissionLauncher.launch("com.termux.permission.RUN_COMMAND") },
+                colors = ButtonDefaults.buttonColors(containerColor = InkColor),
+                shape = RoundedCornerShape(0.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("0. 先授權RUN_COMMAND權限（必須先做這步）")
+            }
+            Spacer(Modifier.height(10.dp))
+        }
 
         Button(
             onClick = {
+                if (!termuxRunCommandGranted) {
+                    testStatus = "請先授權RUN_COMMAND權限"
+                    return@Button
+                }
                 testStatus = "執行中…"
                 pollTarget = "echo"
                 val sent = TermuxRunner.runCommand(context, "echo hello-from-termux && sleep 1 && echo done")
@@ -540,6 +582,10 @@ fun TermuxTestCard(context: android.content.Context) {
 
         Button(
             onClick = {
+                if (!termuxRunCommandGranted) {
+                    testStatus = "請先授權RUN_COMMAND權限"
+                    return@Button
+                }
                 testStatus = "生成中…"
                 batchProgress = null
                 pollTarget = "batch"
