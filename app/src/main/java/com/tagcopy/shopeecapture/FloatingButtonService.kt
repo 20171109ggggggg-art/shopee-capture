@@ -138,11 +138,22 @@ class FloatingButtonService : Service() {
             setPadding(36, 24, 36, 24)
         }
 
+        // 關閉按鈕：讓使用者不用特地下拉通知欄找停止動作，直接在懸浮視窗上就能收起整個服務。
+        // 跟通知欄的停止按鈕（ACTION_STOP）共用同一套stopSelf()邏輯。
+        val closeButton = TextView(this).apply {
+            text = getString(R.string.btn_close)
+            setBackgroundColor(0xFF5C5C5C.toInt())
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 14f
+            setPadding(36, 24, 36, 24)
+        }
+
         container.addView(captureButton)
         container.addView(autoButton)
         container.addView(detectButton)
         container.addView(calibrateButton)
         container.addView(uploadButton)
+        container.addView(closeButton)
 
         val layoutFlag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -195,6 +206,7 @@ class FloatingButtonService : Service() {
                             detectButton -> onDetectButtonTapped()
                             calibrateButton -> toggleCoordinateCalibrationOverlay()
                             uploadButton -> onUploadButtonTapped(uploadButton)
+                            closeButton -> stopSelf()
                         }
                     }
                     true
@@ -207,6 +219,7 @@ class FloatingButtonService : Service() {
         detectButton.setOnTouchListener(dragListener)
         calibrateButton.setOnTouchListener(dragListener)
         uploadButton.setOnTouchListener(dragListener)
+        closeButton.setOnTouchListener(dragListener)
 
         floatingView = container
         floatingViewParams = params

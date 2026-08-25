@@ -164,4 +164,5 @@
     <string name="simple_warn_need_accessibility_upload">Accessibility permission isn\'t on yet, so posting won\'t work — enable it under \"Advanced Settings\"</string>
     <string name="btn_save_params">Save Settings</string>
     <string name="toast_params_saved">Saved ✓</string>
+    <string name="btn_close">Close</string>
 </resources>

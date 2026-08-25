@@ -164,4 +164,5 @@
     <string name="simple_warn_need_accessibility_upload">尚未開啟無障礙服務權限，上架功能無法運作，請到「進階設定」開啟</string>
     <string name="btn_save_params">儲存參數</string>
     <string name="toast_params_saved">已儲存 ✓</string>
+    <string name="btn_close">關閉</string>
 </resources>
