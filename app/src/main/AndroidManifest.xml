@@ -2,6 +2,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <queries>
+        <package android:name="com.termux" />
+    </queries>
+
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -19,6 +23,11 @@
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
 
+    <!-- 簡易模式「生成影片」功能：透過Termux的RUN_COMMAND介面在背景觸發batch_generate.py，
+         使用者完全不用打開Termux。需要Termux那邊在~/.termux/termux.properties設定
+         allow-external-apps=true（一次性設定），且Termux App本身要是已安裝、允許背景執行的狀態。 -->
+    <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
+
     <application
         android:allowBackup="true"
         android:label="蝦皮擷取器"
@@ -27,7 +36,7 @@
         android:supportsRtl="true">
 
         <activity
-            android:name=".MainActivity"
+            android:name=".SimpleModeActivity"
             android:exported="true"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
@@ -35,6 +44,15 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 開發／進階設定畫面（校正、偵測、上架自動化細部設定等）。不再是啟動畫面，
+             改成從SimpleModeActivity角落的「進階設定」連結用明確Intent開啟，
+             一般使用者（親友）操作簡易模式完全不會看到這個畫面。exported保留true
+             是因為要能被明確Intent從SimpleModeActivity開啟。 -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize" />
 
         <activity
             android:name=".ClipboardBridgeActivity"
@@ -62,6 +80,22 @@
             android:name=".FloatingButtonService"
             android:exported="false"
             android:foregroundServiceType="specialUse" />
+
+        <receiver
+            android:name=".TermuxResultReceiver"
+            android:exported="false" />
+
+        <!-- 「檢查影片」畫面要把output.mp4交給系統影片播放器開啟，
+             Android 7+需要透過FileProvider包成content://路徑才能安全跨App分享檔案。 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="com.tagcopy.shopeecapture.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
     </application>
 </manifest>
