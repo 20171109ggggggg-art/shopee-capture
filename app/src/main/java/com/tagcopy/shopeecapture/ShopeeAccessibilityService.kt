@@ -2849,36 +2849,103 @@ class ShopeeAccessibilityService : AccessibilityService() {
     private fun getDedupPrefs() = getSharedPreferences("capture_dedup_prefs", Context.MODE_PRIVATE)
 
     /**
-     * 掃過CaptionQueue底下所有資料夾的meta.json，把商品名稱與連結補進防重複
-     * SharedPreferences——這是讓防重複資料庫在App被重裝、SharedPreferences被清空後
-     * 也能「自癒」回正確狀態的關鍵函式。只會新增不會覆蓋，掃描失敗的單一資料夾
-     * 略過不影響其他資料夾，整個函式失敗也不影響擷取主流程繼續進行。
+     * 永久擷取歷史記錄檔案的路徑。這個檔案獨立存在Downloads底下，跟CaptionQueue商品資料夾
+     * 完全分開——就算使用者事後把某支商品的資料夾（含影片）整個刪掉，這裡的紀錄依然保留，
+     * 之後也不會被誤判成「沒擷取過」而重新擷取一次。格式是每行一筆JSON物件（JSON Lines），
+     * append-only，只會增加不會覆寫，寫入失敗不影響擷取主流程。
+     */
+    private fun getCaptureHistoryFile(): File {
+        val dir = File(
+            android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
+            "CaptureHistory"
+        )
+        if (!dir.exists()) dir.mkdirs()
+        return File(dir, "captured_history.jsonl")
+    }
+
+    /**
+     * 掃過CaptionQueue底下所有資料夾的meta.json，加上永久擷取歷史記錄檔案，把商品名稱與連結
+     * 補進防重複SharedPreferences——這是讓防重複資料庫在App被重裝、SharedPreferences被清空後
+     * 也能「自癒」回正確狀態的關鍵函式。只掃CaptionQueue的話，使用者事後刪除影片資料夾＋
+     * App剛好又被重裝這兩件事同時發生時，該商品的擷取記憶會徹底消失、被誤判成新商品重新
+     * 擷取一次；額外合併永久歷史記錄檔案（不隨資料夾刪除而消失）就能避免這個邊界情況。
+     * 只會新增不會覆蓋，掃描失敗的單一資料夾/單一行略過不影響其他資料，整個函式失敗也不
+     * 影響擷取主流程繼續進行。
      */
     private fun syncDedupPrefsFromDisk() {
         try {
-            val root = File(
-                android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
-                "CaptionQueue"
-            )
-            if (!root.isDirectory) return
-            val dirs = root.listFiles { f -> f.isDirectory } ?: return
-
             val existingNames = (getDedupPrefs().getStringSet("captured_names", emptySet()) ?: emptySet()).toMutableSet()
             val existingLinks = (getDedupPrefs().getStringSet("captured_links", emptySet()) ?: emptySet()).toMutableSet()
             val beforeNameCount = existingNames.size
             val beforeLinkCount = existingLinks.size
 
+            // 來源2先讀（永久歷史記錄檔案），記下目前永久記錄裡已經有哪些，等一下掃磁碟時
+            // 才知道哪些是永久記錄裡「還沒有」的、需要回填進去，不會每次都整批重複寫入。
+            val historyFile = getCaptureHistoryFile()
+            val namesInHistory = mutableSetOf<String>()
+            val linksInHistory = mutableSetOf<String>()
+            if (historyFile.isFile) {
+                historyFile.forEachLine { line ->
+                    if (line.isBlank()) return@forEachLine
+                    try {
+                        val json = org.json.JSONObject(line)
+                        json.optString("name", "").takeIf { it.isNotBlank() }?.let {
+                            namesInHistory.add(it); existingNames.add(it)
+                        }
+                        json.optString("link", "").takeIf { it.isNotBlank() }?.let {
+                            linksInHistory.add(it); existingLinks.add(it)
+                        }
+                    } catch (e: Exception) {
+                        // 單行格式異常略過，不影響其他行
+                    }
+                }
+            }
+
+            // 來源1：CaptionQueue底下目前實際還存在的商品資料夾。
+            // 這批資料如果永久歷史記錄裡還沒有，代表是這個修正上線「之前」就已經擷取好的
+            // 舊商品（當時的markAsCaptured()還不會寫進永久記錄），這裡順便回填進永久記錄，
+            // 這樣即使之後被刪除，記憶依然保得住，不用等使用者手動處理舊資料。
+            val root = File(
+                android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
+                "CaptionQueue"
+            )
+            val dirs = if (root.isDirectory) root.listFiles { f -> f.isDirectory } ?: emptyArray() else emptyArray()
+            val backfillLines = StringBuilder()
+            var backfillCount = 0
             for (dir in dirs) {
                 val metaFile = File(dir, "meta.json")
                 if (!metaFile.isFile) continue
                 try {
                     val json = org.json.JSONObject(metaFile.readText())
-                    json.optString("productName", "").takeIf { it.isNotBlank() && it != "未知" }
-                        ?.let { existingNames.add(it) }
-                    json.optString("promoLink", "").takeIf { it.isNotBlank() }
-                        ?.let { existingLinks.add(it) }
+                    val name = json.optString("productName", "").takeIf { it.isNotBlank() && it != "未知" }
+                    val link = json.optString("promoLink", "").takeIf { it.isNotBlank() }
+                    name?.let { existingNames.add(it) }
+                    link?.let { existingLinks.add(it) }
+
+                    val nameNeedsBackfill = name != null && name !in namesInHistory
+                    val linkNeedsBackfill = link != null && link !in linksInHistory
+                    if (nameNeedsBackfill || linkNeedsBackfill) {
+                        val record = org.json.JSONObject().apply {
+                            put("name", name ?: "")
+                            put("link", link ?: "")
+                            put("capturedAt", System.currentTimeMillis())
+                            put("backfilled", true)
+                        }
+                        backfillLines.append(record.toString()).append("\n")
+                        name?.let { namesInHistory.add(it) }
+                        link?.let { linksInHistory.add(it) }
+                        backfillCount++
+                    }
                 } catch (e: Exception) {
                     // 單一資料夾的meta.json讀取/解析失敗不影響其他資料夾繼續掃描
+                }
+            }
+            if (backfillCount > 0) {
+                try {
+                    historyFile.appendText(backfillLines.toString())
+                    appendDebugLog("  → 已將 $backfillCount 筆磁碟上既有商品回填進永久歷史記錄")
+                } catch (e: Exception) {
+                    appendDebugLog("  → ⚠ 回填永久歷史記錄失敗（不影響本次擷取）：${e.javaClass.simpleName} ${e.message}")
                 }
             }
 
@@ -2890,10 +2957,10 @@ class ShopeeAccessibilityService : AccessibilityService() {
             val addedNames = existingNames.size - beforeNameCount
             val addedLinks = existingLinks.size - beforeLinkCount
             if (addedNames > 0 || addedLinks > 0) {
-                appendDebugLog("  → 從磁碟資料校正防重複資料庫：新補入商品名稱 $addedNames 筆、連結 $addedLinks 筆")
+                appendDebugLog("  → 從磁碟資料＋永久歷史記錄校正防重複資料庫：新補入商品名稱 $addedNames 筆、連結 $addedLinks 筆")
             }
         } catch (e: Exception) {
-            appendDebugLog("  → ⚠ 從磁碟校正防重複資料庫時發生例外（不影響本次擷取繼續進行）：${e.javaClass.simpleName} ${e.message}")
+            appendDebugLog("  → ⚠ 校正防重複資料庫時發生例外（不影響本次擷取繼續進行）：${e.javaClass.simpleName} ${e.message}")
         }
     }
 
@@ -2923,6 +2990,19 @@ class ShopeeAccessibilityService : AccessibilityService() {
             editor.putStringSet("captured_links", links)
         }
         editor.apply()
+
+        // 同步寫進永久歷史記錄檔案，就算之後這支商品的資料夾被刪掉，這筆記憶依然保留，
+        // 不會因為刪除影片＋App重裝這兩件事剛好同時發生，就被誤判成沒擷取過而重新擷取。
+        try {
+            val record = org.json.JSONObject().apply {
+                put("name", name ?: "")
+                put("link", link ?: "")
+                put("capturedAt", System.currentTimeMillis())
+            }
+            getCaptureHistoryFile().appendText(record.toString() + "\n")
+        } catch (e: Exception) {
+            // 寫入永久歷史記錄失敗不影響本次擷取結果，SharedPreferences那份記錄依然有效
+        }
     }
 
     private fun findLikelyProductNameText(root: AccessibilityNodeInfo): String? {
