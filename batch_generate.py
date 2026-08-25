@@ -11,6 +11,11 @@
 如果想強制重跑「已經有 output.mp4」的資料夾，加上 --force：
     python batch_generate.py ~/storage/downloads/CaptionQueue --force
 
+支援優雅停止：App簡易模式「生成影片」畫面按下「停止生成」時，會在<root>底下
+建立 .stop_signal 檔案。本腳本在每支影片完成、換下一支之前會檢查這個檔案，
+看到就在完成目前這支之後結束（不會生成到一半被腰斬），並刪掉訊號檔案避免
+下次啟動時誤判。
+
 generate_narration.py、make_video.py 必須跟本檔放在同一個資料夾。
 """
 import os
@@ -28,7 +33,8 @@ def write_progress(root: str, total: int, completed: int, current_name: str,
     """
     把目前批次進度寫進 <root>/.progress.json，供App簡易模式那邊輪詢顯示進度用
     （App不用等整批跑完，也不用解析stdout，直接讀這個結構化檔案）。
-    status: "running" 或 "done"。寫入失敗（例如沒有寫入權限）只印警告，不影響批次本身。
+    status: "running"、"done" 或 "stopped"（使用者主動按停止、目前這支完成後結束）。
+    寫入失敗（例如沒有寫入權限）只印警告，不影響批次本身。
     """
     progress_path = os.path.join(root, ".progress.json")
     try:
@@ -45,6 +51,21 @@ def write_progress(root: str, total: int, completed: int, current_name: str,
             }, f, ensure_ascii=False)
     except Exception as e:
         print(f"⚠ 寫入進度檔案失敗（{e}），不影響批次本身")
+
+
+def check_stop_requested(root: str) -> bool:
+    """
+    檢查App是否送出停止訊號（<root>/.stop_signal檔案）。
+    看到就刪除該檔案（避免下次啟動時誤判成又被要求停止）並回傳True。
+    """
+    stop_path = os.path.join(root, ".stop_signal")
+    if os.path.isfile(stop_path):
+        try:
+            os.remove(stop_path)
+        except Exception:
+            pass
+        return True
+    return False
 
 
 def find_product_folders(root: str) -> list:
@@ -73,6 +94,10 @@ def main():
         print(f"錯誤：找不到資料夾 {root}")
         sys.exit(1)
 
+    # 開始新一批之前，先清掉可能殘留的舊停止訊號檔案（例如上一批是被停止結束的，
+    # 理論上App端也會在啟動新一批前清過，這裡再保險清一次避免競速狀況）。
+    check_stop_requested(root)
+
     folders = find_product_folders(root)
     if not folders:
         print(f"在 {root} 底下沒有找到任何商品資料夾（需含 image_1.jpg）")
@@ -86,6 +111,7 @@ def main():
     error_list = []
     start_time = time.time()
     total = len(folders)
+    stopped = False
 
     write_progress(root, total, 0, "", "running", 0, 0, 0)
 
@@ -100,24 +126,37 @@ def main():
         except Exception as e:
             print(f"✗ 發生未預期的錯誤：{e}")
             error_list.append((name, str(e)))
-            continue
+            result = None
 
-        if result["status"] == "ok":
-            print(f"✓ 完成：{result['output_path']}")
-            ok_list.append(name)
-        elif result["status"] == "skipped":
-            print(f"— 跳過（{result['message']}）")
-            skipped_list.append(name)
-        else:
-            print(f"✗ 失敗：{result['message']}")
-            error_list.append((name, result["message"]))
+        if result is not None:
+            if result["status"] == "ok":
+                print(f"✓ 完成：{result['output_path']}")
+                ok_list.append(name)
+            elif result["status"] == "skipped":
+                print(f"— 跳過（{result['message']}）")
+                skipped_list.append(name)
+            else:
+                print(f"✗ 失敗：{result['message']}")
+                error_list.append((name, result["message"]))
 
-    write_progress(root, total, total, "", "done",
-                    len(ok_list), len(skipped_list), len(error_list))
+        # 目前這支（無論成功/跳過/失敗）已經處理完，換下一支之前檢查有沒有收到停止訊號。
+        if check_stop_requested(root):
+            print("\n收到停止指令，目前這支已完成，批次到此停止")
+            write_progress(root, total, idx, "", "stopped",
+                            len(ok_list), len(skipped_list), len(error_list))
+            stopped = True
+            break
+
+    if not stopped:
+        write_progress(root, total, total, "", "done",
+                        len(ok_list), len(skipped_list), len(error_list))
 
     elapsed = time.time() - start_time
     print("\n" + "=" * 60)
-    print(f"批次完成，共花費 {elapsed / 60:.1f} 分鐘")
+    if stopped:
+        print(f"批次已停止（使用者主動中止），共花費 {elapsed / 60:.1f} 分鐘")
+    else:
+        print(f"批次完成，共花費 {elapsed / 60:.1f} 分鐘")
     print(f"  成功：{len(ok_list)} 支")
     print(f"  跳過（已存在）：{len(skipped_list)} 支")
     print(f"  失敗：{len(error_list)} 支")

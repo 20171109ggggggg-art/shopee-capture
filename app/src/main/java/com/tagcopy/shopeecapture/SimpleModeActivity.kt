@@ -21,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -34,6 +35,7 @@ private val SimpleAccent = Color(0xFFE8622C)
 private val SimpleMuted = Color(0xFF8C8880)
 private val SimpleGreen = Color(0xFF2E7D32)
 private val SimpleBg = Color(0xFFFBF5EE)
+private val SimpleDanger = Color(0xFFB3261E)
 
 private enum class SimpleScreen { HOME, CAPTURE, GENERATE, REVIEW, UPLOAD }
 
@@ -76,46 +78,46 @@ private fun SimpleHomeScreen(context: Context, onNavigate: (SimpleScreen) -> Uni
             .padding(20.dp)
     ) {
         Spacer(Modifier.height(20.dp))
-        Text("蝦皮分潤助手", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = SimpleInk)
+        Text(stringResource(R.string.simple_home_title), fontSize = 26.sp, fontWeight = FontWeight.Bold, color = SimpleInk)
         Spacer(Modifier.height(6.dp))
-        Text("依序完成下面4個步驟，就能自動生成並上架短影音", fontSize = 14.sp, color = SimpleMuted)
+        Text(stringResource(R.string.simple_home_subtitle), fontSize = 14.sp, color = SimpleMuted)
         Spacer(Modifier.height(28.dp))
 
         HomeActionCard(
             step = "1",
-            title = "擷取商品",
-            desc = "去蝦皮App搜尋商品，自動抓取分潤商品資料",
+            title = stringResource(R.string.simple_step1_title),
+            desc = stringResource(R.string.simple_step1_desc),
             color = SimpleAccent,
             onClick = { onNavigate(SimpleScreen.CAPTURE) }
         )
         Spacer(Modifier.height(14.dp))
         HomeActionCard(
             step = "2",
-            title = "生成影片",
-            desc = "把擷取好的商品自動做成短影音",
+            title = stringResource(R.string.simple_step2_title),
+            desc = stringResource(R.string.simple_step2_desc),
             color = SimpleInk,
             onClick = { onNavigate(SimpleScreen.GENERATE) }
         )
         Spacer(Modifier.height(14.dp))
         HomeActionCard(
             step = "3",
-            title = "檢查影片",
-            desc = "看一下生成的影片，不滿意可以刪掉",
+            title = stringResource(R.string.simple_step3_title),
+            desc = stringResource(R.string.simple_step3_desc),
             color = Color(0xFF8A9A87),
             onClick = { onNavigate(SimpleScreen.REVIEW) }
         )
         Spacer(Modifier.height(14.dp))
         HomeActionCard(
             step = "4",
-            title = "開始上架",
-            desc = "自動把影片發佈到蝦皮短影音",
+            title = stringResource(R.string.simple_step4_title),
+            desc = stringResource(R.string.simple_step4_desc),
             color = SimpleGreen,
             onClick = { onNavigate(SimpleScreen.UPLOAD) }
         )
 
         Spacer(Modifier.height(40.dp))
         Text(
-            "進階設定",
+            stringResource(R.string.simple_advanced_settings),
             fontSize = 13.sp,
             color = SimpleMuted,
             modifier = Modifier
@@ -165,7 +167,7 @@ private fun SimpleTopBar(title: String, onBack: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
-            "‹ 返回",
+            "‹ " + stringResource(R.string.simple_back),
             fontSize = 16.sp,
             color = SimpleAccent,
             modifier = Modifier.clickable { onBack() }
@@ -191,36 +193,51 @@ private fun openShopeeApp(context: Context) {
     context.packageManager.getLaunchIntentForPackage(pkg)?.let { context.startActivity(it) }
 }
 
+/**
+ * 開啟蝦皮App前，如果無障礙服務跟懸浮視窗權限都已經開了，就順手啟動浮動按鈕服務，
+ * 使用者不用再自己跑去「進階設定」按第3步驟的啟動鈕。FloatingButtonService是
+ * 一般Started Service、Android系統本身保證同時只有一個實例，重複呼叫startService
+ * 只會再觸發一次onStartCommand（不會重跑onCreate、不會重複疊加懸浮視窗），
+ * 所以這裡不用額外判斷「是否已經在跑」，每次開蝦皮App都呼叫一次即可。
+ * 權限沒開齊的狀況畫面上已經有WarningBanner提醒，這裡就不重複跳提示。
+ */
+private fun openShopeeAppWithFloatingButton(context: Context) {
+    if (isAccessibilityServiceEnabled(context) && canDrawOverlays(context)) {
+        context.startService(Intent(context, FloatingButtonService::class.java))
+    }
+    openShopeeApp(context)
+}
+
 // ========== 步驟1：擷取商品 ==========
 
 @Composable
 private fun CaptureScreen(context: Context, onBack: () -> Unit) {
     Column(modifier = Modifier.fillMaxSize()) {
-        SimpleTopBar("擷取商品", onBack)
+        SimpleTopBar(stringResource(R.string.simple_step1_title), onBack)
         Column(modifier = Modifier.padding(horizontal = 20.dp)) {
             InstructionCard(
                 lines = listOf(
-                    "1. 按下面的按鈕開啟蝦皮App",
-                    "2. 在蝦皮搜尋想找的商品關鍵字",
-                    "3. 畫面上會出現浮動小按鈕",
-                    "4. 點浮動按鈕裡的「自動」，就會自動連續擷取符合條件的商品"
+                    stringResource(R.string.simple_capture_instr_1),
+                    stringResource(R.string.simple_capture_instr_2),
+                    stringResource(R.string.simple_capture_instr_3),
+                    stringResource(R.string.simple_capture_instr_4)
                 )
             )
             Spacer(Modifier.height(24.dp))
             val accessibilityOn = isAccessibilityServiceEnabled(context)
             if (!accessibilityOn) {
-                WarningBanner("尚未開啟無障礙服務權限，擷取功能無法運作，請到「進階設定」開啟")
+                WarningBanner(stringResource(R.string.simple_warn_need_accessibility_capture))
                 Spacer(Modifier.height(16.dp))
             }
             BigActionButton(
-                text = "開啟蝦皮App",
+                text = stringResource(R.string.simple_open_shopee),
                 color = SimpleAccent,
                 enabled = findShopeePackage(context) != null,
-                onClick = { openShopeeApp(context) }
+                onClick = { openShopeeAppWithFloatingButton(context) }
             )
             if (findShopeePackage(context) == null) {
                 Spacer(Modifier.height(8.dp))
-                Text("找不到已安裝的蝦皮App，請先安裝", fontSize = 13.sp, color = Color(0xFFB3261E))
+                Text(stringResource(R.string.simple_shopee_not_found), fontSize = 13.sp, color = SimpleDanger)
             }
         }
     }
@@ -242,6 +259,10 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
     ) { granted -> termuxGranted = granted }
 
     var isRunning by remember { mutableStateOf(false) }
+    // 「停止生成」按下後不是立即殺掉Termux行程，而是寫一個訊號檔案，
+    // batch_generate.py會在目前這支影片完成、下一支開始前檢查這個檔案，
+    // 看到就自動收尾寫進度並結束，避免一支影片生成到一半被中斷成殘缺檔案。
+    var stopRequested by remember { mutableStateOf(false) }
     var progress by remember { mutableStateOf<TermuxRunner.BatchProgress?>(null) }
     var resultText by remember { mutableStateOf<String?>(null) }
 
@@ -255,30 +276,42 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
         while (isRunning) {
             val p = TermuxRunner.readBatchProgress(captionQueueDir)
             progress = p
-            if (p?.status == "done") {
-                resultText = "完成了！成功 ${p.okCount} 支／跳過 ${p.skippedCount} 支／失敗 ${p.errorCount} 支"
-                isRunning = false
+            when (p?.status) {
+                "done" -> {
+                    resultText = context.getString(
+                        R.string.simple_generate_done, p.okCount, p.skippedCount, p.errorCount
+                    )
+                    isRunning = false
+                    stopRequested = false
+                }
+                "stopped" -> {
+                    resultText = context.getString(
+                        R.string.simple_generate_stopped, p.okCount, p.skippedCount, p.errorCount
+                    )
+                    isRunning = false
+                    stopRequested = false
+                }
             }
             kotlinx.coroutines.delay(1500)
         }
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        SimpleTopBar("生成影片", onBack)
+        SimpleTopBar(stringResource(R.string.simple_step2_title), onBack)
         Column(modifier = Modifier.padding(horizontal = 20.dp)) {
             InstructionCard(
                 lines = listOf(
-                    "把已經擷取好的商品自動做成短影音（含配音、字幕）",
-                    "生成期間手機請保持開啟、不要關掉App"
+                    stringResource(R.string.simple_generate_instr_1),
+                    stringResource(R.string.simple_generate_instr_2)
                 )
             )
             Spacer(Modifier.height(24.dp))
 
             if (!termuxGranted) {
-                WarningBanner("需要先授權背景執行權限（第一次使用才需要）")
+                WarningBanner(stringResource(R.string.simple_need_termux_permission))
                 Spacer(Modifier.height(12.dp))
                 BigActionButton(
-                    text = "授權背景執行權限",
+                    text = stringResource(R.string.simple_grant_termux_permission),
                     color = SimpleInk,
                     onClick = { permissionLauncher.launch("com.termux.permission.RUN_COMMAND") }
                 )
@@ -286,17 +319,22 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
             }
 
             if (!TermuxRunner.isTermuxInstalled(context)) {
-                WarningBanner("找不到背景執行環境，請聯絡協助你設定的人")
+                WarningBanner(stringResource(R.string.simple_no_termux))
                 Spacer(Modifier.height(16.dp))
             }
 
             BigActionButton(
-                text = if (isRunning) "生成中…" else "開始生成影片",
+                text = if (isRunning) stringResource(R.string.simple_generating) else stringResource(R.string.simple_start_generate),
                 color = SimpleInk,
                 enabled = termuxGranted && !isRunning && TermuxRunner.isTermuxInstalled(context),
                 onClick = {
                     resultText = null
                     progress = null
+                    stopRequested = false
+                    // 開始新一批之前，先清掉可能殘留的舊停止訊號檔案（例如上一批是被停止結束的）。
+                    try {
+                        File(captionQueueDir, ".stop_signal").delete()
+                    } catch (e: Exception) { /* 檔案本來就不存在時刪除會失敗，忽略即可 */ }
                     val sent = TermuxRunner.runCommand(
                         context,
                         "cd ~/shopee-capture && python batch_generate.py ~/storage/downloads/CaptionQueue"
@@ -304,16 +342,39 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                     if (sent) {
                         isRunning = true
                     } else {
-                        resultText = "啟動失敗，請聯絡協助你設定的人"
+                        resultText = context.getString(R.string.simple_generate_start_failed)
                     }
                 }
             )
+
+            if (isRunning) {
+                Spacer(Modifier.height(12.dp))
+                BigActionButton(
+                    text = stringResource(R.string.simple_stop_generate),
+                    color = SimpleDanger,
+                    enabled = !stopRequested,
+                    onClick = {
+                        try {
+                            captionQueueDir.mkdirs()
+                            File(captionQueueDir, ".stop_signal").createNewFile()
+                            stopRequested = true
+                        } catch (e: Exception) { /* 寫入失敗就靜默忽略，使用者仍可等它自然跑完 */ }
+                    }
+                )
+                if (stopRequested) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(stringResource(R.string.simple_stop_requested), fontSize = 13.sp, color = SimpleMuted)
+                }
+            }
 
             Spacer(Modifier.height(20.dp))
 
             progress?.let { p ->
                 if (p.total > 0) {
-                    Text("進度：${p.completed} / ${p.total}", fontSize = 15.sp, color = SimpleInk, fontWeight = FontWeight.Bold)
+                    Text(
+                        stringResource(R.string.simple_progress_label, p.completed, p.total),
+                        fontSize = 15.sp, color = SimpleInk, fontWeight = FontWeight.Bold
+                    )
                     Spacer(Modifier.height(8.dp))
                     LinearProgressIndicator(
                         progress = { if (p.total > 0) p.completed.toFloat() / p.total else 0f },
@@ -322,7 +383,7 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                     )
                     if (p.current.isNotBlank() && p.status == "running") {
                         Spacer(Modifier.height(6.dp))
-                        Text("目前處理中…", fontSize = 13.sp, color = SimpleMuted)
+                        Text(stringResource(R.string.simple_processing_now), fontSize = 13.sp, color = SimpleMuted)
                     }
                 }
             }
@@ -371,7 +432,7 @@ private fun ReviewVideosScreen(context: Context, onBack: () -> Unit) {
     var deleteTarget by remember { mutableStateOf<VideoItem?>(null) }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        SimpleTopBar("檢查影片（共${videos.size}支）", onBack)
+        SimpleTopBar(stringResource(R.string.simple_review_title, videos.size), onBack)
 
         if (videos.isEmpty()) {
             Column(
@@ -379,7 +440,7 @@ private fun ReviewVideosScreen(context: Context, onBack: () -> Unit) {
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Spacer(Modifier.height(60.dp))
-                Text("還沒有生成好的影片", fontSize = 15.sp, color = SimpleMuted)
+                Text(stringResource(R.string.simple_no_videos_yet), fontSize = 15.sp, color = SimpleMuted)
             }
         } else {
             LazyColumn(modifier = Modifier.padding(horizontal = 20.dp)) {
@@ -412,17 +473,17 @@ private fun ReviewVideosScreen(context: Context, onBack: () -> Unit) {
     deleteTarget?.let { target ->
         AlertDialog(
             onDismissRequest = { deleteTarget = null },
-            title = { Text("刪除這支影片？") },
+            title = { Text(stringResource(R.string.simple_delete_confirm_title)) },
             text = { Text(target.productName) },
             confirmButton = {
                 TextButton(onClick = {
                     target.folder.deleteRecursively()
                     videos = scanVideos(context)
                     deleteTarget = null
-                }) { Text("刪除", color = Color(0xFFB3261E)) }
+                }) { Text(stringResource(R.string.simple_delete), color = SimpleDanger) }
             },
             dismissButton = {
-                TextButton(onClick = { deleteTarget = null }) { Text("取消") }
+                TextButton(onClick = { deleteTarget = null }) { Text(stringResource(R.string.simple_cancel)) }
             }
         )
     }
@@ -441,13 +502,13 @@ private fun VideoRow(video: VideoItem, onPlay: () -> Unit, onDelete: () -> Unit)
             Text(video.productName, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = SimpleInk, maxLines = 2)
             Spacer(Modifier.height(4.dp))
             Text(
-                if (video.posted) "✓ 已上架" else "尚未上架",
+                if (video.posted) stringResource(R.string.simple_posted) else stringResource(R.string.simple_not_posted),
                 fontSize = 12.sp,
                 color = if (video.posted) SimpleGreen else SimpleMuted
             )
         }
-        TextButton(onClick = onPlay) { Text("播放", color = SimpleAccent) }
-        TextButton(onClick = onDelete) { Text("刪除", color = Color(0xFFB3261E)) }
+        TextButton(onClick = onPlay) { Text(stringResource(R.string.simple_play), color = SimpleAccent) }
+        TextButton(onClick = onDelete) { Text(stringResource(R.string.simple_delete), color = SimpleDanger) }
     }
 }
 
@@ -458,33 +519,33 @@ private fun UploadScreen(context: Context, onBack: () -> Unit) {
     val pendingCount = remember { scanVideos(context).count { !it.posted } }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        SimpleTopBar("開始上架", onBack)
+        SimpleTopBar(stringResource(R.string.simple_step4_title), onBack)
         Column(modifier = Modifier.padding(horizontal = 20.dp)) {
             InstructionCard(
                 lines = listOf(
-                    "1. 按下面的按鈕開啟蝦皮App",
-                    "2. 切到「分潤按讚好物」清單畫面（我的 → 蝦皮分潤計畫 → 分潤按讚好物）",
-                    "3. 點浮動按鈕裡的「上架」，就會自動連續發佈短影音"
+                    stringResource(R.string.simple_capture_instr_1),
+                    stringResource(R.string.simple_upload_instr_2),
+                    stringResource(R.string.simple_upload_instr_3)
                 )
             )
             Spacer(Modifier.height(16.dp))
             Text(
-                "目前有 $pendingCount 支影片還沒上架",
+                stringResource(R.string.simple_pending_count, pendingCount),
                 fontSize = 15.sp, fontWeight = FontWeight.Bold, color = SimpleInk
             )
             Spacer(Modifier.height(24.dp))
 
             val accessibilityOn = isAccessibilityServiceEnabled(context)
             if (!accessibilityOn) {
-                WarningBanner("尚未開啟無障礙服務權限，上架功能無法運作，請到「進階設定」開啟")
+                WarningBanner(stringResource(R.string.simple_warn_need_accessibility_upload))
                 Spacer(Modifier.height(16.dp))
             }
 
             BigActionButton(
-                text = "開啟蝦皮App",
+                text = stringResource(R.string.simple_open_shopee),
                 color = SimpleGreen,
                 enabled = findShopeePackage(context) != null,
-                onClick = { openShopeeApp(context) }
+                onClick = { openShopeeAppWithFloatingButton(context) }
             )
         }
     }
@@ -512,7 +573,7 @@ private fun WarningBanner(text: String) {
     Text(
         text,
         fontSize = 13.sp,
-        color = Color(0xFFB3261E),
+        color = SimpleDanger,
         modifier = Modifier
             .fillMaxWidth()
             .background(Color(0xFFFDECEA), RoundedCornerShape(8.dp))

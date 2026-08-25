@@ -111,4 +111,55 @@
     <string name="toast_captured_fail">Capture failed: %1$s</string>
 
     <string name="notif_channel_alert">Shopee Capture Alerts</string>
+
+    <!-- SimpleModeActivity (4-step simple mode home screen) -->
+    <string name="simple_home_title">Shopee Affiliate Assistant</string>
+    <string name="simple_home_subtitle">Complete these 4 steps in order to auto-generate and post short videos</string>
+    <string name="simple_step1_title">Capture Products</string>
+    <string name="simple_step1_desc">Search products in the Shopee app to auto-capture affiliate product data</string>
+    <string name="simple_step2_title">Generate Videos</string>
+    <string name="simple_step2_desc">Automatically turn captured products into short videos</string>
+    <string name="simple_step3_title">Review Videos</string>
+    <string name="simple_step3_desc">Preview the generated videos and delete any you don\'t like</string>
+    <string name="simple_step4_title">Start Posting</string>
+    <string name="simple_step4_desc">Automatically publish videos to Shopee Video</string>
+    <string name="simple_advanced_settings">Advanced Settings</string>
+    <string name="simple_back">Back</string>
+
+    <string name="simple_capture_instr_1">1. Tap the button below to open the Shopee app</string>
+    <string name="simple_capture_instr_2">2. Search for a product keyword in Shopee</string>
+    <string name="simple_capture_instr_3">3. A small floating button will appear on screen</string>
+    <string name="simple_capture_instr_4">4. Tap \"Auto\" on the floating button to keep capturing matching products automatically</string>
+    <string name="simple_warn_need_accessibility_capture">Accessibility permission isn\'t on yet, so capture won\'t work — enable it under \"Advanced Settings\"</string>
+    <string name="simple_open_shopee">Open Shopee App</string>
+    <string name="simple_shopee_not_found">Shopee app not found — please install it first</string>
+
+    <string name="simple_generate_instr_1">Automatically turn captured products into short videos (with narration and captions)</string>
+    <string name="simple_generate_instr_2">Keep your phone on and don\'t close the app while generating</string>
+    <string name="simple_need_termux_permission">Background execution permission is needed first (only required once)</string>
+    <string name="simple_grant_termux_permission">Grant Background Execution Permission</string>
+    <string name="simple_no_termux">Background execution environment not found — please contact whoever helped set this up</string>
+    <string name="simple_generating">Generating…</string>
+    <string name="simple_start_generate">Start Generating Videos</string>
+    <string name="simple_generate_start_failed">Failed to start — please contact whoever helped set this up</string>
+    <string name="simple_progress_label">Progress: %1$d / %2$d</string>
+    <string name="simple_processing_now">Processing now…</string>
+    <string name="simple_generate_done">Done! %1$d succeeded / %2$d skipped / %3$d failed</string>
+    <string name="simple_stop_generate">Stop Generating</string>
+    <string name="simple_stop_requested">Stop requested — will stop after the current video finishes…</string>
+    <string name="simple_generate_stopped">Stopped. %1$d completed / %2$d skipped / %3$d failed this run</string>
+
+    <string name="simple_review_title">Review Videos (%1$d total)</string>
+    <string name="simple_no_videos_yet">No videos generated yet</string>
+    <string name="simple_delete_confirm_title">Delete this video?</string>
+    <string name="simple_delete">Delete</string>
+    <string name="simple_cancel">Cancel</string>
+    <string name="simple_play">Play</string>
+    <string name="simple_posted">✓ Posted</string>
+    <string name="simple_not_posted">Not posted yet</string>
+
+    <string name="simple_upload_instr_2">2. Go to the \"Affiliate Liked Items\" list (Me → Shopee Affiliate Program → Affiliate Liked Items)</string>
+    <string name="simple_upload_instr_3">3. Tap \"Post\" on the floating button to keep publishing videos automatically</string>
+    <string name="simple_pending_count">%1$d videos are waiting to be posted</string>
+    <string name="simple_warn_need_accessibility_upload">Accessibility permission isn\'t on yet, so posting won\'t work — enable it under \"Advanced Settings\"</string>
 </resources>

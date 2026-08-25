@@ -111,4 +111,55 @@
     <string name="toast_captured_fail">擷取失敗：%1$s</string>
 
     <string name="notif_channel_alert">蝦皮擷取器提醒</string>
+
+    <!-- SimpleModeActivity（4步驟簡易模式主畫面） -->
+    <string name="simple_home_title">蝦皮分潤助手</string>
+    <string name="simple_home_subtitle">依序完成下面4個步驟，就能自動生成並上架短影音</string>
+    <string name="simple_step1_title">擷取商品</string>
+    <string name="simple_step1_desc">去蝦皮App搜尋商品，自動抓取分潤商品資料</string>
+    <string name="simple_step2_title">生成影片</string>
+    <string name="simple_step2_desc">把擷取好的商品自動做成短影音</string>
+    <string name="simple_step3_title">檢查影片</string>
+    <string name="simple_step3_desc">看一下生成的影片，不滿意可以刪掉</string>
+    <string name="simple_step4_title">開始上架</string>
+    <string name="simple_step4_desc">自動把影片發佈到蝦皮短影音</string>
+    <string name="simple_advanced_settings">進階設定</string>
+    <string name="simple_back">返回</string>
+
+    <string name="simple_capture_instr_1">1. 按下面的按鈕開啟蝦皮App</string>
+    <string name="simple_capture_instr_2">2. 在蝦皮搜尋想找的商品關鍵字</string>
+    <string name="simple_capture_instr_3">3. 畫面上會出現浮動小按鈕</string>
+    <string name="simple_capture_instr_4">4. 點浮動按鈕裡的「自動」，就會自動連續擷取符合條件的商品</string>
+    <string name="simple_warn_need_accessibility_capture">尚未開啟無障礙服務權限，擷取功能無法運作，請到「進階設定」開啟</string>
+    <string name="simple_open_shopee">開啟蝦皮App</string>
+    <string name="simple_shopee_not_found">找不到已安裝的蝦皮App，請先安裝</string>
+
+    <string name="simple_generate_instr_1">把已經擷取好的商品自動做成短影音（含配音、字幕）</string>
+    <string name="simple_generate_instr_2">生成期間手機請保持開啟、不要關掉App</string>
+    <string name="simple_need_termux_permission">需要先授權背景執行權限（第一次使用才需要）</string>
+    <string name="simple_grant_termux_permission">授權背景執行權限</string>
+    <string name="simple_no_termux">找不到背景執行環境，請聯絡協助你設定的人</string>
+    <string name="simple_generating">生成中…</string>
+    <string name="simple_start_generate">開始生成影片</string>
+    <string name="simple_generate_start_failed">啟動失敗，請聯絡協助你設定的人</string>
+    <string name="simple_progress_label">進度：%1$d / %2$d</string>
+    <string name="simple_processing_now">目前處理中…</string>
+    <string name="simple_generate_done">完成了！成功 %1$d 支／跳過 %2$d 支／失敗 %3$d 支</string>
+    <string name="simple_stop_generate">停止生成</string>
+    <string name="simple_stop_requested">已送出停止指令，將在目前這支影片完成後停止…</string>
+    <string name="simple_generate_stopped">已停止。這次共完成 %1$d 支／跳過 %2$d 支／失敗 %3$d 支</string>
+
+    <string name="simple_review_title">檢查影片（共%1$d支）</string>
+    <string name="simple_no_videos_yet">還沒有生成好的影片</string>
+    <string name="simple_delete_confirm_title">刪除這支影片？</string>
+    <string name="simple_delete">刪除</string>
+    <string name="simple_cancel">取消</string>
+    <string name="simple_play">播放</string>
+    <string name="simple_posted">✓ 已上架</string>
+    <string name="simple_not_posted">尚未上架</string>
+
+    <string name="simple_upload_instr_2">2. 切到「分潤按讚好物」清單畫面（我的 → 蝦皮分潤計畫 → 分潤按讚好物）</string>
+    <string name="simple_upload_instr_3">3. 點浮動按鈕裡的「上架」，就會自動連續發佈短影音</string>
+    <string name="simple_pending_count">目前有 %1$d 支影片還沒上架</string>
+    <string name="simple_warn_need_accessibility_upload">尚未開啟無障礙服務權限，上架功能無法運作，請到「進階設定」開啟</string>
 </resources>
