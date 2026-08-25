@@ -141,13 +141,27 @@ def load_region(folder: str) -> str:
     return "TW"
 
 
-def extract_product_info(caption: str) -> str:
+# PH版「Copy Info」真實格式：「Check out 商品標題 for ₱X - ₱Y. Get it on Shopee now! https://s.shopee.ph/xxx」
+# 跟TW格式一樣有固定的開場白/價格/連結，同樣不是賣點，直接丟棄，只留中間的商品標題部分
+QUOTE_PATTERN_EN = re.compile(
+    r"^Check out\s+(.+?)\s+for\s+[₱$][\d,.]+\s*-?\s*[₱$]?[\d,.]*\.\s*Get it on Shopee now!",
+    re.IGNORECASE
+)
+
+
+def extract_product_info(caption: str, region: str = "TW") -> str:
     """
     真實caption.txt格式：「嗨！快來看看『商品資訊』，售價只要$X-$Y！立即上蝦皮購物逛逛 => 連結」
     只取『』內的商品資訊，前後的話術開場白/價格/連結一律丟棄——這樣「嗨！快來看看」這類
     話術從源頭就不會進到後續解析，比事後用黑名單關鍵字濾除更根本可靠。
     抓不到『』（可能是舊格式或例外情況）就退回整段原文，交給後續步驟繼續處理。
+
+    PH版格式不一樣（沒有『』，是「Check out 標題 for ₱X - ₱Y. Get it on Shopee now! 連結」），
+    用專屬的英文正則抓中間的標題部分，同樣抓不到就退回整段原文。
     """
+    if region == "PH":
+        m_en = QUOTE_PATTERN_EN.search(caption)
+        return m_en.group(1).strip() if m_en else caption
     m = QUOTE_PATTERN.search(caption)
     return m.group(1) if m else caption
 
@@ -239,6 +253,49 @@ def count_images(folder: str) -> int:
     return min(len(files), 10)
 
 
+HASHTAG_POOL_ZH = ["蝦皮好物", "分潤推薦", "開箱推薦", "生活好物", "必買推薦", "好物分享"]
+HASHTAG_POOL_EN = ["ShopeeFinds", "MustHave", "AffiliateFind", "ShopSmart", "TrendingNow", "HomeEssentials"]
+
+
+def default_hashtags(region: str) -> list:
+    """region沒有可用hashtag時的預設標籤池（前5個），TW中文/PH英文各一組"""
+    pool = HASHTAG_POOL_EN if region == "PH" else HASHTAG_POOL_ZH
+    return pool[:5]
+
+
+def build_hashtags(folder: str) -> list:
+    """
+    規則模板路徑（AI沒生成hashtag時）用的hashtag清單：優先從商品標題抽取1~2個有意義的詞，
+    不夠5個時用地區對應的預設標籤池（TW中文／PH英文）補滿。
+    """
+    caption = load_caption(folder)
+    region = load_region(folder)
+    if not caption:
+        return default_hashtags(region)
+
+    product_info = extract_product_info(caption, region)
+    title_part, _ = split_title_and_tags(product_info)
+
+    if region == "PH":
+        # 英文標題沒有「含中文字」這種過濾依據可用，改成挑長度4個字母以上的單字當候選
+        words = [w.strip(",.!?()") for w in title_part.split()]
+        picked = [w for w in words if len(w) >= 4][:2]
+    else:
+        picked = clean_title_features(title_part)[:2]
+
+    result = []
+    for f in picked:
+        f = f.strip()
+        if f and f not in result:
+            result.append(f)
+    for tag in default_hashtags(region):
+        if len(result) >= 5:
+            break
+        if tag not in result:
+            result.append(tag)
+    return result[:5]
+
+
 def determine_sentence_count(num_images: int) -> int:
     """
     圖片張數決定旁白句數，讓旁白長度跟著影片長度連動，避免「圖片多但旁白只有
@@ -284,7 +341,7 @@ def build_narration_sentences(folder: str) -> list:
         return []
 
     region = load_region(folder)
-    product_info = extract_product_info(caption)
+    product_info = extract_product_info(caption, region)
     title_part, tags = split_title_and_tags(product_info)
     title_features = clean_title_features(title_part)
     category, remaining_tags = detect_category(title_part, tags)

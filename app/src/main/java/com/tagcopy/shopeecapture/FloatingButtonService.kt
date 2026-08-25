@@ -120,8 +120,19 @@ class FloatingButtonService : Service() {
         // （無障礙節點樹完全抓不到這幾個自訂元件，只能靠實際點擊測量）。
         // 校正完成、開關點擊邏輯穩定驗證有效之後，這顆按鈕可以移除。
         val calibrateButton = TextView(this).apply {
-            text = "校正"
+            text = getString(R.string.btn_calibrate)
             setBackgroundColor(0xFF7A4FBF.toInt())
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 14f
+            setPadding(36, 24, 36, 24)
+        }
+
+        // 上架自動化正式按鈕：取代原本借用「偵測」測試的testUploadAutomation()（寫死1支）。
+        // 使用前提：目前畫面必須已經在蝦皮「分潤按讚好物／My Likes」清單頁
+        // （這段導航還沒自動化，需要先手動切過去）。
+        val uploadButton = TextView(this).apply {
+            text = getString(R.string.btn_upload)
+            setBackgroundColor(0xFF2E7D32.toInt())
             setTextColor(0xFFFFFFFF.toInt())
             textSize = 14f
             setPadding(36, 24, 36, 24)
@@ -131,6 +142,7 @@ class FloatingButtonService : Service() {
         container.addView(autoButton)
         container.addView(detectButton)
         container.addView(calibrateButton)
+        container.addView(uploadButton)
 
         val layoutFlag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -182,6 +194,7 @@ class FloatingButtonService : Service() {
                             autoButton -> onAutoButtonTapped(autoButton)
                             detectButton -> onDetectButtonTapped()
                             calibrateButton -> toggleCoordinateCalibrationOverlay()
+                            uploadButton -> onUploadButtonTapped(uploadButton)
                         }
                     }
                     true
@@ -193,6 +206,7 @@ class FloatingButtonService : Service() {
         autoButton.setOnTouchListener(dragListener)
         detectButton.setOnTouchListener(dragListener)
         calibrateButton.setOnTouchListener(dragListener)
+        uploadButton.setOnTouchListener(dragListener)
 
         floatingView = container
         floatingViewParams = params
@@ -352,6 +366,56 @@ class FloatingButtonService : Service() {
                             Toast.LENGTH_LONG
                         ).show()
                     }
+                }
+            }
+        }
+    }
+
+    /**
+     * 正式的「上架」按鈕：取代原本借用「偵測」測試的testUploadAutomation()（寫死只跑1支）。
+     * 按下前提：目前畫面必須已經在蝦皮「分潤按讚好物／My Likes」清單頁（這段導航目前
+     * 還沒自動化，需要先手動切過去）。支數從UploadAutomationPrefs讀取，可在App主畫面調整。
+     */
+    private fun onUploadButtonTapped(uploadButton: TextView) {
+        val service = ShopeeAccessibilityService.instance
+        if (service == null) {
+            Toast.makeText(this, getString(R.string.toast_upload_need_accessibility), Toast.LENGTH_LONG).show()
+            return
+        }
+
+        if (service.isUploadAutomationRunning()) {
+            service.stopUploadAutomation()
+            uploadButton.text = getString(R.string.btn_upload)
+            Toast.makeText(this, getString(R.string.toast_upload_stopped), Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val targetCount = UploadAutomationPrefs.getTargetCount(this)
+        uploadButton.text = "0/$targetCount"
+        Toast.makeText(this, getString(R.string.toast_upload_started, targetCount), Toast.LENGTH_SHORT).show()
+
+        service.startUploadAutomation(targetCount) { event ->
+            when (event) {
+                is UploadEvent.Log -> {
+                    if (event.message.startsWith("✓") || event.message.startsWith("✗")) {
+                        Toast.makeText(this, event.message, Toast.LENGTH_SHORT).show()
+                    }
+                }
+                is UploadEvent.Progress -> {
+                    uploadButton.text = "${event.current}/${event.total}"
+                }
+                is UploadEvent.Finished -> {
+                    uploadButton.text = getString(R.string.btn_upload)
+                    val reasonText = when (event.reason) {
+                        UploadFinishReason.ALL_DONE -> getString(R.string.upload_finish_reason_all_done)
+                        UploadFinishReason.MAX_COUNT_REACHED -> getString(R.string.upload_finish_reason_max_count)
+                        UploadFinishReason.NO_CANDIDATES -> getString(R.string.upload_finish_reason_no_candidates)
+                        UploadFinishReason.STOPPED_ON_FAILURE -> getString(R.string.upload_finish_reason_stopped_on_failure)
+                    }
+                    showAlertNotification(
+                        getString(R.string.alert_title_upload_finished),
+                        getString(R.string.alert_msg_upload_finished, event.successCount, event.failCount, reasonText)
+                    )
                 }
             }
         }

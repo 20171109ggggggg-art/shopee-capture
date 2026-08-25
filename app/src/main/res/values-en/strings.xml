@@ -21,6 +21,13 @@
     <string name="btn_stop">Stop</string>
     <string name="btn_start">Start</string>
 
+    <string name="step4_title">Read Photo Library Permission</string>
+    <string name="step4_desc">The share panel\'s download button captures the original image — reading the photo library is needed to fetch the file just saved.</string>
+    <string name="btn_grant_permission">Grant Permission</string>
+
+    <string name="step5_title">All Files Access Permission</string>
+    <string name="step5_desc">Upload automation needs to read each product\'s meta.json under CaptionQueue. Without this permission, regular files like these get blocked by the system (EACCES); video and image access is unaffected.</string>
+
     <string name="captured_products_title">Captured Products</string>
     <string name="btn_refresh">Refresh</string>
     <string name="empty_queue_text">No products captured yet</string>
@@ -57,6 +64,10 @@
     <string name="unknown_product">Unknown product</string>
     <string name="no_link">(No link)</string>
 
+    <string name="upload_settings_title">Upload Automation Settings</string>
+    <string name="upload_settings_desc">From the Shopee \"My Likes\" list screen, tap the \"Upload\" button on the floating window to process candidate products in a row (video already generated but not yet posted) — auto-importing the link, picking the video, filling the caption, and publishing</string>
+    <string name="upload_target_count_label">Max Count This Batch</string>
+
     <!-- FloatingButtonService -->
     <string name="notif_channel_floating">Shopee Capture Floating Button</string>
     <string name="notif_title_running">Shopee Capture Tool Running</string>
@@ -65,6 +76,18 @@
     <string name="btn_capture">Capture</string>
     <string name="btn_auto">Auto</string>
     <string name="btn_detect">Detect</string>
+    <string name="btn_calibrate">Calibrate</string>
+    <string name="btn_upload">Upload</string>
+
+    <string name="toast_upload_need_accessibility">Please enable \"Accessibility Service\" first</string>
+    <string name="toast_upload_started">Started upload automation, up to %1$d this batch</string>
+    <string name="toast_upload_stopped">Upload automation stopped</string>
+    <string name="alert_title_upload_finished">Upload Automation Finished</string>
+    <string name="alert_msg_upload_finished">%1$d succeeded / %2$d failed (reason: %3$s)</string>
+    <string name="upload_finish_reason_all_done">All candidates processed</string>
+    <string name="upload_finish_reason_max_count">Batch limit reached</string>
+    <string name="upload_finish_reason_no_candidates">No matching candidate products found</string>
+    <string name="upload_finish_reason_stopped_on_failure">Stopped after one product failed</string>
 
     <string name="toast_need_accessibility">Please enable \"Accessibility Service\" first</string>
     <string name="toast_no_package">Couldn\'t read the current app\'s package name</string>

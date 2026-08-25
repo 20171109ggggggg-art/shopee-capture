@@ -168,10 +168,10 @@ fun RootScreen() {
 
         SetupStepCard(
             stepNumber = "4",
-            title = "讀取相簿權限",
-            description = "分享面板下載鈕擷取原圖，需要讀取相簿才能抓到剛存下的圖片檔案。",
+            title = stringResource(R.string.step4_title),
+            description = stringResource(R.string.step4_desc),
             done = mediaPermissionGranted,
-            buttonText = "授予權限",
+            buttonText = stringResource(R.string.btn_grant_permission),
             onClick = {
                 val permission = if (Build.VERSION.SDK_INT >= 33) {
                     Manifest.permission.READ_MEDIA_IMAGES
@@ -186,10 +186,10 @@ fun RootScreen() {
 
         SetupStepCard(
             stepNumber = "5",
-            title = "所有檔案存取權限",
-            description = "上架自動化需要讀取 CaptionQueue 底下每個商品的 meta.json，這類一般檔案沒開此權限會被系統擋掉（EACCES），影片與圖片存取不受影響。",
+            title = stringResource(R.string.step5_title),
+            description = stringResource(R.string.step5_desc),
             done = allFilesAccessGranted,
-            buttonText = "前往設定",
+            buttonText = stringResource(R.string.btn_go_to_settings),
             onClick = {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                     val intent = Intent(
@@ -204,6 +204,10 @@ fun RootScreen() {
         Spacer(Modifier.height(14.dp))
 
         AutoCaptureSettingsCard(context)
+
+        Spacer(Modifier.height(14.dp))
+
+        UploadAutomationSettingsCard(context)
 
         Spacer(Modifier.height(32.dp))
 
@@ -447,6 +451,40 @@ fun AutoCaptureSettingsCard(context: android.content.Context) {
             singleLine = true,
             enabled = timeLimitEnabled,
             label = { Text(stringResource(R.string.time_limit_hint)) },
+            shape = RoundedCornerShape(0.dp)
+        )
+    }
+}
+
+@Composable
+fun UploadAutomationSettingsCard(context: android.content.Context) {
+    var countText by remember { mutableStateOf(UploadAutomationPrefs.getTargetCount(context).toString()) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White)
+            .padding(16.dp)
+    ) {
+        Text(stringResource(R.string.upload_settings_title), fontSize = 15.sp, fontWeight = FontWeight.Bold, color = InkColor)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            stringResource(R.string.upload_settings_desc),
+            fontSize = 12.sp, color = MutedColor, lineHeight = 17.sp
+        )
+        Spacer(Modifier.height(14.dp))
+
+        Text(stringResource(R.string.upload_target_count_label), fontSize = 12.sp, color = InkColor, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(6.dp))
+        OutlinedTextField(
+            value = countText,
+            onValueChange = { newValue ->
+                countText = newValue
+                val count = newValue.toIntOrNull()?.coerceIn(1, 50)
+                if (count != null) UploadAutomationPrefs.setTargetCount(context, count)
+            },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
             shape = RoundedCornerShape(0.dp)
         )
     }

@@ -21,6 +21,13 @@
     <string name="btn_stop">停止</string>
     <string name="btn_start">啟動</string>
 
+    <string name="step4_title">讀取相簿權限</string>
+    <string name="step4_desc">分享面板下載鈕擷取原圖，需要讀取相簿才能抓到剛存下的圖片檔案。</string>
+    <string name="btn_grant_permission">授予權限</string>
+
+    <string name="step5_title">所有檔案存取權限</string>
+    <string name="step5_desc">上架自動化需要讀取 CaptionQueue 底下每個商品的 meta.json，這類一般檔案沒開此權限會被系統擋掉（EACCES），影片與圖片存取不受影響。</string>
+
     <string name="captured_products_title">已擷取商品</string>
     <string name="btn_refresh">重新整理</string>
     <string name="empty_queue_text">還沒有擷取任何商品</string>
@@ -57,6 +64,10 @@
     <string name="unknown_product">未知商品</string>
     <string name="no_link">（無連結）</string>
 
+    <string name="upload_settings_title">上架自動化設定</string>
+    <string name="upload_settings_desc">在蝦皮「分潤按讚好物」清單畫面點懸浮視窗的「上架」按鈕，會依這裡設定的支數連續處理候選商品（已生成影片但還沒上架的），自動匯入連結、選片、撰寫內文並發佈</string>
+    <string name="upload_target_count_label">本次最多處理支數</string>
+
     <!-- FloatingButtonService -->
     <string name="notif_channel_floating">蝦皮擷取懸浮按鈕</string>
     <string name="notif_title_running">蝦皮擷取器運行中</string>
@@ -65,6 +76,18 @@
     <string name="btn_capture">擷取</string>
     <string name="btn_auto">自動</string>
     <string name="btn_detect">偵測</string>
+    <string name="btn_calibrate">校正</string>
+    <string name="btn_upload">上架</string>
+
+    <string name="toast_upload_need_accessibility">請先開啟「無障礙服務」權限</string>
+    <string name="toast_upload_started">開始上架自動化，本次最多 %1$d 支</string>
+    <string name="toast_upload_stopped">已停止上架自動化</string>
+    <string name="alert_title_upload_finished">上架自動化結束</string>
+    <string name="alert_msg_upload_finished">成功 %1$d 支／失敗 %2$d 支（原因：%3$s）</string>
+    <string name="upload_finish_reason_all_done">全部候選商品已處理完</string>
+    <string name="upload_finish_reason_max_count">已達本次批次上限</string>
+    <string name="upload_finish_reason_no_candidates">沒有找到符合條件的候選商品</string>
+    <string name="upload_finish_reason_stopped_on_failure">某一支失敗，已停止本次批次</string>
 
     <string name="toast_need_accessibility">請先開啟「無障礙服務」權限</string>
     <string name="toast_no_package">讀不到目前 App 的套件名稱</string>
