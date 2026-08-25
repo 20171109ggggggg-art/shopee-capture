@@ -2874,23 +2874,38 @@ class ShopeeAccessibilityService : AccessibilityService() {
         // extractProductMetrics 用 maxDepth=20 能穩定讀到同一頁的價格，代表 20 層對這個 App 的畫面結構是夠的，
         // 這裡跟著提高到一致的深度，避免標題因為搜尋深度不夠而完全掃不到。
         collectTextNodes(root, candidates, maxDepth = 20, maxNodes = 60)
-        // 取長度落在合理商品標題範圍（8~90 字）且非按鈕文字的第一筆，
-        // 排除優惠券橫幅相關文字（例如「提供優惠券給您的粉絲/關注者」），避免誤判成商品名稱，
-        // 也排除純數字／價格格式的文字（例如「1,680.00」），這類文字不可能是真正的商品標題。
-        // 長度上限從 60 放寬到 90：實測發現部分商品標題（含品牌名、規格描述）超過 60 字。
-        val result = candidates.firstOrNull {
-            it.length in 8..90 && !isCouponBannerText(it) && !isPureNumberOrPriceText(it) && !isVariationCountText(it)
+
+        // 過濾掉已知不可能是標題的文字類型（優惠券橫幅、純數字／價格格式、變體數量標籤、
+        // 統計徽章標籤），長度落在合理範圍（8~200字）。
+        val validCandidates = candidates.filter {
+            it.length in 8..200 && !isCouponBannerText(it) && !isPureNumberOrPriceText(it) &&
+                !isVariationCountText(it) && !isMetricBadgeText(it)
         }
+
+        // 關鍵修正：改用「挑最長的候選文字」而不是「挑第一個符合的候選文字」。
+        // 之前用「第一個符合」的邏輯，每次遇到新的短徽章文字（變體數量、推廣者數、已售出、
+        // COMMSXTRA分潤標籤...）只要沒被黑名單擋到，就會搶在真正標題之前被誤判成商品名稱——
+        // 這種黑名單式排除法治標不治本，每冒出一種新的UI文字組合就要再中一次獎才補得到規則。
+        // 商品標題天生是全畫面裡最長的一段自然語言文字（完整品名+規格描述），一定比任何徽章／
+        // 標籤文字長出一截，改成「挑最長」從根本上堵住整類「短文字搶先誤判」的問題，
+        // 不用再窮舉每一種可能出現的徽章文字。
+        val result = validCandidates.maxByOrNull { it.length }
+
         if (result == null) {
             // 找不到時記錄候選清單前 15 筆，方便下次排查是「標題太長/太短被排除」還是「根本沒掃到標題」
             appendDebugLog("  → ⚠ 商品名稱找不到，候選文字清單（前 ${candidates.size.coerceAtMost(15)} 筆）：${candidates.take(15)}")
+        } else if (result.length < 25 && validCandidates.size > 1) {
+            // 防禦性記錄：如果選中的名稱意外偏短（<25字）、但候選清單裡還有其他文字，
+            // 記下完整候選清單方便日後排查是不是又出現了新的徽章文字變種，不用等使用者
+            // 回報「名稱看起來怪怪的」才後知後覺去查。真正的商品標題幾乎不會短於25字。
+            appendDebugLog("  → ⚠ 商品名稱意外偏短（「$result」，${result.length}字），候選清單：${validCandidates.take(10)}")
         }
         return result
     }
 
     /**
      * 判斷文字是不是「N variations」這種變體數量標籤（例如「8 variations」），不是商品標題。
-     * 這個文字長度剛好落在商品標題合理範圍內（8~90字），又不是純數字也不是優惠券文字，
+     * 這個文字長度剛好落在商品標題合理範圍內，又不是純數字也不是優惠券文字，
      * 之前沒有專門排除，導致商品詳情頁裡排在標題「之前」出現的這行變體數量文字，
      * 每次都被誤判搶先當成商品名稱——不只名稱顯示不正確，更嚴重的是防重複比對機制
      * 是拿商品名稱去比對「有沒有擷取過」，只要任何一支商品的變體數量剛好相同（例如都是8個
@@ -2898,6 +2913,26 @@ class ShopeeAccessibilityService : AccessibilityService() {
      */
     private fun isVariationCountText(text: String): Boolean {
         return Regex("^\\d+\\s*variations?$", RegexOption.IGNORE_CASE).matches(text.trim())
+    }
+
+    /**
+     * 判斷文字是不是「已推廣者」「已售出」這類統計徽章的純文字標籤半段（例如「Affiliates
+     * Promoted」「Sold」），不含數字、不是商品標題。
+     * 這類徽章在畫面上常態顯示成「844 Affiliates Promoted」「10K+ Sold」，但accessibility節點
+     * 樹裡數字跟文字標籤常被拆成兩個獨立節點：數字那半段會被isPureNumberOrPriceText擋掉，
+     * 但純文字標籤那半段完全不含數字，長度又落在標題合理範圍內，如果標題節點本身因為太長
+     * 被長度上限排除掉，比對就會往下滑到這種文字，誤判成商品名稱。中文版「位推廣者」「已售出」
+     * 通常整段（含數字）就是同一個節點，一併放進來涵蓋以防萬一。
+     */
+    private fun isMetricBadgeText(text: String): Boolean {
+        val t = text.trim()
+        val patterns = listOf(
+            Regex("^Affiliates?\\s*Promoted$", RegexOption.IGNORE_CASE),
+            Regex("^Sold$", RegexOption.IGNORE_CASE),
+            Regex("^[\\d,]+\\s*位推廣者$"),
+            Regex("^已售出\\s*[\\d,]+\\+?$")
+        )
+        return patterns.any { it.matches(t) }
     }
 
     /** 判斷文字是不是「純數字」「價格格式」或「價格範圍格式」（例如 1,680.00、399、$399、$169.00-$399.00），這種不可能是商品標題。 */
