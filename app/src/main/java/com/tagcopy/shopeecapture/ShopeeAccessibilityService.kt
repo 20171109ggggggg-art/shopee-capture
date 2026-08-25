@@ -128,6 +128,14 @@ class ShopeeAccessibilityService : AccessibilityService() {
         lastKnownSearchQuery = null
         currentDebugLogFileName = "debug_log_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.txt"
         appendDebugLog("===== 開始自動擷取，目標 ${config.targetCount} 件，篩選條件：${if (config.filter.isEmpty()) "無" else "有"} =====")
+        // 每次開始自動擷取前，先從CaptionQueue磁碟上實際存在的資料夾「自癒」防重複資料庫。
+        // 根因：防重複比對用的captured_names/captured_links是存在App自己的SharedPreferences，
+        // 跟磁碟上實際已擷取的資料夾完全脫鉤——只要App被重新安裝過一次（例如部署新版APK），
+        // SharedPreferences就會被系統清空歸零，即使CaptionQueue裡明明還躺著幾十支已擷取商品的
+        // 完整紀錄，也會被當成「全新環境」，導致同一批商品被重複擷取、白白浪費後續生成影片
+        // 的大量時間。這裡改成每次開始前重新掃一次磁碟，把meta.json裡的商品名稱/連結補回
+        // SharedPreferences，不管SharedPreferences有沒有被重置，都能從磁碟資料自動校正回來。
+        syncDedupPrefsFromDisk()
         run {
             val dedupPrefs = getDedupPrefs()
             val nameCount = (dedupPrefs.getStringSet("captured_names", emptySet()) ?: emptySet()).size
@@ -2839,6 +2847,55 @@ class ShopeeAccessibilityService : AccessibilityService() {
      * 用商品名稱做「早期快速判斷」（省下後面截圖、讀剪貼簿的時間），用連結做最終確認（比較準確）。
      */
     private fun getDedupPrefs() = getSharedPreferences("capture_dedup_prefs", Context.MODE_PRIVATE)
+
+    /**
+     * 掃過CaptionQueue底下所有資料夾的meta.json，把商品名稱與連結補進防重複
+     * SharedPreferences——這是讓防重複資料庫在App被重裝、SharedPreferences被清空後
+     * 也能「自癒」回正確狀態的關鍵函式。只會新增不會覆蓋，掃描失敗的單一資料夾
+     * 略過不影響其他資料夾，整個函式失敗也不影響擷取主流程繼續進行。
+     */
+    private fun syncDedupPrefsFromDisk() {
+        try {
+            val root = File(
+                android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
+                "CaptionQueue"
+            )
+            if (!root.isDirectory) return
+            val dirs = root.listFiles { f -> f.isDirectory } ?: return
+
+            val existingNames = (getDedupPrefs().getStringSet("captured_names", emptySet()) ?: emptySet()).toMutableSet()
+            val existingLinks = (getDedupPrefs().getStringSet("captured_links", emptySet()) ?: emptySet()).toMutableSet()
+            val beforeNameCount = existingNames.size
+            val beforeLinkCount = existingLinks.size
+
+            for (dir in dirs) {
+                val metaFile = File(dir, "meta.json")
+                if (!metaFile.isFile) continue
+                try {
+                    val json = org.json.JSONObject(metaFile.readText())
+                    json.optString("productName", "").takeIf { it.isNotBlank() && it != "未知" }
+                        ?.let { existingNames.add(it) }
+                    json.optString("promoLink", "").takeIf { it.isNotBlank() }
+                        ?.let { existingLinks.add(it) }
+                } catch (e: Exception) {
+                    // 單一資料夾的meta.json讀取/解析失敗不影響其他資料夾繼續掃描
+                }
+            }
+
+            val editor = getDedupPrefs().edit()
+            editor.putStringSet("captured_names", existingNames)
+            editor.putStringSet("captured_links", existingLinks)
+            editor.apply()
+
+            val addedNames = existingNames.size - beforeNameCount
+            val addedLinks = existingLinks.size - beforeLinkCount
+            if (addedNames > 0 || addedLinks > 0) {
+                appendDebugLog("  → 從磁碟資料校正防重複資料庫：新補入商品名稱 $addedNames 筆、連結 $addedLinks 筆")
+            }
+        } catch (e: Exception) {
+            appendDebugLog("  → ⚠ 從磁碟校正防重複資料庫時發生例外（不影響本次擷取繼續進行）：${e.javaClass.simpleName} ${e.message}")
+        }
+    }
 
     private fun isProductNameAlreadyCaptured(name: String?): Boolean {
         if (name.isNullOrBlank() || name == "未知") return false
