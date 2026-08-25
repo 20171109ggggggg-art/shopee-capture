@@ -258,18 +258,41 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
         contract = androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
     ) { granted -> termuxGranted = granted }
 
-    var isRunning by remember { mutableStateOf(false) }
-    // 「停止生成」按下後不是立即殺掉Termux行程，而是寫一個訊號檔案，
-    // batch_generate.py會在目前這支影片完成、下一支開始前檢查這個檔案，
-    // 看到就自動收尾寫進度並結束，避免一支影片生成到一半被中斷成殘缺檔案。
-    var stopRequested by remember { mutableStateOf(false) }
-    var progress by remember { mutableStateOf<TermuxRunner.BatchProgress?>(null) }
-    var resultText by remember { mutableStateOf<String?>(null) }
-
     val captionQueueDir = File(
         Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
         "CaptionQueue"
     )
+    // 進畫面當下先讀一次目前實際的進度檔案，用它來決定畫面初始狀態——
+    // Termux背景執行不受App畫面切換影響，之前的版本每次重進畫面isRunning都從false
+    // 重新開始，導致使用者切到別的畫面再回來時，明明背景還在生成，畫面卻顯示
+    // 「開始生成影片」看起來像沒在跑，容易誤導使用者重複啟動或誤以為卡住。
+    val initialProgress = remember { TermuxRunner.readBatchProgress(captionQueueDir) }
+
+    var isRunning by remember { mutableStateOf(initialProgress?.status == "running") }
+    // 「停止生成」按下後不是立即殺掉Termux行程，而是寫一個訊號檔案，
+    // batch_generate.py會在目前這支影片完成、下一支開始前檢查這個檔案，
+    // 看到就自動收尾寫進度並結束，避免一支影片生成到一半被中斷成殘缺檔案。
+    // 同樣道理，如果使用者按下停止後就切走畫面，重進來時訊號檔案可能還沒被腳本吃掉，
+    // 這裡也一併還原狀態，避免按鈕又變回可以按（重複按不會出錯，但畫面顯示才會準確）。
+    var stopRequested by remember { mutableStateOf(File(captionQueueDir, ".stop_signal").exists()) }
+    var progress by remember { mutableStateOf(initialProgress) }
+    // 如果重進畫面時發現上一批其實已經在背景跑完了（使用者切走那段時間完成的），
+    // 直接把結果顯示出來，不會因為畫面重建就把「已經完成」的訊息憑空吃掉。
+    var resultText by remember {
+        mutableStateOf(
+            when (initialProgress?.status) {
+                "done" -> context.getString(
+                    R.string.simple_generate_done,
+                    initialProgress.okCount, initialProgress.skippedCount, initialProgress.errorCount
+                )
+                "stopped" -> context.getString(
+                    R.string.simple_generate_stopped,
+                    initialProgress.okCount, initialProgress.skippedCount, initialProgress.errorCount
+                )
+                else -> null
+            }
+        )
+    }
 
     LaunchedEffect(isRunning) {
         if (!isRunning) return@LaunchedEffect
