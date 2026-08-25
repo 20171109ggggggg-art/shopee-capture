@@ -1714,10 +1714,12 @@ class ShopeeAccessibilityService : AccessibilityService() {
     private suspend fun navigateBackToLikesListAfterPost() {
         // 17a-0. 等畫面穩定下來——使用者實測發現，發佈成功後跳轉到「Live & Video」動態牆
         // 的時間不固定（有時很快、有時明顯較慢），原本寫死delay(1500)不夠、常常太早去找
-        // 底部導覽列時畫面還沒渲染完成。改成輪詢等待底部導覽列的固定標記文字出現
-        // （"Home"或中文"首頁"，這兩個字不管在哪個分頁畫面都看得到），最長等10秒，
-        // 確保畫面真的穩定下來才繼續往下走。
-        waitForAnyText(listOf("Home", "首頁"), 10000)
+        // 底部導覽列時畫面還沒渲染完成。原本改成等「Home」/「首頁」文字出現，但實測發現
+        // TW的首頁分頁其實叫「蝦拼」（蝦皮暱稱，不是「首頁」），害這一步在TW每次都空等滿10秒
+        // 才繼續。改成直接等「我的」分頁本身出現（含跨地區共用、不受語言影響的
+        // contentDescription「tab_bar_button_me」），這樣不用去猜各地區「首頁」分頁叫什麼，
+        // 而且等到的東西就是接下來步驟17b真正要點的目標，一次到位。
+        waitForAnyText(listOf("我的", "我", "Me", "tab_bar_button_me"), 10000)
         delay(800)
 
         // 17a. 若跳出「Share to Whatsapp」分享詢問彈窗，點「Cancel」跳過（PH特有，目前未見TW版本）
@@ -1742,7 +1744,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         var meTab: AccessibilityNodeInfo? = null
         for (attempt in 1..3) {
             root = rootInActiveWindow
-            meTab = root?.let { findBottommostNodeByTexts(it, listOf("我", "Me")) }
+            meTab = root?.let { findBottommostNodeByTexts(it, listOf("我的", "我", "Me", "tab_bar_button_me")) }
             if (meTab != null) break
             appendDebugLog("  → [返回清單] 第${attempt}次找不到底部導覽列「我／Me」，1秒後重試")
             delay(1000)
@@ -1754,13 +1756,14 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
         delay(1500)
 
-        // 17c. 等「Affiliate Program／聯盟計畫」卡片出現並點擊
-        if (!waitForAnyText(listOf("Affiliate Program", "聯盟計畫", "聯盟合作"), 3000)) {
+        // 17c. 等「Affiliate Program／蝦皮分潤計畫」卡片出現並點擊
+        // （TW實測確認正確文字是「蝦皮分潤計畫」，之前猜的「聯盟計畫」「聯盟合作」都是錯的）
+        if (!waitForAnyText(listOf("Affiliate Program", "蝦皮分潤計畫"), 3000)) {
             appendDebugLog("  → [返回清單] 等不到「Affiliate Program」卡片，請手動導航回清單畫面")
             return
         }
         root = rootInActiveWindow
-        val affiliateProgramCard = root?.let { findNodeByTexts(it, listOf("Affiliate Program", "聯盟計畫", "聯盟合作")) }
+        val affiliateProgramCard = root?.let { findNodeByTexts(it, listOf("Affiliate Program", "蝦皮分潤計畫")) }
         if (affiliateProgramCard == null || !clickNodeBestEffort(affiliateProgramCard)) {
             appendDebugLog("  → [返回清單] 點擊「Affiliate Program」卡片失敗，請手動導航回清單畫面")
             return
