@@ -9,6 +9,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -454,8 +456,81 @@ private fun ReviewVideosScreen(context: Context, onBack: () -> Unit) {
     var videos by remember { mutableStateOf(scanVideos(context)) }
     var deleteTarget by remember { mutableStateOf<VideoItem?>(null) }
 
+    // 多選刪除：selectionMode開啟後，清單每一列改顯示勾選框，點列本身切換勾選狀態
+    // （不用另外找空間放checkbox），長按任一列可以直接進入多選模式並預先勾選該列。
+    // 用資料夾絕對路徑字串當作勾選集合的key，同一支影片只會對應唯一路徑，不會混淆。
+    var selectionMode by remember { mutableStateOf(false) }
+    var selectedPaths by remember { mutableStateOf(setOf<String>()) }
+    var batchDeleteConfirm by remember { mutableStateOf(false) }
+
+    fun exitSelectionMode() {
+        selectionMode = false
+        selectedPaths = emptySet()
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
-        SimpleTopBar(stringResource(R.string.simple_review_title, videos.size), onBack)
+        if (selectionMode) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(20.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    stringResource(R.string.simple_cancel),
+                    fontSize = 16.sp,
+                    color = SimpleAccent,
+                    modifier = Modifier.clickable { exitSelectionMode() }
+                )
+                Spacer(Modifier.width(16.dp))
+                Text(
+                    stringResource(R.string.simple_selected_count, selectedPaths.size),
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = SimpleInk,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    if (selectedPaths.size < videos.size) stringResource(R.string.simple_select_all)
+                    else stringResource(R.string.simple_deselect_all),
+                    fontSize = 14.sp,
+                    color = SimpleAccent,
+                    modifier = Modifier.clickable {
+                        selectedPaths = if (selectedPaths.size < videos.size) {
+                            videos.map { it.folder.absolutePath }.toSet()
+                        } else {
+                            emptySet()
+                        }
+                    }
+                )
+            }
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(20.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "‹ " + stringResource(R.string.simple_back),
+                    fontSize = 16.sp,
+                    color = SimpleAccent,
+                    modifier = Modifier.clickable { onBack() }
+                )
+                Spacer(Modifier.width(16.dp))
+                Text(
+                    stringResource(R.string.simple_review_title, videos.size),
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = SimpleInk,
+                    modifier = Modifier.weight(1f)
+                )
+                if (videos.isNotEmpty()) {
+                    Text(
+                        stringResource(R.string.simple_select),
+                        fontSize = 14.sp,
+                        color = SimpleAccent,
+                        modifier = Modifier.clickable { selectionMode = true }
+                    )
+                }
+            }
+        }
 
         if (videos.isEmpty()) {
             Column(
@@ -466,10 +541,15 @@ private fun ReviewVideosScreen(context: Context, onBack: () -> Unit) {
                 Text(stringResource(R.string.simple_no_videos_yet), fontSize = 15.sp, color = SimpleMuted)
             }
         } else {
-            LazyColumn(modifier = Modifier.padding(horizontal = 20.dp)) {
+            LazyColumn(
+                modifier = Modifier.weight(1f).padding(horizontal = 20.dp)
+            ) {
                 items(videos) { video ->
+                    val path = video.folder.absolutePath
                     VideoRow(
                         video = video,
+                        selectionMode = selectionMode,
+                        isSelected = path in selectedPaths,
                         onPlay = {
                             try {
                                 val uri: Uri = FileProvider.getUriForFile(
@@ -484,11 +564,30 @@ private fun ReviewVideosScreen(context: Context, onBack: () -> Unit) {
                                 context.startActivity(intent)
                             } catch (e: Exception) { /* 沒有影片播放器可開啟時忽略，不中斷畫面 */ }
                         },
-                        onDelete = { deleteTarget = video }
+                        onDelete = { deleteTarget = video },
+                        onToggleSelect = {
+                            selectedPaths = if (path in selectedPaths) selectedPaths - path else selectedPaths + path
+                        },
+                        onLongPress = {
+                            if (!selectionMode) {
+                                selectionMode = true
+                                selectedPaths = setOf(path)
+                            }
+                        }
                     )
                     Spacer(Modifier.height(10.dp))
                 }
-                item { Spacer(Modifier.height(20.dp)) }
+                item { Spacer(Modifier.height(if (selectionMode) 80.dp else 20.dp)) }
+            }
+        }
+
+        if (selectionMode && selectedPaths.isNotEmpty()) {
+            Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp)) {
+                BigActionButton(
+                    text = stringResource(R.string.simple_delete_selected, selectedPaths.size),
+                    color = SimpleDanger,
+                    onClick = { batchDeleteConfirm = true }
+                )
             }
         }
     }
@@ -510,17 +609,63 @@ private fun ReviewVideosScreen(context: Context, onBack: () -> Unit) {
             }
         )
     }
+
+    if (batchDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { batchDeleteConfirm = false },
+            title = { Text(stringResource(R.string.simple_batch_delete_confirm_title, selectedPaths.size)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    videos.filter { it.folder.absolutePath in selectedPaths }
+                        .forEach { it.folder.deleteRecursively() }
+                    videos = scanVideos(context)
+                    batchDeleteConfirm = false
+                    exitSelectionMode()
+                }) { Text(stringResource(R.string.simple_delete), color = SimpleDanger) }
+            },
+            dismissButton = {
+                TextButton(onClick = { batchDeleteConfirm = false }) { Text(stringResource(R.string.simple_cancel)) }
+            }
+        )
+    }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun VideoRow(video: VideoItem, onPlay: () -> Unit, onDelete: () -> Unit) {
+private fun VideoRow(
+    video: VideoItem,
+    selectionMode: Boolean,
+    isSelected: Boolean,
+    onPlay: () -> Unit,
+    onDelete: () -> Unit,
+    onToggleSelect: () -> Unit,
+    onLongPress: () -> Unit
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(Color.White, RoundedCornerShape(10.dp))
+            .combinedClickable(
+                onClick = { if (selectionMode) onToggleSelect() },
+                onLongClick = onLongPress
+            )
             .padding(16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        if (selectionMode) {
+            Box(
+                modifier = Modifier
+                    .size(24.dp)
+                    .background(
+                        if (isSelected) SimpleAccent else Color(0xFFE8E4DC),
+                        RoundedCornerShape(6.dp)
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                if (isSelected) Text("✓", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+            }
+            Spacer(Modifier.width(14.dp))
+        }
         Column(modifier = Modifier.weight(1f)) {
             Text(video.productName, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = SimpleInk, maxLines = 2)
             Spacer(Modifier.height(4.dp))
@@ -530,8 +675,10 @@ private fun VideoRow(video: VideoItem, onPlay: () -> Unit, onDelete: () -> Unit)
                 color = if (video.posted) SimpleGreen else SimpleMuted
             )
         }
-        TextButton(onClick = onPlay) { Text(stringResource(R.string.simple_play), color = SimpleAccent) }
-        TextButton(onClick = onDelete) { Text(stringResource(R.string.simple_delete), color = SimpleDanger) }
+        if (!selectionMode) {
+            TextButton(onClick = onPlay) { Text(stringResource(R.string.simple_play), color = SimpleAccent) }
+            TextButton(onClick = onDelete) { Text(stringResource(R.string.simple_delete), color = SimpleDanger) }
+        }
     }
 }
 

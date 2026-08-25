@@ -165,4 +165,12 @@
     <string name="btn_save_params">儲存參數</string>
     <string name="toast_params_saved">已儲存 ✓</string>
     <string name="btn_close">關閉</string>
+
+    <!-- 影片批量刪除 -->
+    <string name="simple_select">選取</string>
+    <string name="simple_select_all">全選</string>
+    <string name="simple_deselect_all">取消全選</string>
+    <string name="simple_selected_count">已選 %1$d 支</string>
+    <string name="simple_delete_selected">刪除已選（%1$d）</string>
+    <string name="simple_batch_delete_confirm_title">確定要刪除這 %1$d 支影片嗎？</string>
 </resources>

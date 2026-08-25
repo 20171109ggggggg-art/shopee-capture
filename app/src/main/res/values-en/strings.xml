@@ -165,4 +165,12 @@
     <string name="btn_save_params">Save Settings</string>
     <string name="toast_params_saved">Saved ✓</string>
     <string name="btn_close">Close</string>
+
+    <!-- Batch video delete -->
+    <string name="simple_select">Select</string>
+    <string name="simple_select_all">Select All</string>
+    <string name="simple_deselect_all">Deselect All</string>
+    <string name="simple_selected_count">%1$d selected</string>
+    <string name="simple_delete_selected">Delete Selected (%1$d)</string>
+    <string name="simple_batch_delete_confirm_title">Delete these %1$d videos?</string>
 </resources>

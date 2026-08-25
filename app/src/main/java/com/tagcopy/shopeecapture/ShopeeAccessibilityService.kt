@@ -2879,13 +2879,25 @@ class ShopeeAccessibilityService : AccessibilityService() {
         // 也排除純數字／價格格式的文字（例如「1,680.00」），這類文字不可能是真正的商品標題。
         // 長度上限從 60 放寬到 90：實測發現部分商品標題（含品牌名、規格描述）超過 60 字。
         val result = candidates.firstOrNull {
-            it.length in 8..90 && !isCouponBannerText(it) && !isPureNumberOrPriceText(it)
+            it.length in 8..90 && !isCouponBannerText(it) && !isPureNumberOrPriceText(it) && !isVariationCountText(it)
         }
         if (result == null) {
             // 找不到時記錄候選清單前 15 筆，方便下次排查是「標題太長/太短被排除」還是「根本沒掃到標題」
             appendDebugLog("  → ⚠ 商品名稱找不到，候選文字清單（前 ${candidates.size.coerceAtMost(15)} 筆）：${candidates.take(15)}")
         }
         return result
+    }
+
+    /**
+     * 判斷文字是不是「N variations」這種變體數量標籤（例如「8 variations」），不是商品標題。
+     * 這個文字長度剛好落在商品標題合理範圍內（8~90字），又不是純數字也不是優惠券文字，
+     * 之前沒有專門排除，導致商品詳情頁裡排在標題「之前」出現的這行變體數量文字，
+     * 每次都被誤判搶先當成商品名稱——不只名稱顯示不正確，更嚴重的是防重複比對機制
+     * 是拿商品名稱去比對「有沒有擷取過」，只要任何一支商品的變體數量剛好相同（例如都是8個
+     * 變體），就會被誤判成「同一支商品」而被錯誤跳過，即使其實是完全不同、從沒擷取過的商品。
+     */
+    private fun isVariationCountText(text: String): Boolean {
+        return Regex("^\\d+\\s*variations?$", RegexOption.IGNORE_CASE).matches(text.trim())
     }
 
     /** 判斷文字是不是「純數字」「價格格式」或「價格範圍格式」（例如 1,680.00、399、$399、$169.00-$399.00），這種不可能是商品標題。 */
