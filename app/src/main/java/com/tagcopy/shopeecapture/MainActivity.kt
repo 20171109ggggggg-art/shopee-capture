@@ -209,6 +209,10 @@ fun RootScreen() {
 
         UploadAutomationSettingsCard(context)
 
+        Spacer(Modifier.height(14.dp))
+
+        TermuxTestCard(context)
+
         Spacer(Modifier.height(32.dp))
 
         Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
@@ -453,6 +457,120 @@ fun AutoCaptureSettingsCard(context: android.content.Context) {
             label = { Text(stringResource(R.string.time_limit_hint)) },
             shape = RoundedCornerShape(0.dp)
         )
+    }
+}
+
+@Composable
+fun TermuxTestCard(context: android.content.Context) {
+    var testStatus by remember { mutableStateOf("尚未測試") }
+    var isPolling by remember { mutableStateOf(false) }
+    var pollTarget by remember { mutableStateOf("") } // "echo" 或 "batch"
+    var batchProgress by remember { mutableStateOf<TermuxRunner.BatchProgress?>(null) }
+
+    val captionQueueDir = File(
+        android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
+        "CaptionQueue"
+    )
+
+    LaunchedEffect(isPolling, pollTarget) {
+        if (!isPolling) return@LaunchedEffect
+        while (isPolling) {
+            if (pollTarget == "echo") {
+                val result = TermuxRunner.getLastResult(context)
+                if (result != null) {
+                    testStatus = if (result.internalError != null) {
+                        "失敗：${result.internalError}"
+                    } else {
+                        "完成，exitCode=${result.exitCode}\nstdout：${result.stdout}\nstderr：${result.stderr}"
+                    }
+                    isPolling = false
+                }
+            } else if (pollTarget == "batch") {
+                val progress = TermuxRunner.readBatchProgress(captionQueueDir)
+                batchProgress = progress
+                if (progress?.status == "done") {
+                    testStatus = "生成完成：成功${progress.okCount}／跳過${progress.skippedCount}／失敗${progress.errorCount}"
+                    isPolling = false
+                }
+            }
+            kotlinx.coroutines.delay(1500)
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White)
+            .padding(16.dp)
+    ) {
+        Text("Termux背景執行測試（開發驗證用）", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = InkColor)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "驗證App能不能在背景觸發Termux執行指令，不用打開Termux介面。" +
+                "前提：Termux已裝好、~/.termux/termux.properties有allow-external-apps=true。",
+            fontSize = 12.sp, color = MutedColor, lineHeight = 17.sp
+        )
+        Spacer(Modifier.height(10.dp))
+
+        Text(
+            "Termux安裝狀態：${if (TermuxRunner.isTermuxInstalled(context)) "✓ 已安裝" else "✗ 未安裝"}",
+            fontSize = 13.sp, color = InkColor
+        )
+        Spacer(Modifier.height(10.dp))
+
+        Button(
+            onClick = {
+                testStatus = "執行中…"
+                pollTarget = "echo"
+                val sent = TermuxRunner.runCommand(context, "echo hello-from-termux && sleep 1 && echo done")
+                if (sent) {
+                    isPolling = true
+                } else {
+                    testStatus = "送出失敗（Termux可能沒安裝，或RUN_COMMAND權限被拒絕）"
+                }
+            },
+            colors = ButtonDefaults.buttonColors(containerColor = AccentColor),
+            shape = RoundedCornerShape(0.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("1. 測試基本連線（echo指令）")
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        Button(
+            onClick = {
+                testStatus = "生成中…"
+                batchProgress = null
+                pollTarget = "batch"
+                val sent = TermuxRunner.runCommand(
+                    context,
+                    "cd ~/shopee-capture && python batch_generate.py ~/storage/downloads/CaptionQueue"
+                )
+                if (sent) {
+                    isPolling = true
+                } else {
+                    testStatus = "送出失敗（Termux可能沒安裝，或RUN_COMMAND權限被拒絕）"
+                }
+            },
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
+            shape = RoundedCornerShape(0.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("2. 實際觸發生成影片（batch_generate.py）")
+        }
+
+        Spacer(Modifier.height(10.dp))
+
+        batchProgress?.let { p ->
+            Text(
+                "進度：${p.completed}/${p.total}　目前：${p.current}",
+                fontSize = 12.sp, color = MutedColor
+            )
+            Spacer(Modifier.height(4.dp))
+        }
+
+        Text(testStatus, fontSize = 12.sp, color = InkColor, lineHeight = 17.sp)
     }
 }
 

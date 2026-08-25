@@ -20,6 +20,33 @@ import time
 from make_video import process_folder
 
 
+import json
+
+
+def write_progress(root: str, total: int, completed: int, current_name: str,
+                    status: str, ok_count: int, skipped_count: int, error_count: int) -> None:
+    """
+    把目前批次進度寫進 <root>/.progress.json，供App簡易模式那邊輪詢顯示進度用
+    （App不用等整批跑完，也不用解析stdout，直接讀這個結構化檔案）。
+    status: "running" 或 "done"。寫入失敗（例如沒有寫入權限）只印警告，不影響批次本身。
+    """
+    progress_path = os.path.join(root, ".progress.json")
+    try:
+        with open(progress_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "total": total,
+                "completed": completed,
+                "current": current_name,
+                "status": status,
+                "okCount": ok_count,
+                "skippedCount": skipped_count,
+                "errorCount": error_count,
+                "updatedAt": time.time()
+            }, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"⚠ 寫入進度檔案失敗（{e}），不影響批次本身")
+
+
 def find_product_folders(root: str) -> list:
     """找出根目錄底下所有商品資料夾（有 image_1.jpg 的才算，避免掃到雜項資料夾）"""
     folders = []
@@ -58,11 +85,16 @@ def main():
     skipped_list = []
     error_list = []
     start_time = time.time()
+    total = len(folders)
+
+    write_progress(root, total, 0, "", "running", 0, 0, 0)
 
     for idx, folder in enumerate(folders, 1):
         name = os.path.basename(folder)
         print(f"\n[{idx}/{len(folders)}] {name}")
         print("-" * 60)
+        write_progress(root, total, idx - 1, name, "running",
+                        len(ok_list), len(skipped_list), len(error_list))
         try:
             result = process_folder(folder, force=force)
         except Exception as e:
@@ -79,6 +111,9 @@ def main():
         else:
             print(f"✗ 失敗：{result['message']}")
             error_list.append((name, result["message"]))
+
+    write_progress(root, total, total, "", "done",
+                    len(ok_list), len(skipped_list), len(error_list))
 
     elapsed = time.time() - start_time
     print("\n" + "=" * 60)

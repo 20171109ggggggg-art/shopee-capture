@@ -19,6 +19,11 @@
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
 
+    <!-- 簡易模式「生成影片」功能：透過Termux的RUN_COMMAND介面在背景觸發batch_generate.py，
+         使用者完全不用打開Termux。需要Termux那邊在~/.termux/termux.properties設定
+         allow-external-apps=true（一次性設定），且Termux App本身要是已安裝、允許背景執行的狀態。 -->
+    <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
+
     <application
         android:allowBackup="true"
         android:label="蝦皮擷取器"
@@ -62,6 +67,10 @@
             android:name=".FloatingButtonService"
             android:exported="false"
             android:foregroundServiceType="specialUse" />
+
+        <receiver
+            android:name=".TermuxResultReceiver"
+            android:exported="false" />
 
     </application>
 </manifest>
