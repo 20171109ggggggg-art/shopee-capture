@@ -1228,7 +1228,8 @@ class ShopeeAccessibilityService : AccessibilityService() {
         val narrationText: String,
         val videoFile: File,
         val productName: String,
-        val price: Double
+        val price: Double,
+        val hashtags: List<String>
     )
 
     /**
@@ -1292,9 +1293,17 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 val productName = json.optString("productName", "")
                     .takeIf { it.isNotBlank() && it != "null" } ?: ""
                 val price = json.optDouble("price", 0.0)
+                val hashtagsArray = json.optJSONArray("hashtags")
+                val hashtags = if (hashtagsArray != null) {
+                    (0 until hashtagsArray.length()).mapNotNull { i ->
+                        hashtagsArray.optString(i, "").takeIf { it.isNotBlank() && it != "null" }
+                    }
+                } else {
+                    emptyList()
+                }
 
-                appendDebugLog("  → 掃描候選商品：${dir.name} 符合條件，加入候選清單（文案長度=${narrationText.length}字）")
-                candidates.add(UploadCandidate(dir, promoLink, narrationText, videoFile, productName, price))
+                appendDebugLog("  → 掃描候選商品：${dir.name} 符合條件，加入候選清單（文案長度=${narrationText.length}字，hashtags=${hashtags.size}個）")
+                candidates.add(UploadCandidate(dir, promoLink, narrationText, videoFile, productName, price, hashtags))
             } catch (e: Exception) {
                 appendDebugLog("  → 掃描候選商品：讀取 ${dir.name}/meta.json 失敗，跳過（${e.javaClass.simpleName}：${e.message}）")
             }
@@ -1405,8 +1414,10 @@ class ShopeeAccessibilityService : AccessibilityService() {
             appendDebugLog("  → 讀不到目前畫面"); return false
         }
         val titleNode = findNodeByIdSuffix(root, "labelActionBarTitle")
-        val titleText = titleNode?.text?.toString() ?: findTextContaining(root, "分潤按讚好物(")
-        if (titleText == null || !titleText.contains("分潤按讚好物(")) {
+        val titleText = titleNode?.text?.toString()
+            ?: findTextContaining(root, "分潤按讚好物(")
+            ?: findTextContaining(root, "My Likes(")
+        if (titleText == null || !(titleText.contains("分潤按讚好物(") || titleText.contains("My Likes("))) {
             appendDebugLog("  → 目前畫面不是「分潤按讚好物」清單（畫面標題=${titleText ?: "讀不到"}），請先手動導航到這個畫面再啟動")
             return false
         }
@@ -1416,17 +1427,17 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (addIconNode == null || !clickNodeBestEffort(addIconNode)) {
             appendDebugLog("  → 找不到或點擊「+」按鈕失敗"); return false
         }
-        if (!waitForAnyText(listOf("從匯入連結新增"), 3000)) {
+        if (!waitForAnyText(listOf("從匯入連結新增", "Add by Import Link"), 3000)) {
             appendDebugLog("  → 等不到「從匯入連結新增」選單"); return false
         }
         delay(1200)
-        val importMenuNode = findNodeByTexts(rootInActiveWindow ?: return false, listOf("從匯入連結新增"))
+        val importMenuNode = findNodeByTexts(rootInActiveWindow ?: return false, listOf("從匯入連結新增", "Add by Import Link"))
         if (importMenuNode == null || !clickNodeBestEffort(importMenuNode)) {
             appendDebugLog("  → 點擊「從匯入連結新增」失敗"); return false
         }
 
         // 2. 貼上商品連結
-        if (!waitForAnyText(listOf("商品連結"), 3000)) {
+        if (!waitForAnyText(listOf("商品連結", "Products URL"), 3000)) {
             appendDebugLog("  → 等不到「商品連結」輸入畫面"); return false
         }
         delay(1200)
@@ -1449,12 +1460,12 @@ class ShopeeAccessibilityService : AccessibilityService() {
         delay(1050)
         // 保險再點一次畫面上方的「商品連結」標籤文字，確保焦點確實離開輸入框
         root = rootInActiveWindow ?: return false
-        findNodeByTexts(root, listOf("商品連結"))?.let { clickNodeBestEffort(it) }
+        findNodeByTexts(root, listOf("商品連結", "Products URL"))?.let { clickNodeBestEffort(it) }
         delay(1050)
 
         // 3. 點「新增至按讚好物」
         root = rootInActiveWindow ?: return false
-        val addToListButton = findNodeByTexts(root, listOf("新增至按讚好物"))
+        val addToListButton = findNodeByTexts(root, listOf("新增至按讚好物", "Add to My Likes"))
         if (addToListButton == null || !clickNodeBestEffort(addToListButton)) {
             appendDebugLog("  → 找不到或點擊「新增至按讚好物」失敗"); return false
         }
@@ -1465,7 +1476,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         // 不然抓到的可能還是舊排序、選到別的商品——這是之前實測發現商品對不上的根因，
         // 所以特別拉長這裡的等待，並把選到的商品文字記進log，方便之後直接從log驗證選對了沒，
         // 不用等整個流程跑完才能靠肉眼確認。
-        if (!waitForAnyText(listOf("分潤按讚好物"), 4000)) {
+        if (!waitForAnyText(listOf("分潤按讚好物", "My Likes"), 4000)) {
             appendDebugLog("  → 新增連結後等不到回到清單畫面"); return false
         }
         delay(5250)
@@ -1490,7 +1501,8 @@ class ShopeeAccessibilityService : AccessibilityService() {
 
         // 5. 點「分享」
         root = rootInActiveWindow ?: return false
-        val shareTextNode = root.findAccessibilityNodeInfosByText("分享").firstOrNull { it.text?.toString() == "分享" }
+        val shareTextNode = (root.findAccessibilityNodeInfosByText("分享") + root.findAccessibilityNodeInfosByText("Share"))
+            .firstOrNull { it.text?.toString() == "分享" || it.text?.toString() == "Share" }
         val shareButton = shareTextNode?.let { node ->
             if (node.isClickable) node else {
                 var p = node.parent; var d = 0; var c: AccessibilityNodeInfo? = null
@@ -1503,12 +1515,12 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
 
         // 6. 等分享面板出現「蝦皮短影音」選項（等不到最常見原因：已達每日上架上限或商品已分享過）
-        if (!waitForAnyText(listOf("蝦皮短影音"), 4000)) {
+        if (!waitForAnyText(listOf("蝦皮短影音", "Shopee Video"), 4000)) {
             appendDebugLog("  → 分享面板沒有出現「蝦皮短影音」選項，可能已達每日上架上限或其他限制")
             return false
         }
         root = rootInActiveWindow ?: return false
-        val shortVideoOption = findNodeByTexts(root, listOf("蝦皮短影音"))
+        val shortVideoOption = findNodeByTexts(root, listOf("蝦皮短影音", "Shopee Video"))
         if (shortVideoOption == null || !clickNodeBestEffort(shortVideoOption)) {
             appendDebugLog("  → 點擊「蝦皮短影音」失敗"); return false
         }
@@ -1520,18 +1532,19 @@ class ShopeeAccessibilityService : AccessibilityService() {
 
         // 8. 點「媒體庫」
         root = rootInActiveWindow ?: run { appendDebugLog("  → 等不到短影音錄影頁"); return false }
-        val galleryEntrance = findNodeByIdSuffix(root, "ll_gallery_entrance") ?: findNodeByTexts(root, listOf("媒體庫"))
+        val galleryEntrance = findNodeByIdSuffix(root, "ll_gallery_entrance") ?: findNodeByTexts(root, listOf("媒體庫", "Library"))
         if (galleryEntrance == null || !clickNodeBestEffort(galleryEntrance)) {
             appendDebugLog("  → 找不到或點擊「媒體庫」入口失敗"); return false
         }
 
         // 9. 等媒體庫畫面出現，切到「短影音」分頁，選第一個（剛登記進媒體庫的最新影片會排最前面）
-        if (!waitForAnyText(listOf("相片集"), 4000)) {
+        if (!waitForAnyText(listOf("相片集", "Gallery"), 4000)) {
             appendDebugLog("  → 等不到媒體庫選片畫面"); return false
         }
         delay(1500)
         root = rootInActiveWindow ?: return false
-        val videoTab = root.findAccessibilityNodeInfosByText("短影音").firstOrNull { it.isClickable }
+        val videoTab = (root.findAccessibilityNodeInfosByText("短影音") + root.findAccessibilityNodeInfosByText("Video"))
+            .firstOrNull { it.isClickable }
         if (videoTab != null) {
             clickNodeBestEffort(videoTab)
             delay(1800)
@@ -1556,10 +1569,10 @@ class ShopeeAccessibilityService : AccessibilityService() {
         // 10.5 選片後蝦皮會先進到一個「影片編輯預覽」畫面（剪輯／文字／貼紙／配音／音效），
         // 這個畫面有自己獨立的「下一步」按鈕，要點過這關才會進到撰寫內文畫面——
         // 之前漏掉這一關，才會一直卡在「等不到撰寫內文畫面」。
-        if (waitForAnyText(listOf("剪輯", "配音", "音效"), 5000)) {
+        if (waitForAnyText(listOf("剪輯", "配音", "音效", "Trimmer", "Voiceover", "Stickers"), 5000)) {
             delay(2250)
             root = rootInActiveWindow ?: return false
-            val editorNextButton = findNodeByTexts(root, listOf("下一步"))
+            val editorNextButton = findNodeByTexts(root, listOf("下一步", "Next"))
             if (editorNextButton != null) {
                 clickNodeBestEffort(editorNextButton)
                 appendDebugLog("  → 影片編輯預覽畫面：已點擊下一步")
@@ -1572,7 +1585,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
 
         // 11. 等「撰寫內文」畫面
-        if (!waitForAnyText(listOf("撰寫內文", "為您的短影音撰寫內文"), 5000)) {
+        if (!waitForAnyText(listOf("撰寫內文", "為您的短影音撰寫內文", "Add Caption", "Add caption to your videos"), 5000)) {
             appendDebugLog("  → 等不到「撰寫內文」畫面"); return false
         }
         delay(1700)
@@ -1654,7 +1667,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             // 導致後面點發佈其實點在這層看不見的選取狀態上、完全沒反應。
             // 比照之前處理「貼連結」畫面的做法，額外點一下畫面上安全的文字區塊，確保真的跳出選取模式。
             rootInActiveWindow?.let { r ->
-                val safeAnchor = findNodeByTexts(r, listOf("新增商品"))
+                val safeAnchor = findNodeByTexts(r, listOf("新增商品", "Add product"))
                 if (safeAnchor != null) {
                     clickNodeBestEffort(safeAnchor)
                     appendDebugLog("  → 已點擊「新增商品」標題，確保跳出文字選取模式")
@@ -1682,7 +1695,101 @@ class ShopeeAccessibilityService : AccessibilityService() {
             return false
         }
 
+        // 17. 發佈成功後導航回「分潤按讚好物」清單畫面，讓下一筆候選商品能接續處理
+        // （目前的路徑是PH實測確認：可能會先跳出「Share to Whatsapp」分享詢問彈窗（PH特有，
+        // 點Cancel跳過）→ 點底部導覽列「我／Me」→ 點「Affiliate Program」卡片進分潤首頁
+        // →點「My Likes／分潤按讚好物」圖示。TW是否走同一條路徑尚未實測確認，這裡中英文都先列，
+        // 之後TW／PH都要驗證這段。任何一步失敗都不當作整體上架失敗（商品本身已經發佈成功），
+        // 只記錄log，讓使用者知道需要手動導航。
+        navigateBackToLikesListAfterPost()
+
         return true
+    }
+
+    /**
+     * 發佈成功後導航回「分潤按讚好物」清單畫面。任何一步失敗都只記錄log、不影響
+     * processOneUploadCandidate()的回傳結果（該筆商品已經算發佈成功），
+     * 讓下一輪迴圈的起始畫面檢查（見processOneUploadCandidate開頭）決定要不要繼續。
+     */
+    private suspend fun navigateBackToLikesListAfterPost() {
+        // 17a-0. 等畫面穩定下來——使用者實測發現，發佈成功後跳轉到「Live & Video」動態牆
+        // 的時間不固定（有時很快、有時明顯較慢），原本寫死delay(1500)不夠、常常太早去找
+        // 底部導覽列時畫面還沒渲染完成。原本改成等「Home」/「首頁」文字出現，但實測發現
+        // TW的首頁分頁其實叫「蝦拼」（蝦皮暱稱，不是「首頁」），害這一步在TW每次都空等滿10秒
+        // 才繼續。改成直接等「我的」分頁本身出現（含跨地區共用、不受語言影響的
+        // contentDescription「tab_bar_button_me」），這樣不用去猜各地區「首頁」分頁叫什麼，
+        // 而且等到的東西就是接下來步驟17b真正要點的目標，一次到位。
+        waitForAnyText(listOf("我的", "我", "Me", "tab_bar_button_me"), 10000)
+        delay(800)
+
+        // 17a. 若跳出「Share to Whatsapp」分享詢問彈窗，點「Cancel」跳過（PH特有，目前未見TW版本）
+        var root = rootInActiveWindow
+        if (root != null && root.findAccessibilityNodeInfosByText("Share to Whatsapp").isNotEmpty()) {
+            val cancelBtn = findNodeByTexts(root, listOf("Cancel", "取消"))
+            if (cancelBtn != null && clickNodeBestEffort(cancelBtn)) {
+                appendDebugLog("  → [返回清單] 偵測到「Share to Whatsapp」彈窗，已點擊Cancel跳過")
+            } else {
+                appendDebugLog("  → [返回清單] 偵測到「Share to Whatsapp」彈窗，但點擊Cancel失敗")
+            }
+            delay(1200)
+        }
+
+        // 17b. 點底部導覽列「我／Me」
+        // 注意：畫面上可能不只一個地方文字/描述含「Me」（例如某些頁面右上角個人頭像icon
+        // 也可能標記含Me的描述），用一般的findNodeByTexts可能誤點到不是底部導覽列的那個。
+        // 底部導覽列固定在螢幕最下方，改用「畫面上所有符合的候選節點裡，取bounds最靠近
+        // 螢幕底部（top座標最大）的那個」來鎖定，比純文字比對可靠。
+        // 加上重試（最多3次、每次間隔1秒）：畫面偶爾在這個當下還沒完全穩定，第一次找不到
+        // 不代表真的沒有，稍等一下再試一次成功率高很多。
+        var meTab: AccessibilityNodeInfo? = null
+        for (attempt in 1..3) {
+            root = rootInActiveWindow
+            meTab = root?.let { findBottommostNodeByTexts(it, listOf("我的", "我", "Me", "tab_bar_button_me")) }
+            if (meTab != null) break
+            appendDebugLog("  → [返回清單] 第${attempt}次找不到底部導覽列「我／Me」，1秒後重試")
+            delay(1000)
+        }
+        if (meTab == null || !clickNodeBestEffort(meTab)) {
+            appendDebugLog("  → [返回清單] 找不到或點擊底部導覽列「我／Me」失敗，請手動導航回清單畫面")
+            rootInActiveWindow?.let { dumpClickableNodesToLog(it) }
+            return
+        }
+        delay(1500)
+
+        // 17c. 等「Affiliate Program／蝦皮分潤計畫」卡片出現並點擊
+        // （TW實測確認正確文字是「蝦皮分潤計畫」，之前猜的「聯盟計畫」「聯盟合作」都是錯的）
+        if (!waitForAnyText(listOf("Affiliate Program", "蝦皮分潤計畫"), 3000)) {
+            appendDebugLog("  → [返回清單] 等不到「Affiliate Program」卡片，請手動導航回清單畫面")
+            return
+        }
+        root = rootInActiveWindow
+        val affiliateProgramCard = root?.let { findNodeByTexts(it, listOf("Affiliate Program", "蝦皮分潤計畫")) }
+        if (affiliateProgramCard == null || !clickNodeBestEffort(affiliateProgramCard)) {
+            appendDebugLog("  → [返回清單] 點擊「Affiliate Program」卡片失敗，請手動導航回清單畫面")
+            return
+        }
+        delay(1800)
+
+        // 17d. 等分潤首頁出現，點「My Likes／分潤按讚好物」圖示進清單畫面
+        if (!waitForAnyText(listOf("My Likes", "分潤按讚好物"), 3000)) {
+            appendDebugLog("  → [返回清單] 等不到分潤首頁的「My Likes」入口，請手動導航回清單畫面")
+            return
+        }
+        root = rootInActiveWindow
+        val myLikesEntry = root?.let { findNodeByTexts(it, listOf("My Likes", "分潤按讚好物")) }
+        if (myLikesEntry == null || !clickNodeBestEffort(myLikesEntry)) {
+            appendDebugLog("  → [返回清單] 點擊「My Likes」入口失敗，請手動導航回清單畫面")
+            return
+        }
+        delay(1500)
+
+        // 17e. 確認真的回到清單畫面（標題含括號數字）
+        val backOk = waitForAnyText(listOf("My Likes(", "分潤按讚好物("), 3000)
+        if (backOk) {
+            appendDebugLog("  → [返回清單] 已成功導航回「My Likes」清單畫面，可接續處理下一筆")
+        } else {
+            appendDebugLog("  → [返回清單] 導航完成但畫面標題不符預期，請確認目前畫面")
+        }
     }
 
     /**
@@ -1715,31 +1822,37 @@ class ShopeeAccessibilityService : AccessibilityService() {
      */
     private fun buildShortVideoCaption(candidate: UploadCandidate): String {
         val maxLength = 150
+        // narrationText現在用換行符號分隔句子（Python端make_video.py已改成"\n".join()，
+        // 不再用中文句號「。」——PH版是英文/Taglish句子，中文句號分隔會混進不必要的中文標點）
         val sentences = candidate.narrationText
-            .split("。")
+            .split("\n")
             .map { it.trim() }
             .filter { it.isNotBlank() }
 
-        val hook = sentences.firstOrNull()
-            ?: candidate.productName.ifBlank { "這個好物" }
+        val hook = sentences.firstOrNull() ?: candidate.productName
         val middle = sentences.getOrNull(1)
 
         val tags = buildHashtags(candidate)
         val tagsLine = tags.joinToString(" ") { "#$it" }
 
-        // 先組「鉤子＋標籤」這個一定要保留的核心部分，字數還有剩才加中間痛點句
-        val core = "$hook！\n$tagsLine"
-        val withMiddle = if (!middle.isNullOrBlank()) "$hook！$middle。\n$tagsLine" else core
+        // AI／規則模板產生的句子本身已經帶有完整標點（問號、句號等），不再額外附加中文標點，
+        // 先組「鉤子＋標籤」這個一定要保留的核心部分，字數還有剩才加中間句
+        val core = "$hook\n$tagsLine"
+        val withMiddle = if (!middle.isNullOrBlank()) "$hook $middle\n$tagsLine" else core
 
         val result = if (withMiddle.length <= maxLength) withMiddle else core
         return if (result.length <= maxLength) result else result.take(maxLength)
     }
 
     /**
-     * 生成5個標籤：優先取商品名稱裡看起來像品牌／品項的片段（用空白/常見分隔符切開，
-     * 取前面幾段有意義的中文詞），不夠5個的話用固定的蝦皮分潤短影音常用標籤補滿。
+     * 產生5個標籤：優先使用meta.json裡AI（或規則模板）已經生成好的hashtags欄位
+     * （Python端make_video.py已經依地區產生對應語言的標籤，不再需要這裡另外拼湊）。
+     * candidate.hashtags為空時（例如舊資料、meta.json缺欄位）才退回：從商品名稱抽取候選詞
+     * 補上固定的中文標籤池（僅適用TW舊資料的相容性備援，PH資料應該都會有hashtags欄位）。
      */
     private fun buildHashtags(candidate: UploadCandidate): List<String> {
+        if (candidate.hashtags.isNotEmpty()) return candidate.hashtags.take(5)
+
         val fromName = candidate.productName
             .split(" ", "　", "-", "/")
             .map { it.trim() }
@@ -2553,30 +2666,53 @@ class ShopeeAccessibilityService : AccessibilityService() {
         return "(無標題)|$bounds"
     }
 
+    /**
+     * 找分享／立即推廣按鈕。之前實測發現bug：商品詳情頁中段常有「Learn From Creator」
+     * 相關影片推薦區塊，這個區塊部分元件的文字/描述也可能被寬鬆的關鍵字（如單獨的「Share」
+     * 「分享」）誤配對到，導致點進別人的短影音貼文而不是本商品自己的分享按鈕。
+     * 真正的分享按鈕（「立即推廣」／「Share to Earn」）固定在畫面最下方的操作列，
+     * 改成收集所有符合文字/描述的候選節點，取螢幕bounds最靠近底部（top座標最大）的那個，
+     * 用位置而不是「第一個比對到的」來鎖定目標，比純文字比對可靠。
+     */
     private fun findNodeByDescriptors(root: AccessibilityNodeInfo, texts: List<String>): AccessibilityNodeInfo? {
-        findNodeByTexts(root, texts)?.let { return it }
-        var found: AccessibilityNodeInfo? = null
+        val candidates = mutableListOf<AccessibilityNodeInfo>()
+
+        fun resolveClickable(node: AccessibilityNodeInfo, maxDepth: Int): AccessibilityNodeInfo {
+            if (node.isClickable) return node
+            var parent = node.parent
+            var depth = 0
+            while (parent != null && depth < maxDepth) {
+                if (parent.isClickable) return parent
+                parent = parent.parent
+                depth++
+            }
+            return node
+        }
+
+        // 文字比對候選
+        for (text in texts) {
+            for (node in root.findAccessibilityNodeInfosByText(text)) {
+                candidates.add(resolveClickable(node, 10))
+            }
+        }
+
+        // 內容描述（contentDescription）比對候選
         fun walk(node: AccessibilityNodeInfo?, depth: Int) {
-            if (node == null || found != null || depth > 25) return
+            if (node == null || depth > 25) return
             val cd = node.contentDescription?.toString()
             if (cd != null && texts.any { cd.contains(it, ignoreCase = true) }) {
-                found = if (node.isClickable) node else {
-                    var p = node.parent
-                    var d = 0
-                    var candidate: AccessibilityNodeInfo? = null
-                    while (p != null && d < 4) {
-                        if (p.isClickable) { candidate = p; break }
-                        p = p.parent
-                        d++
-                    }
-                    candidate ?: node
-                }
-                return
+                candidates.add(resolveClickable(node, 4))
             }
             for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
         }
         walk(root, 0)
-        return found
+
+        if (candidates.isEmpty()) return null
+        return candidates.maxByOrNull { node ->
+            val bounds = Rect()
+            node.getBoundsInScreen(bounds)
+            bounds.top
+        }
     }
 
     private suspend fun captureScreenshotSuspend(): Bitmap? {
@@ -2651,6 +2787,50 @@ class ShopeeAccessibilityService : AccessibilityService() {
             }
         }
         return fallbackNode
+    }
+
+    /**
+     * 專用於「底部導覽列」這類畫面上可能有多個同文字節點的情境（例如某頁面上方也有
+     * 含「Me」文字/描述的圖示，跟底下導覽列的「Me」分頁搞混）。在所有符合文字的候選節點
+     * （含往上找可點擊祖先，邏輯同findNodeByTexts）裡，取螢幕bounds的top座標最大（也就是
+     * 最靠近畫面底部）的那一個——底部導覽列固定貼在螢幕最下方，這個位置特徵比純文字比對可靠。
+     * 找不到任何候選時回傳null。
+     */
+    private fun findBottommostNodeByTexts(root: AccessibilityNodeInfo, texts: List<String>): AccessibilityNodeInfo? {
+        // 原本用 findAccessibilityNodeInfosByText 做子字串比對，抓「Me」這種短字串時
+        // 會誤配對到「Home」（Home 這個字本身就包含「me」子字串！），導致找到/點到錯的分頁。
+        // 改成手動walk整棵樹，只挑「節點自己的文字或描述，去除頭尾空白後跟目標字串完全相等」
+        // 的節點（不分大小寫），比對更嚴謹，不會被字串包含關係誤觸。
+        val candidates = mutableListOf<AccessibilityNodeInfo>()
+        val targets = texts.map { it.trim().lowercase() }
+        fun walk(node: AccessibilityNodeInfo?, depth: Int) {
+            if (node == null || depth > 30) return
+            val text = node.text?.toString()?.trim()?.lowercase()
+            val desc = node.contentDescription?.toString()?.trim()?.lowercase()
+            if ((text != null && text in targets) || (desc != null && desc in targets)) {
+                if (node.isClickable) {
+                    candidates.add(node)
+                } else {
+                    var parent = node.parent
+                    var d = 0
+                    var found: AccessibilityNodeInfo? = null
+                    while (parent != null && d < 10) {
+                        if (parent.isClickable) { found = parent; break }
+                        parent = parent.parent
+                        d++
+                    }
+                    candidates.add(found ?: node)
+                }
+            }
+            for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
+        }
+        walk(root, 0)
+        if (candidates.isEmpty()) return null
+        return candidates.maxByOrNull { node ->
+            val bounds = Rect()
+            node.getBoundsInScreen(bounds)
+            bounds.top
+        }
     }
 
     /**
