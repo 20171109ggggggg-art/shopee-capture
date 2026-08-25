@@ -774,7 +774,7 @@ private fun loadQueueItems(): List<QueueItem> {
         ?: emptyList()
 }
 
-private fun isAccessibilityServiceEnabled(context: android.content.Context): Boolean {
+fun isAccessibilityServiceEnabled(context: android.content.Context): Boolean {
     val expectedComponentName = "${context.packageName}/${ShopeeAccessibilityService::class.java.name}"
     val enabledServices = Settings.Secure.getString(
         context.contentResolver,
@@ -788,7 +788,7 @@ private fun isAccessibilityServiceEnabled(context: android.content.Context): Boo
     return false
 }
 
-private fun canDrawOverlays(context: android.content.Context): Boolean {
+fun canDrawOverlays(context: android.content.Context): Boolean {
     return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
         Settings.canDrawOverlays(context)
     } else {
@@ -796,7 +796,7 @@ private fun canDrawOverlays(context: android.content.Context): Boolean {
     }
 }
 
-private fun hasMediaPermission(context: android.content.Context): Boolean {
+fun hasMediaPermission(context: android.content.Context): Boolean {
     val permission = if (Build.VERSION.SDK_INT >= 33) {
         Manifest.permission.READ_MEDIA_IMAGES
     } else {
@@ -809,7 +809,7 @@ private fun hasMediaPermission(context: android.content.Context): Boolean {
  *  這個特殊權限不是跑一般的 runtime permission dialog，要去系統設定頁單獨開，
  *  也只能用 Environment.isExternalStorageManager() 檢查目前狀態。
  *  Android 11以下沒有這個限制，一律視為已授予。 */
-private fun hasAllFilesAccess(): Boolean {
+fun hasAllFilesAccess(): Boolean {
     return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
         android.os.Environment.isExternalStorageManager()
     } else {

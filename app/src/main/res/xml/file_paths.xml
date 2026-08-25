@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    FileProvider路徑設定：檢查影片畫面要把 Download/CaptionQueue 底下的 output.mp4
+    交給系統影片播放器開啟，Android 7+ 不能直接給file://路徑（會丟FileUriExposedException），
+    要透過FileProvider包成content://路徑才能安全跨App分享。
+-->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <external-path name="downloads" path="Download/" />
+</paths>
