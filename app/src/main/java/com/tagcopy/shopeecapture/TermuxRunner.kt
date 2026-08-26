@@ -152,7 +152,15 @@ object TermuxRunner {
         // 用來判斷這份進度資料是不是「卡住的舊資料」——例如行程被系統砍掉、沒能正常寫入
         // done/stopped狀態，畫面會不然會一直顯示status="running"卻永遠不會前進。
         // 缺這個欄位（例如讀到舊版腳本寫的檔案）時預設0.0，呼叫端會把它當成「非常舊」處理。
-        val updatedAt: Double
+        val updatedAt: Double,
+        // 以下四個欄位只有batch_generate.py在批次真正結束（done/stopped）時才會寫入，
+        // 讓結束畫面能顯示「哪些商品生成了、哪些是本來就有影片被跳過、哪些失敗＋原因」
+        // 的詳細清單，不是只有數字。跑到一半（status="running"）讀到的檔案這幾個欄位
+        // 一律是空清單／null，這是正常現象，不代表資料有問題。
+        val okNames: List<String> = emptyList(),
+        val skippedNames: List<String> = emptyList(),
+        val errorItems: List<Pair<String, String>> = emptyList(),
+        val elapsedSeconds: Double? = null
     )
 
     /**
@@ -165,6 +173,18 @@ object TermuxRunner {
         if (!progressFile.exists()) return null
         return try {
             val json = JSONObject(progressFile.readText())
+            val okNames = json.optJSONArray("okNames")?.let { arr ->
+                (0 until arr.length()).map { arr.getString(it) }
+            } ?: emptyList()
+            val skippedNames = json.optJSONArray("skippedNames")?.let { arr ->
+                (0 until arr.length()).map { arr.getString(it) }
+            } ?: emptyList()
+            val errorItems = json.optJSONArray("errorItems")?.let { arr ->
+                (0 until arr.length()).map { i ->
+                    val pair = arr.getJSONArray(i)
+                    Pair(pair.optString(0, ""), pair.optString(1, ""))
+                }
+            } ?: emptyList()
             BatchProgress(
                 total = json.optInt("total", 0),
                 completed = json.optInt("completed", 0),
@@ -173,7 +193,11 @@ object TermuxRunner {
                 okCount = json.optInt("okCount", 0),
                 skippedCount = json.optInt("skippedCount", 0),
                 errorCount = json.optInt("errorCount", 0),
-                updatedAt = json.optDouble("updatedAt", 0.0)
+                updatedAt = json.optDouble("updatedAt", 0.0),
+                okNames = okNames,
+                skippedNames = skippedNames,
+                errorItems = errorItems,
+                elapsedSeconds = if (json.has("elapsedSeconds")) json.optDouble("elapsedSeconds") else null
             )
         } catch (e: Exception) {
             null
