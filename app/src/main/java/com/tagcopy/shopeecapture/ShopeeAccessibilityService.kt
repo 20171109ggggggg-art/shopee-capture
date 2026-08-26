@@ -1430,65 +1430,70 @@ class ShopeeAccessibilityService : AccessibilityService() {
             return false
         }
 
-        // 1. 點「+」→「從匯入連結新增」
-        val addIconNode = findFirstNodeById(root, "AN_SellerInvitedOfferPage_AddIcon_Img")
-        if (addIconNode == null || !clickNodeBestEffort(addIconNode)) {
-            appendDebugLog("  → 找不到或點擊「+」按鈕失敗"); return false
-        }
-        if (!waitForAnyText(listOf("從匯入連結新增", "Add by Import Link"), 3000)) {
-            appendDebugLog("  → 等不到「從匯入連結新增」選單"); return false
-        }
-        delay(1200)
-        val importMenuNode = findNodeByTexts(rootInActiveWindow ?: return false, listOf("從匯入連結新增", "Add by Import Link"))
-        if (importMenuNode == null || !clickNodeBestEffort(importMenuNode)) {
-            appendDebugLog("  → 點擊「從匯入連結新增」失敗"); return false
-        }
+        // 1~3. 貼上連結→按「新增至按讚好物」這整套動作當一個單位，做兩次當保險
+        // （不是像前一版只在同一個對話框裡重貼文字兩次，而是連「點+重新叫出對話框」
+        // 都一起重做——使用者實測反映前一版少了「按Add to My Likes」這個動作，
+        // 等於只在原本那個視窗裡動作了兩次，沒有真正重跑一整輪）。
+        // 第一次任何一步失敗就直接回報失敗中止；第二次只是保險加強，即使某個節點
+        // 一時找不到（例如清單還沒完全回來），也不讓它擋掉整體流程——反正已經成功送出
+        // 過一次，第二次找不到通常代表已經在回清單的路上，不算真正的錯誤。
+        suspend fun pasteAndSubmitOnce(attemptLabel: String): Boolean {
+            val addIconNode = findFirstNodeById(rootInActiveWindow ?: return false, "AN_SellerInvitedOfferPage_AddIcon_Img")
+            if (addIconNode == null || !clickNodeBestEffort(addIconNode)) {
+                appendDebugLog("  → [$attemptLabel] 找不到或點擊「+」按鈕失敗"); return false
+            }
+            if (!waitForAnyText(listOf("從匯入連結新增", "Add by Import Link"), 3000)) {
+                appendDebugLog("  → [$attemptLabel] 等不到「從匯入連結新增」選單"); return false
+            }
+            delay(1200)
+            val importMenuNode = findNodeByTexts(rootInActiveWindow ?: return false, listOf("從匯入連結新增", "Add by Import Link"))
+            if (importMenuNode == null || !clickNodeBestEffort(importMenuNode)) {
+                appendDebugLog("  → [$attemptLabel] 點擊「從匯入連結新增」失敗"); return false
+            }
 
-        // 2. 貼上商品連結
-        if (!waitForAnyText(listOf("商品連結", "Products URL"), 3000)) {
-            appendDebugLog("  → 等不到「商品連結」輸入畫面"); return false
-        }
-        delay(1200)
-        root = rootInActiveWindow ?: return false
-        var linkInput = findSearchBoxNode(root)
-        if (linkInput == null) {
-            appendDebugLog("  → 找不到商品連結輸入框"); return false
-        }
-        // 使用者實測發現：貼上連結這步偶爾第一次沒有真的生效（回清單後找不到剛匯入的商品，
-        // 停止重跑一次就正常了），懷疑是ACTION_SET_TEXT偶爾沒有真的把文字設進輸入框。
-        // 改成貼兩次當保險：每次都重新抓一次輸入框節點（不重複用同一個舊節點參考，避免
-        // 節點在畫面更新後失效導致第二次動作打在無效節點上），兩次之間留間隔。
-        repeat(2) { attempt ->
-            root = rootInActiveWindow ?: return false
-            val node = findSearchBoxNode(root) ?: linkInput!!
+            if (!waitForAnyText(listOf("商品連結", "Products URL"), 3000)) {
+                appendDebugLog("  → [$attemptLabel] 等不到「商品連結」輸入畫面"); return false
+            }
+            delay(1200)
+            var root2 = rootInActiveWindow ?: return false
+            val linkInput = findSearchBoxNode(root2)
+            if (linkInput == null) {
+                appendDebugLog("  → [$attemptLabel] 找不到商品連結輸入框"); return false
+            }
             val bundle = android.os.Bundle().apply {
                 putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, candidate.promoLink)
             }
-            node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, bundle)
-            appendDebugLog("  → 貼上商品連結第${attempt + 1}次")
-            delay(if (attempt == 0) 1500 else 1200)
-        }
-        // 填完文字後鍵盤還開著、輸入框還focus著，「新增至按讚好物」按鈕不會被觸發／可能被鍵盤蓋住，
-        // 要主動清除焦點+收起鍵盤，模擬使用者「點輸入框外面一下」的動作，畫面才會切到確認狀態。
-        // 重新抓一次輸入框節點（上面兩次貼上動作可能已讓原本的linkInput參考失效）。
-        root = rootInActiveWindow ?: return false
-        (findSearchBoxNode(root) ?: linkInput)?.performAction(AccessibilityNodeInfo.ACTION_CLEAR_FOCUS)
-        delay(450)
-        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
-        imm?.hideSoftInputFromWindow(null, 0)
-        delay(1050)
-        // 保險再點一次畫面上方的「商品連結」標籤文字，確保焦點確實離開輸入框
-        root = rootInActiveWindow ?: return false
-        findNodeByTexts(root, listOf("商品連結", "Products URL"))?.let { clickNodeBestEffort(it) }
-        delay(1050)
+            linkInput.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, bundle)
+            appendDebugLog("  → [$attemptLabel] 貼上商品連結")
+            delay(1500)
+            // 填完文字後鍵盤還開著、輸入框還focus著，「新增至按讚好物」按鈕不會被觸發／可能被鍵盤蓋住，
+            // 要主動清除焦點+收起鍵盤，模擬使用者「點輸入框外面一下」的動作，畫面才會切到確認狀態。
+            root2 = rootInActiveWindow ?: return false
+            (findSearchBoxNode(root2) ?: linkInput).performAction(AccessibilityNodeInfo.ACTION_CLEAR_FOCUS)
+            delay(450)
+            val imm2 = getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
+            imm2?.hideSoftInputFromWindow(null, 0)
+            delay(1050)
+            root2 = rootInActiveWindow ?: return false
+            findNodeByTexts(root2, listOf("商品連結", "Products URL"))?.let { clickNodeBestEffort(it) }
+            delay(1050)
 
-        // 3. 點「新增至按讚好物」
-        root = rootInActiveWindow ?: return false
-        val addToListButton = findNodeByTexts(root, listOf("新增至按讚好物", "Add to My Likes"))
-        if (addToListButton == null || !clickNodeBestEffort(addToListButton)) {
-            appendDebugLog("  → 找不到或點擊「新增至按讚好物」失敗"); return false
+            root2 = rootInActiveWindow ?: return false
+            val addToListButton = findNodeByTexts(root2, listOf("新增至按讚好物", "Add to My Likes"))
+            if (addToListButton == null || !clickNodeBestEffort(addToListButton)) {
+                appendDebugLog("  → [$attemptLabel] 找不到或點擊「新增至按讚好物」失敗"); return false
+            }
+            appendDebugLog("  → [$attemptLabel] 已按下「新增至按讚好物」")
+            delay(3750)
+            return true
         }
-        delay(3750)
+
+        if (!pasteAndSubmitOnce("第1次")) {
+            appendDebugLog("  → 第1次貼上連結失敗，中止本次上架")
+            return false
+        }
+        // 第2次是保險加強，失敗也不中止整體流程（已經成功送出過一次）。
+        pasteAndSubmitOnce("第2次（保險）")
 
         // 4. 回到清單，勾選第一筆（排序：最新，剛新增的理論上會排在最上面）
         // 「新增至按讚好物」是打後端API，清單重新排序可能有延遲，等待時間要留寬一點，
