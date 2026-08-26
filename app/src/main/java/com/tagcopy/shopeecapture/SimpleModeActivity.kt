@@ -465,9 +465,19 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                         File(captionQueueDir, ".stop_signal").delete()
                         File(captionQueueDir, ".progress.json").delete()
                     } catch (e: Exception) { /* 檔案本來就不存在時刪除會失敗，忽略即可 */ }
+                    // 使用者實測發現：批次生成有時會在中途整個沒有留下任何痕跡地停止
+                    // （不是正常的done/stopped，也不是crash訊息），完全無法判斷是python
+                    // 本身出錯、還是被系統（省電策略／記憶體不足OOM）強制砍掉行程。過去
+                    // 腳本的stdout/stderr沒有被導向任何持久化的檔案，一旦行程被砍就什麼
+                    // 證據都沒留下，只能憑猜的。這裡改成把輸出導向一個log檔案（每次執行
+                    // 覆蓋前一份，避免累積佔空間），下次再發生類似狀況時，直接看這份log
+                    // 最後幾行——如果最後一行剛好停在某支影片處理到一半、後面就完全沒有
+                    // 任何輸出，那就是被系統砍掉的鐵證（正常結束/正常錯誤都會印出對應
+                    // 訊息，不會憑空消失）。
                     val sent = TermuxRunner.runCommand(
                         context,
-                        "cd ~/shopee-capture && python batch_generate.py ~/storage/downloads/CaptionQueue"
+                        "cd ~/shopee-capture && python -u batch_generate.py ~/storage/downloads/CaptionQueue " +
+                            "> ~/storage/downloads/batch_generate_last_run.log 2>&1"
                     )
                     if (sent) {
                         isRunning = true

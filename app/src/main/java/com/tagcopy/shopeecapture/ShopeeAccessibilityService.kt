@@ -1392,6 +1392,11 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 markShopeePosted(candidate.folder)
                 appendDebugLog("  → [${candidate.folder.name}] 上架成功，已標記 shopeePosted=true")
                 onEvent(UploadEvent.Log("✓ 上架成功：${candidate.folder.name}"))
+                // 上架成功後這個資料夾（圖片/meta.json/影片等）已經沒有留著的必要，
+                // 使用者反映日產能50~200支的量級下磁碟空間吃緊，上架完直接整個刪掉騰出空間，
+                // 不用等使用者事後手動清。刪除失敗（例如檔案被其他行程佔用中）只記log、
+                // 不影響本次上架已經成功的判定，也不中斷批次繼續處理下一筆。
+                deleteFolderAfterPosted(candidate.folder)
             } else {
                 failCount++
                 appendDebugLog("  → [${candidate.folder.name}] 上架失敗，停止本次批次（避免對同樣的錯誤/每日上限持續重試）")
@@ -1975,6 +1980,25 @@ class ShopeeAccessibilityService : AccessibilityService() {
             metaFile.writeText(json.toString(2))
         } catch (e: Exception) {
             appendDebugLog("  → 標記shopeePosted失敗（${folder.name}）：${e.javaClass.simpleName} ${e.message}")
+        }
+    }
+
+    /**
+     * 上架成功後整個刪除商品資料夾（圖片、meta.json、link.txt、caption.txt、output.mp4全部一起），
+     * 騰出磁碟空間。跟「檢查影片」畫面的單支刪除用同一種做法（folder.deleteRecursively()）。
+     * 這裡是「已經上架成功」之後才刪，跟上架失敗、還沒生成影片的資料夾完全無關，不會誤刪
+     * 還有用的資料。刪除失敗只記log不拋例外，不影響上架流程本身的成功判定。
+     */
+    private fun deleteFolderAfterPosted(folder: File) {
+        try {
+            val deleted = folder.deleteRecursively()
+            if (deleted) {
+                appendDebugLog("  → [${folder.name}] 上架成功後已刪除整個資料夾，騰出磁碟空間")
+            } else {
+                appendDebugLog("  → [${folder.name}] 上架成功後刪除資料夾失敗（部分檔案可能刪除不完全），meta.json已標記shopeePosted=true不會被重複上架，但磁碟空間未釋放，可能需要手動清理")
+            }
+        } catch (e: Exception) {
+            appendDebugLog("  → [${folder.name}] 上架成功後刪除資料夾發生例外：${e.javaClass.simpleName} ${e.message}")
         }
     }
 
