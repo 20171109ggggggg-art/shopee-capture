@@ -97,9 +97,9 @@ class ShopeeAccessibilityService : AccessibilityService() {
             try {
                 autoCaptureLoop(config, onEvent)
             } catch (e: kotlinx.coroutines.CancellationException) {
-                onEvent(AutoCaptureEvent.Log("已停止自動擷取"))
+                onEvent(AutoCaptureEvent.Log(getString(R.string.auto_capture_stopped)))
             } catch (e: Exception) {
-                onEvent(AutoCaptureEvent.Log("發生錯誤：${e.message}"))
+                onEvent(AutoCaptureEvent.Log(getString(R.string.auto_capture_error, e.message)))
             }
         }
     }
@@ -142,15 +142,15 @@ class ShopeeAccessibilityService : AccessibilityService() {
             val linkCount = (dedupPrefs.getStringSet("captured_links", emptySet()) ?: emptySet()).size
             appendDebugLog("  → 目前防重複記錄庫累積：商品名稱 $nameCount 筆、連結 $linkCount 筆")
         }
-        onEvent(AutoCaptureEvent.Log("開始自動擷取，目標 ${config.targetCount} 件商品"))
+        onEvent(AutoCaptureEvent.Log(getString(R.string.auto_capture_started, config.targetCount)))
         if (!config.filter.isEmpty()) {
-            onEvent(AutoCaptureEvent.Log("已套用篩選條件，不符合的商品會自動跳過"))
+            onEvent(AutoCaptureEvent.Log(getString(R.string.auto_capture_filter_applied)))
         }
         if (config.timeLimitEnabled && config.timeLimitMs != null) {
-            onEvent(AutoCaptureEvent.Log("篩選時間上限：${config.timeLimitMs / 60000} 分鐘"))
+            onEvent(AutoCaptureEvent.Log(getString(R.string.auto_capture_time_limit, config.timeLimitMs / 60000)))
         }
         if (!config.maxAttemptsLimitEnabled) {
-            onEvent(AutoCaptureEvent.Log("已關閉最大嘗試次數限制"))
+            onEvent(AutoCaptureEvent.Log(getString(R.string.auto_capture_no_attempt_limit)))
         }
 
         var reason = FinishReason.TARGET_REACHED
@@ -165,7 +165,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
 
             val root = rootInActiveWindow
             if (root == null) {
-                onEvent(AutoCaptureEvent.Log("讀不到目前畫面，停止"))
+                onEvent(AutoCaptureEvent.Log(getString(R.string.auto_capture_cannot_read_screen)))
                 reason = FinishReason.ERROR
                 break
             }
@@ -186,11 +186,11 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 if (emptyScrollAttempts > maxEmptyScrollAttempts) {
                     appendDebugLog("  → 已達最大滑動嘗試次數，判定沒有更多商品，結束前記錄目前畫面內容供除錯")
                     dumpClickableNodesToLog(root)
-                    onEvent(AutoCaptureEvent.Log("已無更多商品可擷取，結束"))
+                    onEvent(AutoCaptureEvent.Log(getString(R.string.auto_capture_no_more_products)))
                     reason = FinishReason.NO_MORE_PRODUCTS
                     break
                 }
-                onEvent(AutoCaptureEvent.Log("往下滑動尋找更多商品…"))
+                onEvent(AutoCaptureEvent.Log(getString(R.string.auto_capture_scrolling)))
                 performScrollDown()
                 delay(randomDelay(config))
                 continue
@@ -206,7 +206,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             }
             onEvent(AutoCaptureEvent.Progress(successCount, config.targetCount))
             if (navigationLostFlag) {
-                onEvent(AutoCaptureEvent.Log("因返回鍵導航異常，自動擷取安全停止，請手動回到商品列表後再重新啟動"))
+                onEvent(AutoCaptureEvent.Log(getString(R.string.auto_capture_back_nav_error)))
                 appendDebugLog("===== 因返回鍵導航異常（跑到蝦皮首頁）安全停止 =====")
                 reason = FinishReason.ERROR
                 break
@@ -231,9 +231,9 @@ class ShopeeAccessibilityService : AccessibilityService() {
 
         when (reason) {
             FinishReason.TIME_LIMIT_REACHED ->
-                onEvent(AutoCaptureEvent.Log("已達篩選時間上限，僅擷取到 $successCount／${config.targetCount} 件符合條件的商品，已停止"))
+                onEvent(AutoCaptureEvent.Log(getString(R.string.auto_capture_time_limit_reached, successCount, config.targetCount)))
             FinishReason.MAX_ATTEMPTS_REACHED ->
-                onEvent(AutoCaptureEvent.Log("已達最大嘗試次數（多數商品不符篩選條件），提前結束"))
+                onEvent(AutoCaptureEvent.Log(getString(R.string.auto_capture_max_attempts_reached)))
             else -> {}
         }
 
@@ -254,7 +254,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         onEvent: (AutoCaptureEvent) -> Unit
     ): ProcessResult {
         if (!card.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
-            onEvent(AutoCaptureEvent.Log("點擊商品卡片失敗，跳過"))
+            onEvent(AutoCaptureEvent.Log(getString(R.string.auto_capture_click_card_failed)))
             appendDebugLog("結果=失敗（點擊商品卡片失敗）")
             return ProcessResult.FAILED
         }
@@ -287,7 +287,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         // 但跳過前先停留 3-4 秒再返回，避免進入商品頁不到 1 秒就跳出，看起來太不像真人操作。
         if (isProductNameAlreadyCaptured(productName)) {
             appendDebugLog("商品：$productName | 結果=跳過（重複商品，先前已擷取過）")
-            onEvent(AutoCaptureEvent.Log("○ 已擷取過此商品，略過：$productName"))
+            onEvent(AutoCaptureEvent.Log(getString(R.string.auto_capture_already_captured, productName)))
             delay(Random.nextLong(6000, 8001))
             performBack()
             delay(randomDelay(config))
@@ -321,7 +321,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (!config.filter.isEmpty()) {
             if (!config.filter.matches(metrics)) {
                 val reason = config.filter.describeMismatch(metrics) ?: "未知原因"
-                onEvent(AutoCaptureEvent.Log("○ 篩選未通過（$reason），略過：${productName ?: "未知商品"}"))
+                onEvent(AutoCaptureEvent.Log(getString(R.string.auto_capture_filter_failed, reason, productName ?: getString(R.string.auto_capture_unknown_product))))
                 appendDebugLog("商品：${productName ?: "未知"} | 結果=篩選跳過（$reason）")
                 performBack()
                 delay(randomDelay(config))
@@ -336,7 +336,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
 
         val shareNode = findNodeByDescriptors(detailRoot, matchRules.shareButtonDescriptors)
         if (shareNode == null) {
-            onEvent(AutoCaptureEvent.Log("找不到分享按鈕，跳過此商品"))
+            onEvent(AutoCaptureEvent.Log(getString(R.string.auto_capture_no_share_button)))
             appendDebugLog("商品：${productName ?: "未知"} | 結果=失敗（找不到分享按鈕）")
             appendDebugLog("  → 目前規則比對的候選字串：${matchRules.shareButtonDescriptors}")
             dumpClickableNodesToLog(detailRoot)
@@ -350,7 +350,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
 
         val sheetAppeared = waitForAnyText(matchRules.shareSheetTitleTexts, 2500)
         if (!sheetAppeared) {
-            onEvent(AutoCaptureEvent.Log("分享面板未出現，跳過此商品"))
+            onEvent(AutoCaptureEvent.Log(getString(R.string.auto_capture_no_share_panel)))
             appendDebugLog("商品：${productName ?: "未知"} | 結果=失敗（分享面板未出現）")
             performBack()
             delay(randomDelay(config))
@@ -374,7 +374,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
         val copyLinkNode = sheetRoot?.let { findNodeByTexts(it, matchRules.copyLinkButtonTexts) }
         if (copyLinkNode == null) {
-            onEvent(AutoCaptureEvent.Log("找不到「複製連結」按鈕，跳過此商品"))
+            onEvent(AutoCaptureEvent.Log(getString(R.string.auto_capture_no_copy_link_button)))
             appendDebugLog("商品：${productName ?: "未知"} | 結果=失敗（找不到複製連結按鈕）")
             performBack()
             delay(randomDelay(config))
@@ -455,13 +455,13 @@ class ShopeeAccessibilityService : AccessibilityService() {
         val landedRoot = rootInActiveWindow
         if (landedRoot != null && looksLikeShopeeHomeScreen(landedRoot)) {
             appendDebugLog("  → ⚠ 偵測到目前畫面疑似跑到蝦皮首頁而非商品列表，關鍵字=${lastKnownSearchQuery ?: "無記錄"}，嘗試自動恢復")
-            onEvent(AutoCaptureEvent.Log("⚠ 返回後畫面異常（疑似跳到首頁），嘗試自動恢復搜尋…"))
+            onEvent(AutoCaptureEvent.Log(getString(R.string.auto_capture_screen_abnormal_recovering)))
             val recovered = tryRecoverToSearchResults()
             appendDebugLog("  → 自動恢復結果：${if (recovered) "成功，恢復到商品列表繼續" else "失敗，將安全停止"}")
             if (recovered) {
-                onEvent(AutoCaptureEvent.Log("✓ 已自動恢復到商品列表，繼續擷取"))
+                onEvent(AutoCaptureEvent.Log(getString(R.string.auto_capture_recovered)))
             } else {
-                onEvent(AutoCaptureEvent.Log("自動恢復失敗，這次擷取仍會保留，但流程即將停止"))
+                onEvent(AutoCaptureEvent.Log(getString(R.string.auto_capture_recovery_failed)))
                 navigationLostFlag = true
             }
         }
@@ -469,19 +469,19 @@ class ShopeeAccessibilityService : AccessibilityService() {
         // 最終確認：用連結比對（比商品名稱準確），避免早期名稱判斷漏掉的重複商品被存下來
         if (isLinkAlreadyCaptured(link)) {
             appendDebugLog("商品：${productName ?: "未知"} | 結果=跳過（連結重複，先前已擷取過：$link）")
-            onEvent(AutoCaptureEvent.Log("○ 連結重複，先前已擷取過，不重複存檔：${productName ?: "未知商品"}"))
+            onEvent(AutoCaptureEvent.Log(getString(R.string.auto_capture_duplicate_link, productName ?: getString(R.string.auto_capture_unknown_product))))
             return ProcessResult.FILTERED
         }
 
         return when (val result = saveResult(productName, link, caption, galleryImages.ifEmpty { listOfNotNull(bitmap) }, metrics)) {
             is CaptureResult.Success -> {
                 markAsCaptured(productName, link)
-                onEvent(AutoCaptureEvent.Log("✓ 已擷取：${productName ?: "未知商品"}"))
+                onEvent(AutoCaptureEvent.Log(getString(R.string.auto_capture_captured, productName ?: getString(R.string.auto_capture_unknown_product))))
                 appendDebugLog("商品：${productName ?: "未知"} | 結果=成功 | 連結=${link ?: "null（沒讀到）"} | 文案=${if (caption.isNullOrBlank()) "null（沒讀到）" else "已讀到"}")
                 ProcessResult.SUCCESS
             }
             is CaptureResult.Failure -> {
-                onEvent(AutoCaptureEvent.Log("存檔失敗：${result.reason}"))
+                onEvent(AutoCaptureEvent.Log(getString(R.string.auto_capture_save_failed, result.reason)))
                 appendDebugLog("商品：${productName ?: "未知"} | 結果=失敗（存檔失敗：${result.reason}）")
                 ProcessResult.FAILED
             }

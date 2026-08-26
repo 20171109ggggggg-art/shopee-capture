@@ -149,6 +149,11 @@
     <string name="simple_stop_requested">已送出停止指令，將在目前這支影片完成後停止…</string>
     <string name="simple_generate_stopped">已停止。這次共完成 %1$d 支／跳過 %2$d 支／失敗 %3$d 支</string>
     <string name="simple_generate_stale">上次執行似乎異常中斷（進度卡在 %1$d／%2$d，超過 %3$d 分鐘沒更新），請重新按「開始生成影片」</string>
+    <string name="simple_generate_elapsed">耗時 %1$d 分 %2$d 秒</string>
+    <string name="simple_generate_ok_list_header">本次新生成（%1$d 支）：</string>
+    <string name="simple_generate_skipped_list_header">跳過（已有影片，未重新生成，%1$d 支）：</string>
+    <string name="simple_generate_error_list_header">失敗（%1$d 支）：</string>
+    <string name="simple_generate_list_more">…等其餘 %1$d 支（省略顯示）</string>
 
     <string name="simple_review_title">檢查影片（共%1$d支）</string>
     <string name="simple_no_videos_yet">還沒有生成好的影片</string>
@@ -174,4 +179,30 @@
     <string name="simple_selected_count">已選 %1$d 支</string>
     <string name="simple_delete_selected">刪除已選（%1$d）</string>
     <string name="simple_batch_delete_confirm_title">確定要刪除這 %1$d 支影片嗎？</string>
+
+    <string name="auto_capture_stopped">已停止自動擷取</string>
+    <string name="auto_capture_error">發生錯誤：%1$s</string>
+    <string name="auto_capture_started">開始自動擷取，目標 %1$d 件商品</string>
+    <string name="auto_capture_filter_applied">已套用篩選條件，不符合的商品會自動跳過</string>
+    <string name="auto_capture_time_limit">篩選時間上限：%1$d 分鐘</string>
+    <string name="auto_capture_no_attempt_limit">已關閉最大嘗試次數限制</string>
+    <string name="auto_capture_cannot_read_screen">讀不到目前畫面，停止</string>
+    <string name="auto_capture_no_more_products">已無更多商品可擷取，結束</string>
+    <string name="auto_capture_scrolling">往下滑動尋找更多商品…</string>
+    <string name="auto_capture_back_nav_error">因返回鍵導航異常，自動擷取安全停止，請手動回到商品列表後再重新啟動</string>
+    <string name="auto_capture_time_limit_reached">已達篩選時間上限，僅擷取到 %1$d／%2$d 件符合條件的商品，已停止</string>
+    <string name="auto_capture_max_attempts_reached">已達最大嘗試次數（多數商品不符篩選條件），提前結束</string>
+    <string name="auto_capture_click_card_failed">點擊商品卡片失敗，跳過</string>
+    <string name="auto_capture_already_captured">○ 已擷取過此商品，略過：%1$s</string>
+    <string name="auto_capture_filter_failed">○ 篩選未通過（%1$s），略過：%2$s</string>
+    <string name="auto_capture_no_share_button">找不到分享按鈕，跳過此商品</string>
+    <string name="auto_capture_no_share_panel">分享面板未出現，跳過此商品</string>
+    <string name="auto_capture_no_copy_link_button">找不到「複製連結」按鈕，跳過此商品</string>
+    <string name="auto_capture_screen_abnormal_recovering">⚠ 返回後畫面異常（疑似跳到首頁），嘗試自動恢復搜尋…</string>
+    <string name="auto_capture_recovered">✓ 已自動恢復到商品列表，繼續擷取</string>
+    <string name="auto_capture_recovery_failed">自動恢復失敗，這次擷取仍會保留，但流程即將停止</string>
+    <string name="auto_capture_duplicate_link">○ 連結重複，先前已擷取過，不重複存檔：%1$s</string>
+    <string name="auto_capture_captured">✓ 已擷取：%1$s</string>
+    <string name="auto_capture_save_failed">存檔失敗：%1$s</string>
+    <string name="auto_capture_unknown_product">未知商品</string>
 </resources>

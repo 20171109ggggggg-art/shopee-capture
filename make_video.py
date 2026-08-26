@@ -405,6 +405,16 @@ def is_valid_video(path: str) -> bool:
     發現播放失敗、手動刪除。這裡改用ffprobe實際探測：讀不到基本格式資訊（returncode
     非0，或缺影像串流，或時長<=0）都視為無效檔案。逾時30秒視為異常也判定無效
     （正常探測應該是瞬間完成的，逾時代表檔案本身有問題卡住ffprobe）。
+
+    後續發現：純ffprobe（只讀取容器層級的格式/串流資訊，不實際解碼內容）驗證通過的
+    檔案，仍可能在手機上播放失敗——實測有2支影片重新生成後ffprobe完全驗證通過
+    （時長正常、有影像串流），但手動播放依然失敗。這代表問題出在「內容解碼」層級
+    （例如某幾個影格的資料本身損毀、音訊串流資料有問題），是ffprobe單純讀取
+    metadata不會發現的，必須實際跑一次完整解碼才驗得出來。因此這裡多加一層
+    full_decode_check：用`ffmpeg -f null -`把整支影片從頭到尾實際解碼一次，
+    stderr有任何內容（-v error只會印真正的解碼錯誤，不會有其他雜訊）就視為無效。
+    這一層比純ffprobe慢（要花跟影片時長差不多的時間，不是瞬間），但只在做這個
+    完整性驗證時執行一次，相對批次生成一支動辄1~3分鐘的成本可以接受。
     """
     if not os.path.isfile(path) or os.path.getsize(path) == 0:
         return False
@@ -424,7 +434,32 @@ def is_valid_video(path: str) -> bool:
         return False
     duration = float(data.get("format", {}).get("duration", 0) or 0)
     has_video_stream = any(s.get("codec_type") == "video" for s in data.get("streams", []))
-    return duration > 0 and has_video_stream
+    if duration <= 0 or not has_video_stream:
+        return False
+    return full_decode_check(path)
+
+
+def full_decode_check(path: str) -> bool:
+    """
+    把整支影片實際解碼一次（不只讀取容器metadata），抓出ffprobe驗證抓不到的
+    內容層級損毀（例如某幾個影格資料壞掉、音訊串流本身有問題）。
+    用`-v error`只讓真正的解碼錯誤印到stderr，沒有任何雜訊；stderr有內容
+    或指令逾時，都視為解碼異常、判定檔案無效。
+    逾時門檻60秒：正常影片15~18秒，30fps解碼速度遠快於即時播放速度，
+    60秒對正常檔案綽綽有餘，卡住超過這個時間本身就代表檔案有問題。
+    """
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", path, "-f", "null", "-"],
+            capture_output=True, text=True, timeout=60
+        )
+    except Exception:
+        return False
+    if result.returncode != 0:
+        return False
+    if result.stderr.strip():
+        return False
+    return True
 
 
 def process_folder(folder: str, force: bool = False) -> dict:
@@ -444,7 +479,7 @@ def process_folder(folder: str, force: bool = False) -> dict:
         if is_valid_video(output_path):
             return {"status": "skipped", "message": "output.mp4 已存在", "output_path": output_path}
         else:
-            print(f"→ 偵測到既有output.mp4無法通過ffprobe驗證（可能是上次生成中途被中斷的殘缺檔案），視為未生成、重新生成")
+            print(f"→ 偵測到既有output.mp4無法通過驗證（容器結構或內容解碼異常，可能是上次生成中途被中斷或內容本身損毀），視為未生成、重新生成")
 
     if len(images) > MAX_IMAGES_IN_VIDEO:
         print(f"→ 資料夾有 {len(images)} 張圖，超過影片上限 {MAX_IMAGES_IN_VIDEO} 張，只取前 {MAX_IMAGES_IN_VIDEO} 張")

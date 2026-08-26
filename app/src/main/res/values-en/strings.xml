@@ -149,6 +149,11 @@
     <string name="simple_stop_requested">Stop requested — will stop after the current video finishes…</string>
     <string name="simple_generate_stopped">Stopped. %1$d completed / %2$d skipped / %3$d failed this run</string>
     <string name="simple_generate_stale">The last run seems to have stopped unexpectedly (stuck at %1$d/%2$d, no update for over %3$d minutes). Please press "Start Generating" again</string>
+    <string name="simple_generate_elapsed">Took %1$d min %2$d sec</string>
+    <string name="simple_generate_ok_list_header">Newly generated (%1$d):</string>
+    <string name="simple_generate_skipped_list_header">Skipped (already had a video, not regenerated, %1$d):</string>
+    <string name="simple_generate_error_list_header">Failed (%1$d):</string>
+    <string name="simple_generate_list_more">…and %1$d more (not shown)</string>
 
     <string name="simple_review_title">Review Videos (%1$d total)</string>
     <string name="simple_no_videos_yet">No videos generated yet</string>
@@ -174,4 +179,30 @@
     <string name="simple_selected_count">%1$d selected</string>
     <string name="simple_delete_selected">Delete Selected (%1$d)</string>
     <string name="simple_batch_delete_confirm_title">Delete these %1$d videos?</string>
+
+    <string name="auto_capture_stopped">Auto-capture stopped</string>
+    <string name="auto_capture_error">Error: %1$s</string>
+    <string name="auto_capture_started">Starting auto-capture, target %1$d products</string>
+    <string name="auto_capture_filter_applied">Filters applied — non-matching products will be skipped automatically</string>
+    <string name="auto_capture_time_limit">Time limit: %1$d minutes</string>
+    <string name="auto_capture_no_attempt_limit">Max attempt limit disabled</string>
+    <string name="auto_capture_cannot_read_screen">Can\'t read the current screen, stopping</string>
+    <string name="auto_capture_no_more_products">No more products to capture, finished</string>
+    <string name="auto_capture_scrolling">Scrolling down for more products…</string>
+    <string name="auto_capture_back_nav_error">Back-navigation looked abnormal, auto-capture stopped for safety — please return to the product list manually and restart</string>
+    <string name="auto_capture_time_limit_reached">Time limit reached — captured %1$d／%2$d matching products, stopped</string>
+    <string name="auto_capture_max_attempts_reached">Max attempts reached (most products didn\'t match filters), finishing early</string>
+    <string name="auto_capture_click_card_failed">Failed to tap the product card, skipping</string>
+    <string name="auto_capture_already_captured">○ Already captured this product, skipping: %1$s</string>
+    <string name="auto_capture_filter_failed">○ Didn\'t pass filters (%1$s), skipping: %2$s</string>
+    <string name="auto_capture_no_share_button">Couldn\'t find the share button, skipping this product</string>
+    <string name="auto_capture_no_share_panel">Share panel didn\'t appear, skipping this product</string>
+    <string name="auto_capture_no_copy_link_button">Couldn\'t find the \"Copy Link\" button, skipping this product</string>
+    <string name="auto_capture_screen_abnormal_recovering">⚠ Screen looks abnormal after going back (may have jumped to home), trying to auto-recover the search…</string>
+    <string name="auto_capture_recovered">✓ Auto-recovered to the product list, continuing capture</string>
+    <string name="auto_capture_recovery_failed">Auto-recovery failed — this capture is still saved, but the process is about to stop</string>
+    <string name="auto_capture_duplicate_link">○ Duplicate link, already captured before, not saving again: %1$s</string>
+    <string name="auto_capture_captured">✓ Captured: %1$s</string>
+    <string name="auto_capture_save_failed">Failed to save: %1$s</string>
+    <string name="auto_capture_unknown_product">Unknown product</string>
 </resources>
