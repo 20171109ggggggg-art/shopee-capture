@@ -1450,18 +1450,29 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
         delay(1200)
         root = rootInActiveWindow ?: return false
-        val linkInput = findSearchBoxNode(root)
+        var linkInput = findSearchBoxNode(root)
         if (linkInput == null) {
             appendDebugLog("  → 找不到商品連結輸入框"); return false
         }
-        val linkBundle = android.os.Bundle().apply {
-            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, candidate.promoLink)
+        // 使用者實測發現：貼上連結這步偶爾第一次沒有真的生效（回清單後找不到剛匯入的商品，
+        // 停止重跑一次就正常了），懷疑是ACTION_SET_TEXT偶爾沒有真的把文字設進輸入框。
+        // 改成貼兩次當保險：每次都重新抓一次輸入框節點（不重複用同一個舊節點參考，避免
+        // 節點在畫面更新後失效導致第二次動作打在無效節點上），兩次之間留間隔。
+        repeat(2) { attempt ->
+            root = rootInActiveWindow ?: return false
+            val node = findSearchBoxNode(root) ?: linkInput!!
+            val bundle = android.os.Bundle().apply {
+                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, candidate.promoLink)
+            }
+            node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, bundle)
+            appendDebugLog("  → 貼上商品連結第${attempt + 1}次")
+            delay(if (attempt == 0) 1500 else 1200)
         }
-        linkInput.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, linkBundle)
-        delay(1200)
         // 填完文字後鍵盤還開著、輸入框還focus著，「新增至按讚好物」按鈕不會被觸發／可能被鍵盤蓋住，
         // 要主動清除焦點+收起鍵盤，模擬使用者「點輸入框外面一下」的動作，畫面才會切到確認狀態。
-        linkInput.performAction(AccessibilityNodeInfo.ACTION_CLEAR_FOCUS)
+        // 重新抓一次輸入框節點（上面兩次貼上動作可能已讓原本的linkInput參考失效）。
+        root = rootInActiveWindow ?: return false
+        (findSearchBoxNode(root) ?: linkInput)?.performAction(AccessibilityNodeInfo.ACTION_CLEAR_FOCUS)
         delay(450)
         val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
         imm?.hideSoftInputFromWindow(null, 0)
