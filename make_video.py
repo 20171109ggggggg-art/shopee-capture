@@ -338,6 +338,14 @@ def build_ffmpeg_command(
         "-map", audio_map,
         "-t", str(total_duration),
         "-r", "30",
+        "-threads", "1",  # 強制單執行緒濾鏡處理＋編碼。根因排查發現手機在連續批次
+                           # 處理很多支影片、CPU資源緊繃時，多執行緒編碼器內部可能發生
+                           # 執行緒競爭（race condition），產生「ffmpeg exit code正常、
+                           # 檔案能寫完，但實際h264位元流已經損毀」的狀況——這種狀況
+                           # 完全不會反映在returncode上，只有事後完整解碼驗證
+                           # （full_decode_check）才驗得出來，非常難排查。單執行緒犧牲一點
+                           # 編碼速度（對15~18秒的短片影響通常是秒級），換取徹底排除這類
+                           # 競爭問題的可能性。
         "-avoid_negative_ts", "make_zero",  # 強制所有時間戳從 0 開始，不產生負值
                                              # 音訊編碼器本身有起始延遲，ffmpeg 預設會用 edit list
                                              # (edts/elst) 機制去對齊，但部分 Android 手機硬體解碼器
@@ -573,6 +581,15 @@ def process_folder(folder: str, force: bool = False) -> dict:
 
     if result.returncode != 0:
         return {"status": "error", "message": result.stderr[-1000:], "output_path": None}
+
+    # 過去這裡完全忽略stderr內容——只要returncode是0（正常結束）就直接視為成功。
+    # 但根因排查發現：ffmpeg exit code正常、檔案也寫得完整，不代表內容一定沒問題
+    # （例如多執行緒編碼器在資源緊繃時可能產生內部異常但仍正常收尾）。這種情況下
+    # stderr往往會留下線索，過去因為只在失敗時才讀取，這些線索永遠被吃掉、無從
+    # 排查起。現在不管成功與否，只要stderr有內容就印出來（不影響回傳成功狀態，
+    # 只是留下診斷紀錄）。
+    if result.stderr.strip():
+        print(f"⚠ ffmpeg正常結束但stderr有內容，留供除錯參考：\n{result.stderr.strip()[-1000:]}")
 
     update_meta_video_generated(folder, sentences, hashtags)
     return {"status": "ok", "message": "", "output_path": output_path}
