@@ -28,7 +28,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
-import kotlin.coroutines.resume
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
@@ -454,9 +453,17 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                     resultText = null
                     progress = null
                     stopRequested = false
-                    // 開始新一批之前，先清掉可能殘留的舊停止訊號檔案（例如上一批是被停止結束的）。
+                    // 開始新一批之前，先清掉可能殘留的舊訊號檔案／舊進度檔案：
+                    // .stop_signal是上一批若是被停止結束留下的；.progress.json如果不清掉，
+                    // 新的Python腳本要花一點時間（啟動bash、cd、python直譯器初始化、掃描
+                    // 資料夾）才會真正蓋過去，這段空窗期內App第一次輪詢仍會讀到「舊的、
+                    // 真的過期的」進度檔——如果那份舊檔案剛好是卡住偵測抓到的異常中斷，
+                    // isRunning會被誤判成false打回黑色按鈕，使用者要連按好幾次才會踩到
+                    // 「新腳本已經蓋過舊檔案」的時機點。清掉舊檔案後，第一次輪詢會讀到null
+                    // （檔案不存在），不會觸發卡住偵測，正常等到新腳本真正開始寫入。
                     try {
                         File(captionQueueDir, ".stop_signal").delete()
+                        File(captionQueueDir, ".progress.json").delete()
                     } catch (e: Exception) { /* 檔案本來就不存在時刪除會失敗，忽略即可 */ }
                     val sent = TermuxRunner.runCommand(
                         context,
@@ -602,7 +609,7 @@ private suspend fun rescanAndWait(context: Context, file: File) {
             android.media.MediaScannerConnection.scanFile(
                 context, arrayOf(file.absolutePath), arrayOf("video/mp4")
             ) { _, _ ->
-                if (cont.isActive) cont.resume(Unit)
+                if (cont.isActive) cont.resumeWith(Result.success(Unit))
             }
         }
     }
