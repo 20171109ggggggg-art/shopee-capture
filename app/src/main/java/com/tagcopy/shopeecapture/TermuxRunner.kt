@@ -147,7 +147,12 @@ object TermuxRunner {
         val status: String, // "running" 或 "done"
         val okCount: Int,
         val skippedCount: Int,
-        val errorCount: Int
+        val errorCount: Int,
+        // batch_generate.py用time.time()寫入的Unix時間戳（秒），每次write_progress都會更新。
+        // 用來判斷這份進度資料是不是「卡住的舊資料」——例如行程被系統砍掉、沒能正常寫入
+        // done/stopped狀態，畫面會不然會一直顯示status="running"卻永遠不會前進。
+        // 缺這個欄位（例如讀到舊版腳本寫的檔案）時預設0.0，呼叫端會把它當成「非常舊」處理。
+        val updatedAt: Double
     )
 
     /**
@@ -167,7 +172,8 @@ object TermuxRunner {
                 status = json.optString("status", "running"),
                 okCount = json.optInt("okCount", 0),
                 skippedCount = json.optInt("skippedCount", 0),
-                errorCount = json.optInt("errorCount", 0)
+                errorCount = json.optInt("errorCount", 0),
+                updatedAt = json.optDouble("updatedAt", 0.0)
             )
         } catch (e: Exception) {
             null

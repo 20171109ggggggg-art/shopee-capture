@@ -1766,13 +1766,28 @@ class ShopeeAccessibilityService : AccessibilityService() {
 
         // 17c. 等「Affiliate Program／蝦皮分潤計畫」卡片出現並點擊
         // （TW實測確認正確文字是「蝦皮分潤計畫」，之前猜的「聯盟計畫」「聯盟合作」都是錯的）
-        if (!waitForAnyText(listOf("Affiliate Program", "蝦皮分潤計畫"), 3000)) {
-            appendDebugLog("  → [返回清單] 等不到「Affiliate Program」卡片，請手動導航回清單畫面")
+        // 使用者實測發現：「我的」頁面剛進入時這張卡片常常不在畫面可視範圍內（該頁面底下
+        // 卡片區塊疑似用RecyclerView，畫面外的內容不會出現在無障礙節點樹裡，單純等待
+        // 是永遠等不到的），必須先下拉一次才找得到；手動下拉過一次之後，蝦皮那個分頁會
+        // 記住捲動位置，同一個App session內之後都維持在下拉後的位置，所以才會有「手動拉一次、
+        // 後面就一路順」的現象。這裡改成：短暫等待→找不到就自動下拉→再等待，最多重試3次，
+        // 不用每次都仰賴使用者手動介入。
+        var affiliateProgramCard: AccessibilityNodeInfo? = null
+        for (attempt in 1..3) {
+            if (waitForAnyText(listOf("Affiliate Program", "蝦皮分潤計畫"), 1500)) {
+                root = rootInActiveWindow
+                affiliateProgramCard = root?.let { findNodeByTexts(it, listOf("Affiliate Program", "蝦皮分潤計畫")) }
+                if (affiliateProgramCard != null) break
+            }
+            appendDebugLog("  → [返回清單] 第${attempt}次找不到「Affiliate Program」卡片，往下滑動後重試")
+            performScrollDown()
+            delay(600)
+        }
+        if (affiliateProgramCard == null) {
+            appendDebugLog("  → [返回清單] 滑動3次後仍找不到「Affiliate Program」卡片，請手動導航回清單畫面")
             return
         }
-        root = rootInActiveWindow
-        val affiliateProgramCard = root?.let { findNodeByTexts(it, listOf("Affiliate Program", "蝦皮分潤計畫")) }
-        if (affiliateProgramCard == null || !clickNodeBestEffort(affiliateProgramCard)) {
+        if (!clickNodeBestEffort(affiliateProgramCard)) {
             appendDebugLog("  → [返回清單] 點擊「Affiliate Program」卡片失敗，請手動導航回清單畫面")
             return
         }

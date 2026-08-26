@@ -148,6 +148,7 @@
     <string name="simple_stop_generate">停止生成</string>
     <string name="simple_stop_requested">已送出停止指令，將在目前這支影片完成後停止…</string>
     <string name="simple_generate_stopped">已停止。這次共完成 %1$d 支／跳過 %2$d 支／失敗 %3$d 支</string>
+    <string name="simple_generate_stale">上次執行似乎異常中斷（進度卡在 %1$d／%2$d，超過 %3$d 分鐘沒更新），請重新按「開始生成影片」</string>
 
     <string name="simple_review_title">檢查影片（共%1$d支）</string>
     <string name="simple_no_videos_yet">還沒有生成好的影片</string>

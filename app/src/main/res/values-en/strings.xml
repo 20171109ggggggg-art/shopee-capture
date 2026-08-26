@@ -148,6 +148,7 @@
     <string name="simple_stop_generate">Stop Generating</string>
     <string name="simple_stop_requested">Stop requested — will stop after the current video finishes…</string>
     <string name="simple_generate_stopped">Stopped. %1$d completed / %2$d skipped / %3$d failed this run</string>
+    <string name="simple_generate_stale">The last run seems to have stopped unexpectedly (stuck at %1$d/%2$d, no update for over %3$d minutes). Please press "Start Generating" again</string>
 
     <string name="simple_review_title">Review Videos (%1$d total)</string>
     <string name="simple_no_videos_yet">No videos generated yet</string>

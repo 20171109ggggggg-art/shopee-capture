@@ -247,6 +247,23 @@ private fun CaptureScreen(context: Context, onBack: () -> Unit) {
 
 // ========== 步驟2：生成影片 ==========
 
+// 判定「進度卡住」的門檻：單支影片TTS+ffmpeg實測常要1~3分鐘，設6分鐘留足夠安全邊界，
+// 避免正常處理中的影片被誤判成卡住。
+private const val STALE_THRESHOLD_SECONDS = 360
+
+/**
+ * 判斷一筆.progress.json的內容是不是「卡住的舊資料」——status還是"running"，
+ * 但updatedAt距離現在已經超過STALE_THRESHOLD_SECONDS沒更新過，代表寫入這份進度的
+ * Python行程多半已經在背景被系統砍掉、或因為未預期的錯誤中斷，沒能正常收尾寫入
+ * done/stopped狀態。缺updatedAt欄位（例如讀到舊版腳本寫的檔案，預設值0.0）一律視為
+ * 非常舊、直接判定為卡住。
+ */
+private fun isStaleProgress(p: TermuxRunner.BatchProgress?): Boolean {
+    if (p == null || p.status != "running") return false
+    val nowSeconds = System.currentTimeMillis() / 1000.0
+    return (nowSeconds - p.updatedAt) > STALE_THRESHOLD_SECONDS
+}
+
 @Composable
 private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
     var termuxGranted by remember {
@@ -269,8 +286,9 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
     // 重新開始，導致使用者切到別的畫面再回來時，明明背景還在生成，畫面卻顯示
     // 「開始生成影片」看起來像沒在跑，容易誤導使用者重複啟動或誤以為卡住。
     val initialProgress = remember { TermuxRunner.readBatchProgress(captionQueueDir) }
+    val isInitiallyStale = remember { isStaleProgress(initialProgress) }
 
-    var isRunning by remember { mutableStateOf(initialProgress?.status == "running") }
+    var isRunning by remember { mutableStateOf(initialProgress?.status == "running" && !isInitiallyStale) }
     // 「停止生成」按下後不是立即殺掉Termux行程，而是寫一個訊號檔案，
     // batch_generate.py會在目前這支影片完成、下一支開始前檢查這個檔案，
     // 看到就自動收尾寫進度並結束，避免一支影片生成到一半被中斷成殘缺檔案。
@@ -280,14 +298,20 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
     var progress by remember { mutableStateOf(initialProgress) }
     // 如果重進畫面時發現上一批其實已經在背景跑完了（使用者切走那段時間完成的），
     // 直接把結果顯示出來，不會因為畫面重建就把「已經完成」的訊息憑空吃掉。
+    // 如果status是"running"但updatedAt已經停在很久以前（行程被系統砍掉、沒能正常收尾
+    // 寫入done/stopped），視為卡住的殘留資料，顯示提醒而不是照單全收讓畫面一直轉。
     var resultText by remember {
         mutableStateOf(
-            when (initialProgress?.status) {
-                "done" -> context.getString(
+            when {
+                initialProgress?.status == "running" && isInitiallyStale -> context.getString(
+                    R.string.simple_generate_stale,
+                    initialProgress.completed, initialProgress.total, STALE_THRESHOLD_SECONDS / 60
+                )
+                initialProgress?.status == "done" -> context.getString(
                     R.string.simple_generate_done,
                     initialProgress.okCount, initialProgress.skippedCount, initialProgress.errorCount
                 )
-                "stopped" -> context.getString(
+                initialProgress?.status == "stopped" -> context.getString(
                     R.string.simple_generate_stopped,
                     initialProgress.okCount, initialProgress.skippedCount, initialProgress.errorCount
                 )
@@ -301,15 +325,22 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
         while (isRunning) {
             val p = TermuxRunner.readBatchProgress(captionQueueDir)
             progress = p
-            when (p?.status) {
-                "done" -> {
+            when {
+                p?.status == "running" && isStaleProgress(p) -> {
+                    resultText = context.getString(
+                        R.string.simple_generate_stale, p.completed, p.total, STALE_THRESHOLD_SECONDS / 60
+                    )
+                    isRunning = false
+                    stopRequested = false
+                }
+                p?.status == "done" -> {
                     resultText = context.getString(
                         R.string.simple_generate_done, p.okCount, p.skippedCount, p.errorCount
                     )
                     isRunning = false
                     stopRequested = false
                 }
-                "stopped" -> {
+                p?.status == "stopped" -> {
                     resultText = context.getString(
                         R.string.simple_generate_stopped, p.okCount, p.skippedCount, p.errorCount
                     )
