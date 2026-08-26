@@ -12,7 +12,7 @@ object UploadAutomationPrefs {
 
     fun getTargetCount(context: Context): Int {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getInt(KEY_TARGET_COUNT, 5)
+            .getInt(KEY_TARGET_COUNT, 50)
     }
 
     fun setTargetCount(context: Context, count: Int) {

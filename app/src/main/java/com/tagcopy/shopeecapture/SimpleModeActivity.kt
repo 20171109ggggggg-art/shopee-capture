@@ -28,6 +28,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.resume
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.io.File
 
@@ -566,10 +570,49 @@ private fun scanVideos(context: Context): List<VideoItem> {
     return result
 }
 
+/**
+ * 用MediaScannerConnection.scanFile()強制系統重新掃描這個影片檔案的媒體資訊，並真的
+ * 等掃描完成的callback觸發後才返回（不是掃了就不管）。
+ *
+ * 背景：使用者實測發現，影片如果第一次生成時曾經是殘缺檔案（例如中途被系統砍掉），
+ * 即使後來偵測到並重新生成成功，某些手機的影片播放器拿到content://網址後仍會回頭
+ * 查MediaStore資料庫比對這個檔案路徑的中繼資料（例如時長），如果Android系統當初
+ * 第一次幫這個路徑建立索引時抓到的是壞掉的舊資訊，即使檔案內容早就換成好的，
+ * 播放器仍可能照著這份舊索引判斷拒絕播放。第一版修正呼叫scanFile()但沒有等待
+ * 掃描真正完成就直接開啟播放器（fire-and-forget），時機沒對上，等於沒修到；
+ * 這裡改成用suspendCancellableCoroutine真的等callback觸發後才繼續，逾時3秒
+ * 就放棄等待、直接嘗試開啟播放器（避免掃描本身卡住或失敗時把使用者卡住）。
+ *
+ * 另外光靠scanFile()「重新掃描」不保證一定會完整覆蓋舊紀錄裡的壞欄位（部分廠牌
+ * ROM對已存在的MediaStore項目可能只做部分欄位更新），這裡先主動刪除MediaStore
+ * 裡任何跟這個路徑對應的舊紀錄，確保沒有殘留的壞中繼資料可以被撿到，再讓
+ * scanFile()建立一筆全新、乾淨的索引，比單純重新掃描更保險。刪除失敗（例如
+ * 該路徑本來就沒有MediaStore紀錄）不影響後續流程。
+ */
+private suspend fun rescanAndWait(context: Context, file: File) {
+    try {
+        context.contentResolver.delete(
+            android.provider.MediaStore.Files.getContentUri("external"),
+            "${android.provider.MediaStore.Files.FileColumns.DATA}=?",
+            arrayOf(file.absolutePath)
+        )
+    } catch (e: Exception) { /* 沒有舊紀錄可刪或刪除失敗都不影響後續掃描 */ }
+    withTimeoutOrNull(3000) {
+        suspendCancellableCoroutine<Unit> { cont ->
+            android.media.MediaScannerConnection.scanFile(
+                context, arrayOf(file.absolutePath), arrayOf("video/mp4")
+            ) { _, _ ->
+                if (cont.isActive) cont.resume(Unit)
+            }
+        }
+    }
+}
+
 @Composable
 private fun ReviewVideosScreen(context: Context, onBack: () -> Unit) {
     var videos by remember { mutableStateOf(scanVideos(context)) }
     var deleteTarget by remember { mutableStateOf<VideoItem?>(null) }
+    val coroutineScope = rememberCoroutineScope()
 
     // 多選刪除：selectionMode開啟後，清單每一列改顯示勾選框，點列本身切換勾選狀態
     // （不用另外找空間放checkbox），長按任一列可以直接進入多選模式並預先勾選該列。
@@ -666,29 +709,23 @@ private fun ReviewVideosScreen(context: Context, onBack: () -> Unit) {
                         selectionMode = selectionMode,
                         isSelected = path in selectedPaths,
                         onPlay = {
-                            try {
-                                // 使用者實測發現：影片如果第一次生成時曾經是殘缺檔案（例如中途被系統
-                                // 砍掉），即使後來偵測到並重新生成成功，手機的相簿/影片App仍可能對
-                                // 這個檔案路徑快取著舊的「播放失敗」狀態（同一個資料夾、同一個檔名
-                                // 原地覆蓋，快取鍵值沒變），導致底層位元組明明正常了，播放器卻還是
-                                // 顯示失敗——把同一支影片複製成新檔名再打開就能正常播放，證實了這是
-                                // 快取問題不是影片本身壞掉。這裡在打開播放器之前，主動呼叫
-                                // MediaScannerConnection.scanFile()強制系統重新掃描這個路徑的媒體
-                                // 資訊，盡量打破可能存在的舊快取，不用再靠使用者手動複製成新檔名繞過。
-                                android.media.MediaScannerConnection.scanFile(
-                                    context, arrayOf(video.videoFile.absolutePath), arrayOf("video/mp4"), null
-                                )
-                                val uri: Uri = FileProvider.getUriForFile(
-                                    context,
-                                    "com.tagcopy.shopeecapture.fileprovider",
-                                    video.videoFile
-                                )
-                                val intent = Intent(Intent.ACTION_VIEW).apply {
-                                    setDataAndType(uri, "video/mp4")
-                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                }
-                                context.startActivity(intent)
-                            } catch (e: Exception) { /* 沒有影片播放器可開啟時忽略，不中斷畫面 */ }
+                            coroutineScope.launch {
+                                try {
+                                    rescanAndWait(context, video.videoFile)
+                                } catch (e: Exception) { /* 掃描本身失敗不影響後續嘗試播放 */ }
+                                try {
+                                    val uri: Uri = FileProvider.getUriForFile(
+                                        context,
+                                        "com.tagcopy.shopeecapture.fileprovider",
+                                        video.videoFile
+                                    )
+                                    val intent = Intent(Intent.ACTION_VIEW).apply {
+                                        setDataAndType(uri, "video/mp4")
+                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    }
+                                    context.startActivity(intent)
+                                } catch (e: Exception) { /* 沒有影片播放器可開啟時忽略，不中斷畫面 */ }
+                            }
                         },
                         onDelete = { deleteTarget = video },
                         onToggleSelect = {

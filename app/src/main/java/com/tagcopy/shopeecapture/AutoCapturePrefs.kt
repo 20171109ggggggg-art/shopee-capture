@@ -56,21 +56,21 @@ object AutoCapturePrefs {
     fun load(context: Context): AutoCaptureConfig {
         val sp = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val filter = ProductFilterConfig(
-            minCommissionPercent = getDoubleOrNullWithDefault(sp, KEY_MIN_COMMISSION, 1.0),
+            minCommissionPercent = getDoubleOrNullWithDefault(sp, KEY_MIN_COMMISSION, 5.0),
             maxCommissionPercent = getDoubleOrNullWithDefault(sp, KEY_MAX_COMMISSION, null),
             minPrice = getDoubleOrNullWithDefault(sp, KEY_MIN_PRICE, 50.0),
             maxPrice = getDoubleOrNullWithDefault(sp, KEY_MAX_PRICE, null),
             minSoldCount = getIntOrNullWithDefault(sp, KEY_MIN_SOLD, 10),
             maxSoldCount = getIntOrNullWithDefault(sp, KEY_MAX_SOLD, null),
             minPromoterCount = getIntOrNullWithDefault(sp, KEY_MIN_PROMOTER, null),
-            maxPromoterCount = getIntOrNullWithDefault(sp, KEY_MAX_PROMOTER, 100)
+            maxPromoterCount = getIntOrNullWithDefault(sp, KEY_MAX_PROMOTER, null)
         )
         return AutoCaptureConfig(
-            targetCount = sp.getInt(KEY_TARGET_COUNT, 10),
-            minDelayMs = sp.getLong(KEY_MIN_DELAY, 3000L),
-            maxDelayMs = sp.getLong(KEY_MAX_DELAY, 6000L),
+            targetCount = sp.getInt(KEY_TARGET_COUNT, 20),
+            minDelayMs = sp.getLong(KEY_MIN_DELAY, 5000L),
+            maxDelayMs = sp.getLong(KEY_MAX_DELAY, 8000L),
             filter = filter,
-            timeLimitMs = sp.getLong(KEY_TIME_LIMIT, 600000L).let { if (it <= 0L) null else it },
+            timeLimitMs = sp.getLong(KEY_TIME_LIMIT, -1L).let { if (it <= 0L) null else it },
             maxAttemptsLimitEnabled = sp.getBoolean(KEY_MAX_ATTEMPTS_ENABLED, true),
             timeLimitEnabled = sp.getBoolean(KEY_TIME_LIMIT_ENABLED, true)
         )
