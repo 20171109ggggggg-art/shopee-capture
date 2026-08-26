@@ -21,6 +21,7 @@ generate_narration.py、make_video.py 必須跟本檔放在同一個資料夾。
 import os
 import sys
 import time
+import subprocess
 
 from make_video import process_folder
 
@@ -29,26 +30,44 @@ import json
 
 
 def write_progress(root: str, total: int, completed: int, current_name: str,
-                    status: str, ok_count: int, skipped_count: int, error_count: int) -> None:
+                    status: str, ok_count: int, skipped_count: int, error_count: int,
+                    ok_names: list = None, skipped_names: list = None,
+                    error_items: list = None, elapsed_seconds: float = None) -> None:
     """
     把目前批次進度寫進 <root>/.progress.json，供App簡易模式那邊輪詢顯示進度用
     （App不用等整批跑完，也不用解析stdout，直接讀這個結構化檔案）。
     status: "running"、"done" 或 "stopped"（使用者主動按停止、目前這支完成後結束）。
     寫入失敗（例如沒有寫入權限）只印警告，不影響批次本身。
+
+    ok_names/skipped_names/error_items/elapsed_seconds 只在批次真正結束時
+    （done/stopped）才傳入，讓App結束畫面能顯示「哪些商品生成了、哪些是本來就有
+    影片被跳過、哪些失敗＋原因」的詳細清單，不是只有數字。跑到一半的中繼write_progress
+    呼叫不傳這幾個參數（維持None），避免每支影片都重複寫入整份清單造成不必要的I/O。
+    error_items內每筆是[name, 錯誤訊息第一行]，訊息本身可能很長（例如ffmpeg完整輸出），
+    只存第一行避免.progress.json檔案過度肥大。
     """
     progress_path = os.path.join(root, ".progress.json")
+    payload = {
+        "total": total,
+        "completed": completed,
+        "current": current_name,
+        "status": status,
+        "okCount": ok_count,
+        "skippedCount": skipped_count,
+        "errorCount": error_count,
+        "updatedAt": time.time()
+    }
+    if ok_names is not None:
+        payload["okNames"] = ok_names
+    if skipped_names is not None:
+        payload["skippedNames"] = skipped_names
+    if error_items is not None:
+        payload["errorItems"] = error_items
+    if elapsed_seconds is not None:
+        payload["elapsedSeconds"] = elapsed_seconds
     try:
         with open(progress_path, "w", encoding="utf-8") as f:
-            json.dump({
-                "total": total,
-                "completed": completed,
-                "current": current_name,
-                "status": status,
-                "okCount": ok_count,
-                "skippedCount": skipped_count,
-                "errorCount": error_count,
-                "updatedAt": time.time()
-            }, f, ensure_ascii=False)
+            json.dump(payload, f, ensure_ascii=False)
     except Exception as e:
         print(f"⚠ 寫入進度檔案失敗（{e}），不影響批次本身")
 
@@ -82,6 +101,35 @@ def find_product_folders(root: str) -> list:
     return folders
 
 
+def acquire_wake_lock() -> bool:
+    """
+    呼叫termux-wake-lock，讓Termux在批次生成期間不被系統省電策略（例如POCO/HyperOS
+    的「智慧限制後台執行」）強制砍掉。根因排查發現生成到一半被砍會留下缺moov atom的
+    殘缺output.mp4（不會噴例外、不會被察覺，只有實際播放才會發現壞掉）。過去這件事要
+    使用者自己記得手動下termux-wake-lock，現在改成腳本自己在開始生成時就做，不用
+    每次都靠使用者記得。裝置沒裝termux-api套件時這個指令會失敗，這裡只印警告不中斷
+    批次本身（沒wake lock仍然可以跑，只是失去這層保護）。
+    """
+    try:
+        result = subprocess.run(["termux-wake-lock"], capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            print("已取得termux-wake-lock，批次生成期間手機不會因省電策略中斷此行程")
+            return True
+        print(f"⚠ termux-wake-lock執行失敗（returncode={result.returncode}），繼續生成但不受保護：{result.stderr.strip()}")
+    except Exception as e:
+        print(f"⚠ 找不到termux-wake-lock指令或執行失敗（{e}），可能沒安裝termux-api套件"
+              "（pkg install termux-api），繼續生成但不受保護")
+    return False
+
+
+def release_wake_lock() -> None:
+    """批次結束（不管成功/停止/例外）都要釋放wake lock，避免手機之後一直被鎖著耗電。"""
+    try:
+        subprocess.run(["termux-wake-unlock"], capture_output=True, text=True, timeout=10)
+    except Exception:
+        pass
+
+
 def main():
     if len(sys.argv) not in (2, 3):
         print("用法：python batch_generate.py <CaptionQueue根目錄> [--force]")
@@ -106,6 +154,14 @@ def main():
     print(f"共找到 {len(folders)} 個商品資料夾{'（強制重跑已存在的影片）' if force else ''}")
     print("=" * 60)
 
+    acquire_wake_lock()
+    try:
+        run_batch(root, folders, force)
+    finally:
+        release_wake_lock()
+
+
+def run_batch(root: str, folders: list, force: bool) -> None:
     ok_list = []
     skipped_list = []
     error_list = []
@@ -143,13 +199,19 @@ def main():
         if check_stop_requested(root):
             print("\n收到停止指令，目前這支已完成，批次到此停止")
             write_progress(root, total, idx, "", "stopped",
-                            len(ok_list), len(skipped_list), len(error_list))
+                            len(ok_list), len(skipped_list), len(error_list),
+                            ok_names=ok_list, skipped_names=skipped_list,
+                            error_items=[[n, m.strip().splitlines()[-1] if m.strip() else "（無錯誤訊息）"] for n, m in error_list],
+                            elapsed_seconds=time.time() - start_time)
             stopped = True
             break
 
     if not stopped:
         write_progress(root, total, total, "", "done",
-                        len(ok_list), len(skipped_list), len(error_list))
+                        len(ok_list), len(skipped_list), len(error_list),
+                        ok_names=ok_list, skipped_names=skipped_list,
+                        error_items=[[n, m.strip().splitlines()[-1] if m.strip() else "（無錯誤訊息）"] for n, m in error_list],
+                        elapsed_seconds=time.time() - start_time)
 
     elapsed = time.time() - start_time
     print("\n" + "=" * 60)

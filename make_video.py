@@ -395,11 +395,45 @@ def update_meta_video_generated(folder: str, sentences: list = None, hashtags: l
         print(f"⚠ 回寫 meta.json 的 videoGeneratedAt/narrationText/hashtags 失敗（{e}），不影響影片本身生成結果")
 
 
+def is_valid_video(path: str) -> bool:
+    """
+    用ffprobe驗證output.mp4是不是完整可播放的檔案，不是只檢查「存不存在」。
+    背景由來：使用者實測發現Termux行程被系統（POCO/HyperOS省電策略）中途砍掉時，
+    ffmpeg會留下一個「檔案存在但沒寫完」的殘缺output.mp4（典型症狀是缺moov atom，
+    ffprobe會報"moov atom not found"），過去process_folder()只檢查檔案是否存在，
+    這種殘缺檔案會被誤判成「已生成過」永遠跳過、不會自動重新生成，只能靠使用者手動
+    發現播放失敗、手動刪除。這裡改用ffprobe實際探測：讀不到基本格式資訊（returncode
+    非0，或缺影像串流，或時長<=0）都視為無效檔案。逾時30秒視為異常也判定無效
+    （正常探測應該是瞬間完成的，逾時代表檔案本身有問題卡住ffprobe）。
+    """
+    if not os.path.isfile(path) or os.path.getsize(path) == 0:
+        return False
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-print_format", "json",
+             "-show_format", "-show_streams", path],
+            capture_output=True, text=True, timeout=30
+        )
+    except Exception:
+        return False
+    if result.returncode != 0:
+        return False
+    try:
+        data = json.loads(result.stdout)
+    except Exception:
+        return False
+    duration = float(data.get("format", {}).get("duration", 0) or 0)
+    has_video_stream = any(s.get("codec_type") == "video" for s in data.get("streams", []))
+    return duration > 0 and has_video_stream
+
+
 def process_folder(folder: str, force: bool = False) -> dict:
     """
     處理單一商品資料夾：生成影片。回傳結果字典，方便單支模式跟批次模式共用同一套邏輯。
     {"status": "ok"|"skipped"|"error", "message": str, "output_path": str}
-    force=False 時，如果 output.mp4 已存在就跳過（批次模式用來避免重複重跑已完成的影片）。
+    force=False 時，如果 output.mp4 已存在「且驗證完整」就跳過（批次模式用來避免重複
+    重跑已完成的影片）。如果檔案存在但驗證失敗（殘缺／損毀），視同不存在直接重新生成，
+    不用使用者手動介入刪除。
     """
     images = find_images(folder)
     if not images:
@@ -407,7 +441,10 @@ def process_folder(folder: str, force: bool = False) -> dict:
 
     output_path = os.path.join(folder, "output.mp4")
     if os.path.isfile(output_path) and not force:
-        return {"status": "skipped", "message": "output.mp4 已存在", "output_path": output_path}
+        if is_valid_video(output_path):
+            return {"status": "skipped", "message": "output.mp4 已存在", "output_path": output_path}
+        else:
+            print(f"→ 偵測到既有output.mp4無法通過ffprobe驗證（可能是上次生成中途被中斷的殘缺檔案），視為未生成、重新生成")
 
     if len(images) > MAX_IMAGES_IN_VIDEO:
         print(f"→ 資料夾有 {len(images)} 張圖，超過影片上限 {MAX_IMAGES_IN_VIDEO} 張，只取前 {MAX_IMAGES_IN_VIDEO} 張")
