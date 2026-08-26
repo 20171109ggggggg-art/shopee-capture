@@ -251,6 +251,10 @@ private fun CaptureScreen(context: Context, onBack: () -> Unit) {
 // 避免正常處理中的影片被誤判成卡住。
 private const val STALE_THRESHOLD_SECONDS = 360
 
+// 完成/停止畫面的名稱清單每類最多列出這麼多筆，避免單日量大（可能上百支）時
+// 文字塞爆整個畫面；超過的部分改用「…等其餘N支」摘要帶過。
+private const val DETAIL_LIST_MAX_ITEMS = 20
+
 /**
  * 判斷一筆.progress.json的內容是不是「卡住的舊資料」——status還是"running"，
  * 但updatedAt距離現在已經超過STALE_THRESHOLD_SECONDS沒更新過，代表寫入這份進度的
@@ -262,6 +266,43 @@ private fun isStaleProgress(p: TermuxRunner.BatchProgress?): Boolean {
     if (p == null || p.status != "running") return false
     val nowSeconds = System.currentTimeMillis() / 1000.0
     return (nowSeconds - p.updatedAt) > STALE_THRESHOLD_SECONDS
+}
+
+/**
+ * 把done/stopped狀態的批次結果組成詳細文字：標題行（成功/跳過/失敗支數）之後，
+ * 依序附上耗時、本次新生成的商品名稱清單、跳過（已有影片不重跑）的商品名稱清單、
+ * 失敗的商品名稱＋原因清單。讓使用者一眼看出「這次到底是重新生成了還是全部跳過」，
+ * 不用再靠猜的。每類清單超過DETAIL_LIST_MAX_ITEMS筆就截斷、改顯示還剩幾筆。
+ */
+private fun buildDetailedResultText(context: Context, headerText: String, p: TermuxRunner.BatchProgress): String {
+    val sb = StringBuilder(headerText)
+    p.elapsedSeconds?.let { elapsed ->
+        val minutes = (elapsed / 60).toInt()
+        val seconds = (elapsed % 60).toInt()
+        sb.append("\n").append(context.getString(R.string.simple_generate_elapsed, minutes, seconds))
+    }
+    fun appendSection(headerRes: Int, items: List<String>) {
+        if (items.isEmpty()) return
+        sb.append("\n\n").append(context.getString(headerRes, items.size))
+        items.take(DETAIL_LIST_MAX_ITEMS).forEach { sb.append("\n・").append(it) }
+        val remaining = items.size - DETAIL_LIST_MAX_ITEMS
+        if (remaining > 0) {
+            sb.append("\n").append(context.getString(R.string.simple_generate_list_more, remaining))
+        }
+    }
+    appendSection(R.string.simple_generate_ok_list_header, p.okNames)
+    appendSection(R.string.simple_generate_skipped_list_header, p.skippedNames)
+    if (p.errorItems.isNotEmpty()) {
+        sb.append("\n\n").append(context.getString(R.string.simple_generate_error_list_header, p.errorItems.size))
+        p.errorItems.take(DETAIL_LIST_MAX_ITEMS).forEach { (name, msg) ->
+            sb.append("\n・").append(name).append("：").append(msg)
+        }
+        val remaining = p.errorItems.size - DETAIL_LIST_MAX_ITEMS
+        if (remaining > 0) {
+            sb.append("\n").append(context.getString(R.string.simple_generate_list_more, remaining))
+        }
+    }
+    return sb.toString()
 }
 
 @Composable
@@ -300,6 +341,8 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
     // 直接把結果顯示出來，不會因為畫面重建就把「已經完成」的訊息憑空吃掉。
     // 如果status是"running"但updatedAt已經停在很久以前（行程被系統砍掉、沒能正常收尾
     // 寫入done/stopped），視為卡住的殘留資料，顯示提醒而不是照單全收讓畫面一直轉。
+    // done/stopped的結果文字改用buildDetailedResultText()組成詳細清單（本次新生成/跳過/
+    // 失敗各是哪些商品），不是只顯示三個數字。
     var resultText by remember {
         mutableStateOf(
             when {
@@ -307,13 +350,21 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                     R.string.simple_generate_stale,
                     initialProgress.completed, initialProgress.total, STALE_THRESHOLD_SECONDS / 60
                 )
-                initialProgress?.status == "done" -> context.getString(
-                    R.string.simple_generate_done,
-                    initialProgress.okCount, initialProgress.skippedCount, initialProgress.errorCount
+                initialProgress?.status == "done" -> buildDetailedResultText(
+                    context,
+                    context.getString(
+                        R.string.simple_generate_done,
+                        initialProgress.okCount, initialProgress.skippedCount, initialProgress.errorCount
+                    ),
+                    initialProgress
                 )
-                initialProgress?.status == "stopped" -> context.getString(
-                    R.string.simple_generate_stopped,
-                    initialProgress.okCount, initialProgress.skippedCount, initialProgress.errorCount
+                initialProgress?.status == "stopped" -> buildDetailedResultText(
+                    context,
+                    context.getString(
+                        R.string.simple_generate_stopped,
+                        initialProgress.okCount, initialProgress.skippedCount, initialProgress.errorCount
+                    ),
+                    initialProgress
                 )
                 else -> null
             }
@@ -334,15 +385,23 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                     stopRequested = false
                 }
                 p?.status == "done" -> {
-                    resultText = context.getString(
-                        R.string.simple_generate_done, p.okCount, p.skippedCount, p.errorCount
+                    resultText = buildDetailedResultText(
+                        context,
+                        context.getString(
+                            R.string.simple_generate_done, p.okCount, p.skippedCount, p.errorCount
+                        ),
+                        p
                     )
                     isRunning = false
                     stopRequested = false
                 }
                 p?.status == "stopped" -> {
-                    resultText = context.getString(
-                        R.string.simple_generate_stopped, p.okCount, p.skippedCount, p.errorCount
+                    resultText = buildDetailedResultText(
+                        context,
+                        context.getString(
+                            R.string.simple_generate_stopped, p.okCount, p.skippedCount, p.errorCount
+                        ),
+                        p
                     )
                     isRunning = false
                     stopRequested = false
@@ -354,7 +413,11 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
 
     Column(modifier = Modifier.fillMaxSize()) {
         SimpleTopBar(stringResource(R.string.simple_step2_title), onBack)
-        Column(modifier = Modifier.padding(horizontal = 20.dp)) {
+        Column(
+            modifier = Modifier
+                .padding(horizontal = 20.dp)
+                .verticalScroll(rememberScrollState())
+        ) {
             InstructionCard(
                 lines = listOf(
                     stringResource(R.string.simple_generate_instr_1),
@@ -604,6 +667,17 @@ private fun ReviewVideosScreen(context: Context, onBack: () -> Unit) {
                         isSelected = path in selectedPaths,
                         onPlay = {
                             try {
+                                // 使用者實測發現：影片如果第一次生成時曾經是殘缺檔案（例如中途被系統
+                                // 砍掉），即使後來偵測到並重新生成成功，手機的相簿/影片App仍可能對
+                                // 這個檔案路徑快取著舊的「播放失敗」狀態（同一個資料夾、同一個檔名
+                                // 原地覆蓋，快取鍵值沒變），導致底層位元組明明正常了，播放器卻還是
+                                // 顯示失敗——把同一支影片複製成新檔名再打開就能正常播放，證實了這是
+                                // 快取問題不是影片本身壞掉。這裡在打開播放器之前，主動呼叫
+                                // MediaScannerConnection.scanFile()強制系統重新掃描這個路徑的媒體
+                                // 資訊，盡量打破可能存在的舊快取，不用再靠使用者手動複製成新檔名繞過。
+                                android.media.MediaScannerConnection.scanFile(
+                                    context, arrayOf(video.videoFile.absolutePath), arrayOf("video/mp4"), null
+                                )
                                 val uri: Uri = FileProvider.getUriForFile(
                                     context,
                                     "com.tagcopy.shopeecapture.fileprovider",
