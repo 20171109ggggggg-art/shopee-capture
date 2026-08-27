@@ -2278,7 +2278,11 @@ class ShopeeAccessibilityService : AccessibilityService() {
         var found: AccessibilityNodeInfo? = null
         fun walk(node: AccessibilityNodeInfo?, depth: Int) {
             if (node == null || found != null || depth > 25) return
-            if (node.isClickable && subtreeContainsDesc(node, 10)) {
+            // 【2026-08-28修正】原本這裡誤傳10當起始深度，而subtreeContainsDesc本身又用
+            // depth>10當上限，兩者疊加導致只檢查了節點自己一層就被擋下、根本沒往子節點找，
+            // 這才是FB搜尋結果卡片一直「找不到」的真正原因（實測確認蝦皮購物desc是子節點沒錯，
+            // 卡片本身沒有desc）。改成從0開始算，才能真的往下找到10層深的子孫節點。
+            if (node.isClickable && subtreeContainsDesc(node, 0)) {
                 found = node
                 return
             }
