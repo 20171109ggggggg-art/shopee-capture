@@ -327,7 +327,7 @@ def pick_features(title_features, tags, max_count=2):
     return result
 
 
-def build_narration_sentences(folder: str) -> list:
+def build_narration_sentences(folder: str, sentence_count_override: int = None) -> list:
     """
     主要對外函式：讀 caption.txt + meta.json + 圖片張數，回傳規則模板產生的旁白句子清單
     （list，每個元素是一句話，不含句號）。只講商品類別（例如「監視器」「清淨機」），
@@ -335,6 +335,11 @@ def build_narration_sentences(folder: str) -> list:
     商品旁白太短、配不上影片長度。
     caption.txt 抽取不到有效內容時，回傳空 list——呼叫端（make_video.py）看到空 list
     就會自動退回無聲版本，不會硬套一個空白旁白。
+
+    sentence_count_override：指定句數而不是用determine_sentence_count()依圖片張數
+    自動判斷，跟ai_narration.py的generate_ai_sentences()同樣的用途——語音長度不在
+    目標範圍內時，make_video.py會拿這個參數重新要求多/少一句，取代舊版調整TTS語速
+    硬湊時間的做法。實際能不能真的多湊出一句，仍受限於賣點詞夠不夠用（見下方迴圈）。
     """
     caption = load_caption(folder)
     if not caption:
@@ -368,7 +373,7 @@ def build_narration_sentences(folder: str) -> list:
         return [template.format(category=category)]
 
     num_images = count_images(folder)
-    sentence_count = determine_sentence_count(num_images)
+    sentence_count = sentence_count_override if sentence_count_override is not None else determine_sentence_count(num_images)
 
     # 追蹤整段旁白已經用過的賣點詞（跨句），詞用完就停止生成新句子，
     # 不再循環重複使用——先前版本用itertools.cycle循環，賣點詞很少時

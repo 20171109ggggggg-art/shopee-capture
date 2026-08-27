@@ -239,13 +239,18 @@ def parse_sentences(raw_text: str, expected_count: int) -> tuple:
     return sentences, hashtags[:5]
 
 
-def generate_ai_sentences(folder: str):
+def generate_ai_sentences(folder: str, sentence_count_override: int = None):
     """
     主要對外函式：讀AI設定檔＋商品資料，呼叫對應供應商API生成旁白句子清單與5個hashtag。
     任何一步失敗（沒設定檔/沒套件/連線失敗/回應格式不對/句子數量不足）都回傳 (None, None)，
     呼叫端看到 None 就會自動改用規則模板，不會中斷。
     回傳格式：(sentences: list, hashtags: list)，hashtags 若AI沒給或解析失敗會是空list
     （不是None——句子生成成功但hashtag缺漏時，呼叫端仍可採用AI句子＋退回預設hashtag池）。
+
+    sentence_count_override：指定句數而不是用determine_ai_sentence_count()依圖片張數
+    自動判斷。給make_video.py在語音長度不在目標範圍內時，重新要求AI多寫/少寫一句用，
+    取代舊版靠調整TTS語速硬湊時間的做法——語速永遠維持正常，改用調整文案長度來配合
+    影片長度目標區間。
     """
     config = load_ai_config()
     if not config:
@@ -263,7 +268,7 @@ def generate_ai_sentences(folder: str):
     region = load_region(folder)
     product_info = extract_product_info(caption, region)
     num_images = count_images(folder)
-    num_sentences = determine_ai_sentence_count(num_images)
+    num_sentences = sentence_count_override if sentence_count_override is not None else determine_ai_sentence_count(num_images)
 
     prompt = build_prompt(product_info, num_sentences, region)
     provider = config["provider"]

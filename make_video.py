@@ -70,13 +70,15 @@ VOICE_MAP = {
 }
 
 # 影片總長度目標區間：語音（進而影片）長度會盡量落在這個範圍內。
-# 第一次用正常語速合成，若語音總長度超出這個範圍，才用 Edge TTS 的 rate 參數
-# 調整語速重新合成一次（不是只靠拉長/壓縮圖片停留時間，語速本身也會跟著調）。
+# 舊版做法是語音長度超出範圍就用Edge TTS的rate參數調整語速重新合成，但實測發現
+# 圖片張數少、文案內容本來就短的商品，語速被迫壓到-30%上限還是不夠15秒，
+# 聽起來異常緩慢、不自然。改成語速永遠維持正常（不調整），語音長度不在範圍內時
+# 改回頭重新呼叫文案產生器（AI或規則模板）要求多寫/少寫一句，用文案長度而不是
+# 語速去配合影片長度目標，只重試一次（避免無限迴圈、AI版還會多花一次API成本）。
 TARGET_MIN_DURATION_SEC = 15.0
 TARGET_MAX_DURATION_SEC = 18.0
-TARGET_MID_DURATION_SEC = (TARGET_MIN_DURATION_SEC + TARGET_MAX_DURATION_SEC) / 2
-MAX_RATE_SPEEDUP_PERCENT = 50    # 語速最多加快到+50%，避免快到聽不清楚
-MAX_RATE_SLOWDOWN_PERCENT = -30  # 語速最多放慢到-30%，避免慢到像拖稿
+MAX_SENTENCE_COUNT = 4
+MIN_SENTENCE_COUNT = 1
 
 
 def strip_icc_profiles(images: list[str], work_dir: str) -> list[str]:
@@ -179,8 +181,9 @@ async def _synthesize_async(text: str, voice: str, out_path: str, rate: str = "+
 def synthesize_sentences(sentences: list, region: str, tmp_dir: str, rate: str = "+0%"):
     """
     逐句呼叫 Edge TTS 合成語音（分開存檔，才能量出每句實際秒數，用來對齊字幕時間）。
-    rate 參數可調整語速（如 "+20%" 加快、"-15%" 放慢），用來讓語音總長度落在
-    目標區間（見 TARGET_MIN/MAX_DURATION_SEC），不是只靠拉伸圖片停留時間單方面配合。
+    rate 參數可調整語速（如 "+20%" 加快、"-15%" 放慢）——目前make_video.py不會再
+    傳入非"+0%"的值（語速永遠維持正常，語音長度改用調整文案句數配合目標區間，
+    見 TARGET_MIN/MAX_DURATION_SEC），保留這個參數只是維持函式彈性、方便單獨測試。
     任何一句失敗就整段放棄（回傳 None），呼叫端會退回完全無聲、無字幕的版本——
     不追求部分成功，避免合成到一半、字幕時間對不齊的半殘版本。
     回傳：[{"text":..., "path":..., "duration":...}, ...] 或 None
@@ -500,10 +503,12 @@ def process_folder(folder: str, force: bool = False) -> dict:
 
     sentences = None
     hashtags = None
+    used_ai = False
     if generate_ai_sentences:
         try:
             sentences, hashtags = generate_ai_sentences(folder)
             if sentences:
+                used_ai = True
                 print(f"→ AI文案生成成功（{len(sentences)}句）：")
         except Exception as e:
             print(f"⚠ AI文案生成發生未預期錯誤（{e.__class__.__name__}），改用規則模板")
@@ -533,22 +538,46 @@ def process_folder(folder: str, force: bool = False) -> dict:
                 total_audio_duration = sum(seg["duration"] for seg in audio_segments)
                 print(f"→ 語音總時長：{total_audio_duration:.1f} 秒（{len(audio_segments)}句，正常語速）")
 
-                # 影片長度目標區間15~18秒：超出範圍就調整語速重新合成一次，
-                # 不是只靠拉伸/壓縮圖片停留時間單方面配合語音長度。
+                # 語音長度不在目標範圍內時，語速永遠維持正常，改回頭重新呼叫文案產生器
+                # 要求多寫/少寫一句，只重試一次（不無限循環湊時間，重試後不管有沒有真的
+                # 落在範圍內都直接採用，避免無限追求完美拖慢批次速度、AI版還會一直燒額度）。
                 if not (TARGET_MIN_DURATION_SEC <= total_audio_duration <= TARGET_MAX_DURATION_SEC):
-                    raw_rate_percent = (total_audio_duration / TARGET_MID_DURATION_SEC - 1) * 100
-                    rate_percent = round(max(MAX_RATE_SLOWDOWN_PERCENT, min(MAX_RATE_SPEEDUP_PERCENT, raw_rate_percent)))
-                    if rate_percent != 0:
-                        rate_str = f"{'+' if rate_percent >= 0 else ''}{rate_percent}%"
-                        print(f"→ 語音總長度超出目標範圍（{TARGET_MIN_DURATION_SEC:.0f}~{TARGET_MAX_DURATION_SEC:.0f}秒），"
-                              f"調整語速 {rate_str} 重新合成…")
-                        adjusted = synthesize_sentences(sentences, region, tmp_dir, rate=rate_str)
-                        if adjusted:
-                            audio_segments = adjusted
-                            total_audio_duration = sum(seg["duration"] for seg in audio_segments)
-                            print(f"→ 調整後語音總時長：{total_audio_duration:.1f} 秒")
+                    direction = "太短" if total_audio_duration < TARGET_MIN_DURATION_SEC else "太長"
+                    delta = 1 if total_audio_duration < TARGET_MIN_DURATION_SEC else -1
+                    new_count = max(MIN_SENTENCE_COUNT, min(MAX_SENTENCE_COUNT, len(sentences) + delta))
+                    if new_count != len(sentences):
+                        print(f"→ 語音總長度{direction}（目標{TARGET_MIN_DURATION_SEC:.0f}~{TARGET_MAX_DURATION_SEC:.0f}秒，"
+                              f"實際{total_audio_duration:.1f}秒），改為{new_count}句重新產生文案…")
+                        retry_sentences = None
+                        retry_hashtags = None
+                        if used_ai and generate_ai_sentences:
+                            try:
+                                retry_sentences, retry_hashtags = generate_ai_sentences(
+                                    folder, sentence_count_override=new_count
+                                )
+                            except Exception as e:
+                                print(f"⚠ 重新呼叫AI文案發生未預期錯誤（{e.__class__.__name__}），維持原本文案")
+                        elif not used_ai:
+                            retry_sentences = build_narration_sentences(folder, sentence_count_override=new_count)
+
+                        if retry_sentences and len(retry_sentences) != len(sentences):
+                            print(f"→ 重新產生文案成功（{len(retry_sentences)}句）：")
+                            for s in retry_sentences:
+                                print(f"    {s}")
+                            retry_audio = synthesize_sentences(retry_sentences, region, tmp_dir)
+                            if retry_audio:
+                                sentences = retry_sentences
+                                if retry_hashtags:
+                                    hashtags = retry_hashtags
+                                audio_segments = retry_audio
+                                total_audio_duration = sum(seg["duration"] for seg in audio_segments)
+                                print(f"→ 重新合成後語音總時長：{total_audio_duration:.1f} 秒")
+                            else:
+                                print("⚠ 重新合成語音失敗，維持原本文案與語音")
                         else:
-                            print("⚠ 調整語速後重新合成失敗，維持原本正常語速版本")
+                            print("→ 沒能拿到不同句數的文案（可能是賣點詞不夠或已達句數上限/下限），維持原本文案與語音")
+                    else:
+                        print(f"→ 語音總長度{direction}，但句數已經在{MIN_SENTENCE_COUNT}~{MAX_SENTENCE_COUNT}句的邊界，不重試")
 
                 subtitle_segments = []
                 t = 0.0
