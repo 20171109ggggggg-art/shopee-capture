@@ -138,6 +138,17 @@ class FloatingButtonService : Service() {
             setPadding(36, 24, 36, 24)
         }
 
+        // FB上架自動化按鈕（階段3，測試階段固定只跑1支）。使用前提：目前畫面必須已經在
+        // FB App「聯盟合作→商品」分頁（畫面上看得到「搜尋商品、品牌或連結」搜尋框），
+        // 這段導航還沒自動化，需要先手動切過去。用FB品牌藍跟其他按鈕做視覺區分。
+        val fbUploadButton = TextView(this).apply {
+            text = getString(R.string.btn_fb_upload)
+            setBackgroundColor(0xFF1877F2.toInt())
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 14f
+            setPadding(36, 24, 36, 24)
+        }
+
         // 關閉按鈕：讓使用者不用特地下拉通知欄找停止動作，直接在懸浮視窗上就能收起整個服務。
         // 跟通知欄的停止按鈕（ACTION_STOP）共用同一套stopSelf()邏輯。
         val closeButton = TextView(this).apply {
@@ -153,6 +164,7 @@ class FloatingButtonService : Service() {
         container.addView(detectButton)
         container.addView(calibrateButton)
         container.addView(uploadButton)
+        container.addView(fbUploadButton)
         container.addView(closeButton)
 
         val layoutFlag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -206,6 +218,7 @@ class FloatingButtonService : Service() {
                             detectButton -> onDetectButtonTapped()
                             calibrateButton -> toggleCoordinateCalibrationOverlay()
                             uploadButton -> onUploadButtonTapped(uploadButton)
+                            fbUploadButton -> onFbUploadButtonTapped(fbUploadButton)
                             closeButton -> stopSelf()
                         }
                     }
@@ -219,6 +232,7 @@ class FloatingButtonService : Service() {
         detectButton.setOnTouchListener(dragListener)
         calibrateButton.setOnTouchListener(dragListener)
         uploadButton.setOnTouchListener(dragListener)
+        fbUploadButton.setOnTouchListener(dragListener)
         closeButton.setOnTouchListener(dragListener)
 
         floatingView = container
@@ -429,6 +443,57 @@ class FloatingButtonService : Service() {
                     showAlertNotification(
                         getString(R.string.alert_title_upload_finished),
                         getString(R.string.alert_msg_upload_finished, event.successCount, event.failCount, reasonText)
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * FB上架自動化按鈕（階段3）。按下前提：目前畫面必須已經在FB App「聯盟合作→商品」
+     * 分頁（畫面上看得到「搜尋商品、品牌或連結」搜尋框），這段導航目前還沒自動化，
+     * 需要先手動切過去。【測試階段】固定只處理1支，全程盯著畫面觀察，
+     * 跑順了之後再考慮開放調整支數（比照UploadAutomationPrefs的做法）。
+     */
+    private fun onFbUploadButtonTapped(fbUploadButton: TextView) {
+        val service = ShopeeAccessibilityService.instance
+        if (service == null) {
+            Toast.makeText(this, getString(R.string.toast_upload_need_accessibility), Toast.LENGTH_LONG).show()
+            return
+        }
+
+        if (service.isFbUploadAutomationRunning()) {
+            service.stopFbUploadAutomation()
+            fbUploadButton.text = getString(R.string.btn_fb_upload)
+            Toast.makeText(this, getString(R.string.toast_fb_upload_stopped), Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val fixedTargetCount = 1
+        fbUploadButton.text = "0/$fixedTargetCount"
+        Toast.makeText(this, getString(R.string.toast_fb_upload_started), Toast.LENGTH_SHORT).show()
+
+        service.startFbUploadAutomation(fixedTargetCount) { event ->
+            when (event) {
+                is UploadEvent.Log -> {
+                    if (event.message.startsWith("✓") || event.message.startsWith("✗")) {
+                        Toast.makeText(this, event.message, Toast.LENGTH_SHORT).show()
+                    }
+                }
+                is UploadEvent.Progress -> {
+                    fbUploadButton.text = "${event.current}/${event.total}"
+                }
+                is UploadEvent.Finished -> {
+                    fbUploadButton.text = getString(R.string.btn_fb_upload)
+                    val reasonText = when (event.reason) {
+                        UploadFinishReason.ALL_DONE -> getString(R.string.upload_finish_reason_all_done)
+                        UploadFinishReason.MAX_COUNT_REACHED -> getString(R.string.upload_finish_reason_max_count)
+                        UploadFinishReason.NO_CANDIDATES -> getString(R.string.upload_finish_reason_no_candidates)
+                        UploadFinishReason.STOPPED_ON_FAILURE -> getString(R.string.upload_finish_reason_stopped_on_failure)
+                    }
+                    showAlertNotification(
+                        getString(R.string.alert_title_fb_upload_finished),
+                        getString(R.string.alert_msg_fb_upload_finished, event.successCount, event.failCount, reasonText)
                     )
                 }
             }

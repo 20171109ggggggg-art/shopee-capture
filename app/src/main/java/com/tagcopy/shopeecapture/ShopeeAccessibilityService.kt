@@ -1401,6 +1401,27 @@ class ShopeeAccessibilityService : AccessibilityService() {
         scanFbUploadCandidates()
     }
 
+    /**
+     * 【階段3測試用，暫時加的】只處理1筆FB候選商品，方便小範圍實測整套流程。
+     * 呼叫前提跟startFbUploadAutomation()一樣：畫面要先在FB「聯盟合作→商品」畫面。
+     * 第一次測試務必全程盯著畫面，任何一步失敗都會停下來、詳細原因看debug log。
+     */
+    fun testFbUploadAutomation() {
+        if (isFbUploadAutomationRunning()) {
+            appendDebugLog("  → 【FB上架自動化測試】已經在執行中，本次觸發略過")
+            return
+        }
+        startFbUploadAutomation(1) { event ->
+            when (event) {
+                is UploadEvent.Log -> appendDebugLog("  → 【FB上架自動化測試】${event.message}")
+                is UploadEvent.Progress -> appendDebugLog("  → 【FB上架自動化測試】進度 ${event.current}/${event.total}")
+                is UploadEvent.Finished -> appendDebugLog(
+                    "  → 【FB上架自動化測試】結束：成功${event.successCount}／失敗${event.failCount}，原因=${event.reason}"
+                )
+            }
+        }
+    }
+
     // ===================== 階段2第3塊：上架自動化本體 =====================
 
     private var uploadJob: Job? = null
@@ -1915,6 +1936,357 @@ class ShopeeAccessibilityService : AccessibilityService() {
         } else {
             appendDebugLog("  → [返回清單] 導航完成但畫面標題不符預期，請確認目前畫面")
         }
+    }
+
+    // ===================== 階段3：FB上架自動化本體 =====================
+    // 根據使用者2026-08-27手動測試10份節點樹dump重建的實際流程：
+    // FB App「聯盟合作」分頁→「商品」子分頁（有「搜尋商品、品牌或連結」搜尋框）
+    // →貼上商品名稱→點搜尋結果商品卡→商品詳情頁→「建立貼文」→「加到新Reel」
+    // →FB Reel錄影介面→左下角「圖庫」→選相簿影片（用MediaStore時間戳記讓目標影片
+    // 排在最前面「項目1」，跟階段2選片邏輯同一招）→影片編輯預覽畫面「下一步」
+    // →「Reel設定」畫面（商品連結/商品卡已自動帶入，不用手動點「新增商品」）→填文案
+    // →捲動找「立即分享」→點擊發佈。
+    // 【2026-08-27修正】原本猜貼「商品連結」去搜尋，使用者實測發現貼連結、貼蝦皮
+    // 「複製資訊」文案都搜不到，只有貼「商品名稱本身」搜得到（已改用candidate.productName）。
+    // 【尚未實測確認的部分，第一次跑務必先maxCount=1小心觀察】：貼上商品名稱後搜尋結果
+    // 卡片的精確點擊目標——目前用「同時符合『蝦皮購物』desc與價格/佣金文字」的卡片
+    // 外層可點擊節點，是根據使用者提供的瀏覽畫面（未實際搜尋、純瀏覽情境）節點結構推測，
+    // 精準搜尋後版面可能不同，第一次執行務必全程盯著畫面，log裡任何一步找不到
+    // 節點都會停下來、不會亂點。
+
+    private var fbUploadJob: Job? = null
+
+    fun isFbUploadAutomationRunning(): Boolean = fbUploadJob?.isActive == true
+
+    /**
+     * 啟動FB上架自動化。呼叫時機的前提：FB App目前畫面必須已經在「聯盟合作」分頁的
+     * 「商品」子分頁（畫面上看得到「搜尋商品、品牌或連結」搜尋框），這段導航
+     * （開啟FB App→我的帳號→營利→聯盟合作→商品）目前還沒自動化，先手動切過去。
+     */
+    fun startFbUploadAutomation(maxCount: Int, onEvent: (UploadEvent) -> Unit) {
+        if (isFbUploadAutomationRunning()) return
+        fbUploadJob = serviceScope.launch {
+            try {
+                fbUploadAutomationLoop(maxCount, onEvent)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                onEvent(UploadEvent.Log("已停止FB上架自動化"))
+            } catch (e: Exception) {
+                onEvent(UploadEvent.Log("發生未預期錯誤：${e.javaClass.simpleName} ${e.message}"))
+            }
+        }
+    }
+
+    fun stopFbUploadAutomation() {
+        fbUploadJob?.cancel()
+        fbUploadJob = null
+    }
+
+    private suspend fun fbUploadAutomationLoop(maxCount: Int, onEvent: (UploadEvent) -> Unit) {
+        appendDebugLog("===== 開始FB上架自動化，本次上限 $maxCount 支 =====")
+        onEvent(UploadEvent.Log("開始FB上架自動化，本次上限 $maxCount 支"))
+
+        val candidates = scanFbUploadCandidates()
+        if (candidates.isEmpty()) {
+            appendDebugLog("  → FB上架自動化：沒有找到任何候選商品，結束")
+            onEvent(UploadEvent.Finished(0, 0, UploadFinishReason.NO_CANDIDATES))
+            return
+        }
+        appendDebugLog("  → FB上架自動化：共 ${candidates.size} 筆候選，本次最多處理 $maxCount 支")
+
+        var successCount = 0
+        var failCount = 0
+        var reason = UploadFinishReason.ALL_DONE
+
+        for ((index, candidate) in candidates.withIndex()) {
+            if (successCount >= maxCount) {
+                reason = UploadFinishReason.MAX_COUNT_REACHED
+                break
+            }
+            onEvent(UploadEvent.Progress(index + 1, candidates.size))
+            appendDebugLog("  → [FB ${index + 1}/${candidates.size}] 開始處理：${candidate.folder.name}")
+            onEvent(UploadEvent.Log("FB處理中：${candidate.folder.name}"))
+
+            // 選片前先把目標影片登記進媒體庫（複製暫時副本，時間戳記最新），
+            // 這樣稍後在FB相簿選片畫面它才會排在最前面「項目1」。跟階段2選片邏輯同一招。
+            registerVideoInMediaStore(candidate.videoFile)
+
+            val ok = try {
+                processOneFbUploadCandidate(candidate)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                appendDebugLog("  → [FB ${candidate.folder.name}] 發生例外：${e.javaClass.simpleName} ${e.message}")
+                false
+            } finally {
+                cleanupTempUploadCopy()
+            }
+
+            if (ok) {
+                successCount++
+                markFbPosted(candidate.folder)
+                appendDebugLog("  → [FB ${candidate.folder.name}] FB上架成功，已標記 fbPosted=true")
+                onEvent(UploadEvent.Log("✓ FB上架成功：${candidate.folder.name}"))
+                deleteFolderIfFullyPosted(candidate.folder)
+            } else {
+                failCount++
+                appendDebugLog("  → [FB ${candidate.folder.name}] FB上架失敗，停止本次批次")
+                onEvent(UploadEvent.Log("✗ FB上架失敗：${candidate.folder.name}，停止本次批次"))
+                reason = UploadFinishReason.STOPPED_ON_FAILURE
+                break
+            }
+
+            if (successCount < maxCount) {
+                delay(Random.nextLong(9000, 15000))
+            }
+        }
+
+        appendDebugLog("===== FB上架自動化結束：成功 $successCount／失敗 $failCount，原因=$reason =====")
+        onEvent(UploadEvent.Finished(successCount, failCount, reason))
+    }
+
+    /**
+     * 處理一筆候選商品的完整FB上架流程。任何一步逾時或失敗就回傳false並記錄詳細原因，
+     * 不拋例外（呼叫端已包try/catch保護整批）。
+     */
+    private suspend fun processOneFbUploadCandidate(candidate: UploadCandidate): Boolean {
+        // 0. 確認目前在FB「聯盟合作／商品」畫面（找得到搜尋框，且畫面上有「聯盟合作」字樣）
+        var root = rootInActiveWindow ?: run {
+            appendDebugLog("  → [FB] 讀不到目前畫面"); return false
+        }
+        if (findTextContaining(root, "聯盟合作") == null) {
+            appendDebugLog("  → [FB] 目前畫面找不到「聯盟合作」字樣，請先手動導航到FB「聯盟合作→商品」畫面再啟動")
+            return false
+        }
+        val searchBox = findSearchBoxNode(root)
+        if (searchBox == null) {
+            appendDebugLog("  → [FB] 找不到搜尋框（搜尋商品、品牌或連結），請確認目前在「商品」子分頁")
+            return false
+        }
+
+        // 1. 貼上商品名稱到搜尋框
+        // 【2026-08-27修正】原本貼商品連結(promoLink)去搜尋，使用者實測發現FB的
+        // 「依商品連結搜尋」貼連結搜不到、貼蝦皮「複製資訊」文案內容也搜不到，
+        // 唯一搜得到的是「商品名稱本身」（螢幕截圖圈起來測試確認）。改用candidate.productName。
+        if (candidate.productName.isBlank()) {
+            appendDebugLog("  → [FB] 這筆候選商品沒有商品名稱(productName為空)，無法用名稱搜尋，跳過")
+            return false
+        }
+        val searchBundle = android.os.Bundle().apply {
+            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, candidate.productName)
+        }
+        searchBox.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, searchBundle)
+        appendDebugLog("  → [FB] 已貼上商品名稱到搜尋框：${candidate.productName}")
+        delay(2200)
+
+        // 2. 點搜尋結果的商品卡（【未完全確認】找同時符合「有可點擊」+「子節點desc含蝦皮購物」
+        // 的最外層卡片節點；貼連結後理論上應該只會出現這一件商品的結果）
+        root = rootInActiveWindow ?: run {
+            appendDebugLog("  → [FB] 貼上連結後讀不到畫面"); return false
+        }
+        val resultCard = findClickableAncestorContainingDesc(root, "蝦皮購物")
+        if (resultCard == null) {
+            appendDebugLog("  → [FB] 貼上連結後找不到搜尋結果商品卡，請確認畫面實際狀態（可能連結格式不符或還在載入）")
+            return false
+        }
+        if (!clickNodeBestEffort(resultCard)) {
+            appendDebugLog("  → [FB] 點擊搜尋結果商品卡失敗"); return false
+        }
+        delay(1800)
+
+        // 3. 等商品詳情頁出現（找「建立貼文」按鈕）
+        if (!waitForAnyText(listOf("建立貼文"), 4000)) {
+            appendDebugLog("  → [FB] 等不到商品詳情頁「建立貼文」按鈕"); return false
+        }
+        delay(600)
+        root = rootInActiveWindow ?: return false
+        val createPostButton = findNodeByTexts(root, listOf("建立貼文"))
+        if (createPostButton == null || !clickNodeBestEffort(createPostButton)) {
+            appendDebugLog("  → [FB] 找不到或點擊「建立貼文」失敗"); return false
+        }
+        delay(1200)
+
+        // 4. 等「加到新Reel／加到新貼文」選單，點「加到新Reel」
+        if (!waitForAnyText(listOf("加到新 Reel", "加到新Reel"), 3000)) {
+            appendDebugLog("  → [FB] 等不到「加到新Reel」選單"); return false
+        }
+        root = rootInActiveWindow ?: return false
+        val addToReelButton = findNodeByTexts(root, listOf("加到新 Reel", "加到新Reel"))
+        if (addToReelButton == null || !clickNodeBestEffort(addToReelButton)) {
+            appendDebugLog("  → [FB] 找不到或點擊「加到新Reel」失敗"); return false
+        }
+        delay(2500)
+
+        // 5. 等Reel錄影介面，點左下角「圖庫」
+        if (!waitForAnyText(listOf("圖庫"), 5000)) {
+            appendDebugLog("  → [FB] 等不到Reel錄影介面「圖庫」按鈕"); return false
+        }
+        delay(500)
+        root = rootInActiveWindow ?: return false
+        val galleryButton = findNodeByTexts(root, listOf("圖庫"))
+        if (galleryButton == null || !clickNodeBestEffort(galleryButton)) {
+            appendDebugLog("  → [FB] 找不到或點擊「圖庫」失敗"); return false
+        }
+        delay(1500)
+
+        // 6. 等相簿選片畫面，點「項目1」（最近登記進媒體庫、時間戳記最新的就是目標影片）
+        if (!waitForAnyText(listOf("建立 Reel", "項目1"), 4000)) {
+            appendDebugLog("  → [FB] 等不到相簿選片畫面"); return false
+        }
+        delay(500)
+        root = rootInActiveWindow ?: return false
+        val firstVideoItem = findNodeByDescContaining(root, "項目1，拍攝於")
+        if (firstVideoItem == null || !clickNodeBestEffort(firstVideoItem)) {
+            appendDebugLog("  → [FB] 找不到或點擊相簿第一個影片項目失敗"); return false
+        }
+        delay(1800)
+
+        // 7. 等影片編輯預覽畫面，點「下一步」
+        if (!waitForAnyText(listOf("下一步"), 5000)) {
+            appendDebugLog("  → [FB] 等不到影片編輯預覽畫面「下一步」"); return false
+        }
+        delay(600)
+        root = rootInActiveWindow ?: return false
+        val editorNextButton = findNodeByTexts(root, listOf("下一步"))
+        if (editorNextButton == null || !clickNodeBestEffort(editorNextButton)) {
+            appendDebugLog("  → [FB] 找不到或點擊影片編輯預覽「下一步」失敗"); return false
+        }
+        delay(2200)
+
+        // 8. 等「Reel設定」畫面
+        if (!waitForAnyText(listOf("Reel 設定", "Reel設定"), 4000)) {
+            appendDebugLog("  → [FB] 等不到「Reel設定」畫面"); return false
+        }
+        delay(1200)
+
+        // 8b. 若跳出「已新增商品連結」提示橫幅，點「關閉」讓畫面乾淨（不影響商品已自動帶入的結果）
+        root = rootInActiveWindow ?: return false
+        findTextContaining(root, "已新增商品連結")?.let {
+            val closeBtn = findNodeByTexts(root, listOf("關閉"))
+            if (closeBtn != null) {
+                clickNodeBestEffort(closeBtn)
+                appendDebugLog("  → [FB] 已關閉「已新增商品連結」提示橫幅")
+                delay(600)
+            }
+        }
+
+        // 9. 填文案（沿用跟蝦皮短影音同一套「黃金3秒/痛點/導購」文案組裝邏輯）
+        root = rootInActiveWindow ?: return false
+        val captionInput = findSearchBoxNode(root)
+        if (captionInput == null) {
+            appendDebugLog("  → [FB] 找不到文案輸入框"); return false
+        }
+        val fbCaption = buildShortVideoCaption(candidate)
+        val captionBundle = android.os.Bundle().apply {
+            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, fbCaption)
+        }
+        captionInput.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, captionBundle)
+        appendDebugLog("  → [FB] 已填入文案（長度=${fbCaption.length}字）")
+        delay(1500)
+        captionInput.performAction(AccessibilityNodeInfo.ACTION_CLEAR_FOCUS)
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
+        imm?.hideSoftInputFromWindow(null, 0)
+        delay(1000)
+
+        // 10. 往下捲動找「新增 AI 標籤」開關並開啟（跟蝦皮流程的「AI生成影片標記」對應，
+        // 使用者要求跟蝦皮一樣開啟。這顆開關跟蝦皮那幾顆自訂繪製的開關不同，節點樹裡有
+        // 正常的[可勾選]屬性、本身就是可點擊節點，不用像蝦皮那樣用座標點擊法繞過）。
+        var aiTagToggle: AccessibilityNodeInfo? = null
+        for (attempt in 1..4) {
+            root = rootInActiveWindow ?: return false
+            aiTagToggle = findNodeByDescContaining(root, "新增 AI 標籤")
+            if (aiTagToggle != null) break
+            appendDebugLog("  → [FB] 第${attempt}次找不到「新增AI標籤」開關，往下滑動後重試")
+            performScrollDown()
+            delay(700)
+        }
+        if (aiTagToggle == null) {
+            appendDebugLog("  → [FB] 捲動4次後仍找不到「新增AI標籤」開關，跳過不開啟（不當作整體失敗）")
+        } else {
+            val alreadyChecked = aiTagToggle.isChecked
+            if (alreadyChecked) {
+                appendDebugLog("  → [FB] 「新增AI標籤」開關本來就是開啟狀態，不用再點")
+            } else if (clickNodeBestEffort(aiTagToggle)) {
+                appendDebugLog("  → [FB] 已點擊開啟「新增AI標籤」開關")
+            } else {
+                appendDebugLog("  → [FB] 找到「新增AI標籤」開關但點擊失敗，跳過不開啟（不當作整體失敗）")
+            }
+            delay(900)
+        }
+
+        // 11. 往下捲動，找「立即分享」按鈕（畫面較長，不一定在可視範圍內）
+        var shareButton: AccessibilityNodeInfo? = null
+        for (attempt in 1..4) {
+            root = rootInActiveWindow ?: return false
+            shareButton = findNodeByTexts(root, listOf("立即分享"))
+            if (shareButton != null) break
+            appendDebugLog("  → [FB] 第${attempt}次找不到「立即分享」，往下滑動後重試")
+            performScrollDown()
+            delay(700)
+        }
+        if (shareButton == null) {
+            appendDebugLog("  → [FB] 捲動4次後仍找不到「立即分享」按鈕"); return false
+        }
+        if (!clickNodeBestEffort(shareButton)) {
+            appendDebugLog("  → [FB] 點擊「立即分享」失敗"); return false
+        }
+
+        // 12. 判定成功：按下分享後，畫面上不再有「Reel設定」標題
+        delay(4500)
+        val stillOnSettingsScreen = rootInActiveWindow?.let { findTextContaining(it, "Reel 設定") != null || findTextContaining(it, "Reel設定") != null } == true
+        if (stillOnSettingsScreen) {
+            appendDebugLog("  → [FB] 按下分享後仍停在「Reel設定」畫面，判定失敗")
+            return false
+        }
+
+        appendDebugLog("  → [FB] 發佈完成，尚未自動導航回「聯盟合作」搜尋畫面，下一筆需要手動導航回去（待之後補上自動導航）")
+        return true
+    }
+
+    /**
+     * 在節點樹裡找「可點擊、且自己或子孫節點的contentDescription包含指定子字串」的
+     * 最外層（最先符合條件、深度最淺）節點。用來定位FB搜尋結果商品卡這種「整張卡片
+     * 都可點擊、但真正帶關鍵字的desc在裡面某個子節點」的結構。
+     */
+    private fun findClickableAncestorContainingDesc(root: AccessibilityNodeInfo, substring: String): AccessibilityNodeInfo? {
+        fun subtreeContainsDesc(node: AccessibilityNodeInfo?, depth: Int): Boolean {
+            if (node == null || depth > 10) return false
+            val desc = node.contentDescription?.toString()
+            if (desc != null && desc.contains(substring)) return true
+            for (i in 0 until node.childCount) {
+                if (subtreeContainsDesc(node.getChild(i), depth + 1)) return true
+            }
+            return false
+        }
+        var found: AccessibilityNodeInfo? = null
+        fun walk(node: AccessibilityNodeInfo?, depth: Int) {
+            if (node == null || found != null || depth > 25) return
+            if (node.isClickable && subtreeContainsDesc(node, 10)) {
+                found = node
+                return
+            }
+            for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
+        }
+        walk(root, 0)
+        return found
+    }
+
+    /**
+     * 在節點樹裡找「contentDescription包含指定子字串」的第一個可點擊節點。
+     * 用來定位FB相簿選片畫面裡desc格式「影片，項目1，拍攝於...」這種節點。
+     */
+    private fun findNodeByDescContaining(root: AccessibilityNodeInfo, substring: String): AccessibilityNodeInfo? {
+        var found: AccessibilityNodeInfo? = null
+        fun walk(node: AccessibilityNodeInfo?, depth: Int) {
+            if (node == null || found != null || depth > 25) return
+            val desc = node.contentDescription?.toString()
+            if (node.isClickable && desc != null && desc.contains(substring)) {
+                found = node
+                return
+            }
+            for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
+        }
+        walk(root, 0)
+        return found
     }
 
     /**

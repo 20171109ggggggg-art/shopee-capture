@@ -78,6 +78,7 @@
     <string name="btn_detect">Detect</string>
     <string name="btn_calibrate">Calibrate</string>
     <string name="btn_upload">Upload</string>
+    <string name="btn_fb_upload">FB Upload</string>
 
     <string name="toast_upload_need_accessibility">Please enable \"Accessibility Service\" first</string>
     <string name="toast_upload_started">Started upload automation, up to %1$d this batch</string>
@@ -88,6 +89,11 @@
     <string name="upload_finish_reason_max_count">Batch limit reached</string>
     <string name="upload_finish_reason_no_candidates">No matching candidate products found</string>
     <string name="upload_finish_reason_stopped_on_failure">Stopped after one product failed</string>
+
+    <string name="toast_fb_upload_started">Started FB upload automation (test stage, fixed at 1 item)</string>
+    <string name="toast_fb_upload_stopped">FB upload automation stopped</string>
+    <string name="alert_title_fb_upload_finished">FB Upload Automation Finished</string>
+    <string name="alert_msg_fb_upload_finished">%1$d succeeded / %2$d failed (reason: %3$s)</string>
 
     <string name="toast_need_accessibility">Please enable \"Accessibility Service\" first</string>
     <string name="toast_no_package">Couldn\'t read the current app\'s package name</string>
