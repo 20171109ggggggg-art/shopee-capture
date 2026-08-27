@@ -783,7 +783,11 @@ class ShopeeAccessibilityService : AccessibilityService() {
     private fun findSearchBoxNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         var found: AccessibilityNodeInfo? = null
         fun walk(node: AccessibilityNodeInfo?, depth: Int) {
-            if (node == null || found != null || depth > 15) return
+            // 【2026-08-28修正】原本depth>15就放棄，蝦皮的畫面結構夠淺所以一直沒事，
+            // 但FB「聯盟合作→商品」搜尋框實測藏在第20層（node樹dump證實），15層會找不到、
+            // 導致FB上架流程一開始就誤判「找不到搜尋框」而直接失敗。放寬到40層，
+            // 蝦皮這邊搜尋順序完全不變（一樣是先找到的isEditable節點優先），只是多給更深的畫面空間。
+            if (node == null || found != null || depth > 40) return
             if (node.isEditable) {
                 found = node
                 return
