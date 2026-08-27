@@ -2067,19 +2067,33 @@ class ShopeeAccessibilityService : AccessibilityService() {
             return false
         }
 
-        // 1. 貼上商品名稱到搜尋框
+        // 1. 貼上商品名稱到搜尋框並送出搜尋
         // 【2026-08-27修正】原本貼商品連結(promoLink)去搜尋，使用者實測發現FB的
         // 「依商品連結搜尋」貼連結搜不到、貼蝦皮「複製資訊」文案內容也搜不到，
         // 唯一搜得到的是「商品名稱本身」（螢幕截圖圈起來測試確認）。改用candidate.productName。
+        // 【2026-08-28修正】原本只有ACTION_SET_TEXT把文字貼進框裡，使用者實測發現文字
+        // 有貼上但畫面沒有真的執行搜尋（還停在瀏覽/分類畫面），因為ACTION_SET_TEXT只是
+        // 改變文字內容，不會觸發App的搜尋送出邏輯（跟手動打字最後按下Enter/搜尋鍵是兩回事）。
+        // 改成：先點擊搜尋框聚焦（讓輸入框進入編輯狀態）→貼字→用ACTION_IME_ENTER模擬
+        // 按下鍵盤的搜尋/Enter鍵送出（minSdk=30，這個action從API 30才有，符合需求）。
         if (candidate.productName.isBlank()) {
             appendDebugLog("  → [FB] 這筆候選商品沒有商品名稱(productName為空)，無法用名稱搜尋，跳過")
             return false
         }
+        clickNodeBestEffort(searchBox)
+        delay(600)
+        root = rootInActiveWindow ?: return false
+        val focusedSearchBox = findSearchBoxNode(root) ?: searchBox
         val searchBundle = android.os.Bundle().apply {
             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, candidate.productName)
         }
-        searchBox.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, searchBundle)
+        focusedSearchBox.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, searchBundle)
         appendDebugLog("  → [FB] 已貼上商品名稱到搜尋框：${candidate.productName}")
+        delay(1000)
+        root = rootInActiveWindow ?: return false
+        val searchBoxBeforeSubmit = findSearchBoxNode(root) ?: focusedSearchBox
+        val imeEnterOk = searchBoxBeforeSubmit.performAction(AccessibilityNodeInfo.ACTION_IME_ENTER)
+        appendDebugLog("  → [FB] 送出搜尋（ACTION_IME_ENTER）：${if (imeEnterOk) "成功" else "失敗，畫面可能仍停在貼字狀態未執行搜尋"}")
         delay(2200)
 
         // 2. 點搜尋結果的商品卡（【未完全確認】找同時符合「有可點擊」+「子節點desc含蝦皮購物」
