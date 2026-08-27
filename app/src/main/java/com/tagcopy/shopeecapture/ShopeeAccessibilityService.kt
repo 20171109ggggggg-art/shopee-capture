@@ -2320,31 +2320,35 @@ class ShopeeAccessibilityService : AccessibilityService() {
      * 最外層（最先符合條件、深度最淺）節點。用來定位FB搜尋結果商品卡這種「整張卡片
      * 都可點擊、但真正帶關鍵字的desc在裡面某個子節點」的結構。
      */
-    private fun findClickableAncestorContainingDesc(root: AccessibilityNodeInfo, substring: String): AccessibilityNodeInfo? {
-        fun subtreeContainsDesc(node: AccessibilityNodeInfo?, depth: Int): Boolean {
-            if (node == null || depth > 10) return false
-            val desc = node.contentDescription?.toString()
-            if (desc != null && desc.contains(substring)) return true
-            for (i in 0 until node.childCount) {
-                if (subtreeContainsDesc(node.getChild(i), depth + 1)) return true
-            }
-            return false
-        }
-        var found: AccessibilityNodeInfo? = null
-        fun walk(node: AccessibilityNodeInfo?, depth: Int) {
-            if (node == null || found != null || depth > 25) return
-            // 【2026-08-28修正】原本這裡誤傳10當起始深度，而subtreeContainsDesc本身又用
-            // depth>10當上限，兩者疊加導致只檢查了節點自己一層就被擋下、根本沒往子節點找，
-            // 這才是FB搜尋結果卡片一直「找不到」的真正原因（實測確認蝦皮購物desc是子節點沒錯，
-            // 卡片本身沒有desc）。改成從0開始算，才能真的往下找到10層深的子孫節點。
-            if (node.isClickable && subtreeContainsDesc(node, 0)) {
-                found = node
+    /**
+     * 【2026-08-28重寫】原本邏輯是「由上往下找，第一個同時符合可點擊+子孫節點藏著這個desc」，
+     * 結果實測發現FB搜尋結果清單最外層的可捲動容器本身也可點擊、也符合「子孫裡有這個desc」，
+     * 所以每次都被最外層攔截，點下去等於點在整個清單的空白處，完全沒反應（截圖證實：點擊後
+     * 畫面停在原本的搜尋結果列表，沒有任何變化）。改成反過來：先精準找到desc完全等於這個
+     * 字串的節點本身（不看可不可點擊），再從它開始往上找最近一層可點擊的祖先節點，
+     * 這樣才會準確落在真正的商品卡片上，而不是外層容器。
+     */
+    private fun findClickableAncestorContainingDesc(root: AccessibilityNodeInfo, exactDesc: String): AccessibilityNodeInfo? {
+        var targetNode: AccessibilityNodeInfo? = null
+        fun findExact(node: AccessibilityNodeInfo?, depth: Int) {
+            if (node == null || targetNode != null || depth > 30) return
+            if (node.contentDescription?.toString() == exactDesc) {
+                targetNode = node
                 return
             }
-            for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
+            for (i in 0 until node.childCount) findExact(node.getChild(i), depth + 1)
         }
-        walk(root, 0)
-        return found
+        findExact(root, 0)
+        val start = targetNode ?: return null
+
+        var ancestor = start.parent
+        var depth = 0
+        while (ancestor != null && depth < 8) {
+            if (ancestor.isClickable) return ancestor
+            ancestor = ancestor.parent
+            depth++
+        }
+        return null
     }
 
     /**
