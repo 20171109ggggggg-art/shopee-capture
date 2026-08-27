@@ -2092,7 +2092,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         delay(1000)
         root = rootInActiveWindow ?: return false
         val searchBoxBeforeSubmit = findSearchBoxNode(root) ?: focusedSearchBox
-        val imeEnterOk = searchBoxBeforeSubmit.performAction(AccessibilityNodeInfo.ACTION_IME_ENTER)
+        val imeEnterOk = searchBoxBeforeSubmit.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
         appendDebugLog("  → [FB] 送出搜尋（ACTION_IME_ENTER）：${if (imeEnterOk) "成功" else "失敗，畫面可能仍停在貼字狀態未執行搜尋"}")
         delay(2200)
 
