@@ -66,7 +66,7 @@ FONT_PATH = os.path.expanduser("~/fonts/NotoSansTC-Regular.otf")
 # TTS 語音：依 meta.json 的 region 欄位（TW/PH）切換，讀不到 region 時預設 TW
 VOICE_MAP = {
     "TW": "zh-TW-HsiaoChenNeural",
-    "PH": "en-PH-RosaNeural",
+    "PH": "fil-PH-BlessicaNeural",
 }
 
 # 影片總長度目標區間：語音（進而影片）長度會盡量落在這個範圍內。
