@@ -868,6 +868,28 @@ class ShopeeAccessibilityService : AccessibilityService() {
     }
 
     /**
+     * 【2026-08-28新增】對節點所在的螢幕座標中心點送出一個真實手勢點擊，取代
+     * AccessibilityNodeInfo.performAction(ACTION_CLICK)。實測發現FB搜尋結果商品卡
+     * 這類節點，ACTION_CLICK呼叫本身回傳true（accessibility系統認為指令有送達），
+     * 但App實際完全沒反應、畫面沒有跳轉——這是自繪UI元件（例如Meta常用的Litho）
+     * 常見狀況：畫面上看得到、accessibility樹也讀得到節點屬性，但實際互動綁定的是
+     * 真實觸控事件而非accessibility action，所以改用dispatchGesture在節點中心點
+     * 送出模擬手指點擊，比較貼近真人操作、對這類UI更可靠。
+     */
+    private fun tapNodeCenter(node: AccessibilityNodeInfo): Boolean {
+        val bounds = Rect()
+        node.getBoundsInScreen(bounds)
+        if (bounds.width() <= 0 || bounds.height() <= 0) return false
+        val x = bounds.centerX().toFloat()
+        val y = bounds.centerY().toFloat()
+        val path = Path().apply { moveTo(x, y) }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, 120))
+            .build()
+        return dispatchGesture(gesture, null, null)
+    }
+
+    /**
      * 在「指定節點的Y座標」、「螢幕寬度的某個比例」處點一下——給撰寫內文畫面那三個開關用：
      * Y座標從對應文字標籤節點的bounds算出來（每次執行都動態抓，不會跑掉），
      * X座標用螢幕寬度比例（開關固定在畫面右側同一個相對位置，比例在不同解析度手機上比較準）。
@@ -2106,13 +2128,17 @@ class ShopeeAccessibilityService : AccessibilityService() {
             appendDebugLog("  → [FB] 貼上連結後找不到搜尋結果商品卡，請確認畫面實際狀態（可能連結格式不符或還在載入）")
             return false
         }
-        if (!clickNodeBestEffort(resultCard)) {
-            appendDebugLog("  → [FB] 點擊搜尋結果商品卡失敗"); return false
+        // 【2026-08-28修正】原本用clickNodeBestEffort（靠ACTION_CLICK），實測發現FB
+        // 這類自繪商品卡ACTION_CLICK回報成功但畫面完全沒反應，改用真實座標手勢點擊。
+        if (!tapNodeCenter(resultCard)) {
+            appendDebugLog("  → [FB] 點擊搜尋結果商品卡失敗（手勢送出失敗）"); return false
         }
         delay(1800)
 
         // 3. 等商品詳情頁出現（找「建立貼文」按鈕）
-        if (!waitForAnyText(listOf("建立貼文"), 4000)) {
+        // 【2026-08-28調整】原本4秒常常等不到，實測發現商品詳情頁（含佣金/賣家資料）
+        // 載入比預期慢，拉長到10秒給網路請求足夠時間。
+        if (!waitForAnyText(listOf("建立貼文"), 10000)) {
             appendDebugLog("  → [FB] 等不到商品詳情頁「建立貼文」按鈕"); return false
         }
         delay(600)
