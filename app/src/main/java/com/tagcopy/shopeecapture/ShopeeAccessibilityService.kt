@@ -2130,16 +2130,45 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
         // 【2026-08-28修正】原本用clickNodeBestEffort（靠ACTION_CLICK），實測發現FB
         // 這類自繪商品卡ACTION_CLICK回報成功但畫面完全沒反應，改用真實座標手勢點擊。
+        val cardBounds = Rect()
+        resultCard.getBoundsInScreen(cardBounds)
+        appendDebugLog("  → [FB] 準備點擊搜尋結果商品卡，座標中心點=(${cardBounds.centerX()}, ${cardBounds.centerY()})，卡片範圍=$cardBounds")
         if (!tapNodeCenter(resultCard)) {
             appendDebugLog("  → [FB] 點擊搜尋結果商品卡失敗（手勢送出失敗）"); return false
         }
         delay(1800)
 
+        // 【2026-08-28新增診斷】點擊後兩種方式（ACTION_CLICK、座標手勢）都實測失敗過，
+        // 先不急著猜第三種，直接截圖記錄點擊後當下畫面實況，比繼續猜更快找到真正原因。
+        run {
+            val bitmap = withTimeoutOrNull(4000) { captureScreenshotSuspend() }
+            if (bitmap != null) {
+                try {
+                    val screenshotDir = File(
+                        android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
+                        "FbUploadDebugScreenshots"
+                    )
+                    if (!screenshotDir.exists()) screenshotDir.mkdirs()
+                    val fileName = "after_tap_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.jpg"
+                    val imgFile = File(screenshotDir, fileName)
+                    FileOutputStream(imgFile).use { out -> bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out) }
+                    appendDebugLog("  → [FB] 點擊後截圖已存檔：${imgFile.absolutePath}")
+                } catch (e: Exception) {
+                    appendDebugLog("  → [FB] 點擊後截圖存檔失敗：${e.javaClass.simpleName} ${e.message}")
+                }
+            } else {
+                appendDebugLog("  → [FB] 點擊後截圖失敗或逾時")
+            }
+        }
+
         // 3. 等商品詳情頁出現（找「建立貼文」按鈕）
         // 【2026-08-28調整】原本4秒常常等不到，實測發現商品詳情頁（含佣金/賣家資料）
         // 載入比預期慢，拉長到10秒給網路請求足夠時間。
         if (!waitForAnyText(listOf("建立貼文"), 10000)) {
-            appendDebugLog("  → [FB] 等不到商品詳情頁「建立貼文」按鈕"); return false
+            appendDebugLog("  → [FB] 等不到商品詳情頁「建立貼文」按鈕")
+            // 逾時失敗時也順手dump一次節點樹，跟截圖互相對照，兩份證據一起看更準
+            dumpCurrentNodeTree()
+            return false
         }
         delay(600)
         root = rootInActiveWindow ?: return false

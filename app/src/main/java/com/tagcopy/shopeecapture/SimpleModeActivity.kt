@@ -779,7 +779,13 @@ private fun ReviewVideosScreen(context: Context, onBack: () -> Unit) {
             text = { Text(target.productName) },
             confirmButton = {
                 TextButton(onClick = {
-                    target.folder.deleteRecursively()
+                    // 【2026-08-28修正】原本是整個資料夾一起刪(deleteRecursively)，改成只刪
+                    // output.mp4這支影片檔案本身。這個畫面的用途是「檢查有沒有壞掉的影片、
+                    // 刪掉讓它可以重新生成」，資料夾本來就會在蝦皮+FB都上架完後自動整個清掉
+                    // (deleteFolderIfFullyPosted)，這裡刪整個資料夾等於連圖片/meta.json/文案
+                    // 都一起沒了，重新生成時就要重新擷取，不是原意。只刪影片檔，
+                    // batch_generate.py下次執行時判斷「output.mp4不存在」就會自動補生成。
+                    target.videoFile.delete()
                     videos = scanVideos(context)
                     deleteTarget = null
                 }) { Text(stringResource(R.string.simple_delete), color = SimpleDanger) }
@@ -796,8 +802,9 @@ private fun ReviewVideosScreen(context: Context, onBack: () -> Unit) {
             title = { Text(stringResource(R.string.simple_batch_delete_confirm_title, selectedPaths.size)) },
             confirmButton = {
                 TextButton(onClick = {
+                    // 同單支刪除的修正：只刪影片檔案本身，資料夾其他資料留著。
                     videos.filter { it.folder.absolutePath in selectedPaths }
-                        .forEach { it.folder.deleteRecursively() }
+                        .forEach { it.videoFile.delete() }
                     videos = scanVideos(context)
                     batchDeleteConfirm = false
                     exitSelectionMode()
