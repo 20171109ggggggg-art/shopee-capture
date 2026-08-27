@@ -1320,6 +1320,87 @@ class ShopeeAccessibilityService : AccessibilityService() {
         return candidates
     }
 
+    /**
+     * 【階段3用，開發中】掃描 CaptionQueue 底下所有商品資料夾，找出符合FB上架條件的候選清單：
+     * shopeePosted=true（已經蝦皮上架過，代表影片可以重複利用）且 fbPosted 還是 false（FB還沒上架）。
+     * 跟scanUploadCandidates()共用同一個UploadCandidate資料結構、同一套解析邏輯，
+     * 差別只在篩選條件相反（這裡要求shopeePosted一定要true，而不是false）。
+     * 這個函式目前只用來確認候選清單抓得對不對，實際的FB上架流程本體還沒寫
+     * （導航到商品詳情頁「建立貼文」按鈕的節點結構還沒確認，見dumpCurrentNodeTree()診斷）。
+     */
+    private fun scanFbUploadCandidates(): List<UploadCandidate> {
+        val baseDir = File(
+            android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
+            "CaptionQueue"
+        )
+        val candidates = mutableListOf<UploadCandidate>()
+        val dirs = baseDir.listFiles()?.filter { it.isDirectory } ?: run {
+            appendDebugLog("  → 【FB候選掃描】找不到 CaptionQueue 資料夾（${baseDir.absolutePath}）")
+            return candidates
+        }
+
+        for (dir in dirs) {
+            val metaFile = File(dir, "meta.json")
+            if (!metaFile.isFile) continue
+            try {
+                val json = org.json.JSONObject(metaFile.readText())
+
+                val shopeePosted = json.optBoolean("shopeePosted", false)
+                if (!shopeePosted) {
+                    // 還沒蝦皮上架過的不算FB候選（FB階段的前提是影片已經在蝦皮用過一次）
+                    continue
+                }
+                val fbPosted = json.optBoolean("fbPosted", false)
+                if (fbPosted) {
+                    appendDebugLog("  → 【FB候選掃描】${dir.name} 已經FB上架過了（fbPosted=true），跳過")
+                    continue
+                }
+
+                val promoLink = json.optString("promoLink", "")
+                    .takeIf { it.isNotBlank() && it != "null" }
+                if (promoLink == null) {
+                    appendDebugLog("  → 【FB候選掃描】${dir.name} 沒有商品連結，跳過")
+                    continue
+                }
+
+                val videoFile = File(dir, "output.mp4")
+                if (!videoFile.isFile) {
+                    appendDebugLog("  → 【FB候選掃描】${dir.name} 找不到output.mp4（可能蝦皮上架後資料夾被舊版邏輯刪除過），跳過")
+                    continue
+                }
+
+                val narrationText = json.optString("narrationText", "")
+                    .takeIf { it.isNotBlank() && it != "null" } ?: ""
+                val productName = json.optString("productName", "")
+                    .takeIf { it.isNotBlank() && it != "null" } ?: ""
+                val price = json.optDouble("price", 0.0)
+                val hashtagsArray = json.optJSONArray("hashtags")
+                val hashtags = if (hashtagsArray != null) {
+                    (0 until hashtagsArray.length()).mapNotNull { i ->
+                        hashtagsArray.optString(i, "").takeIf { it.isNotBlank() && it != "null" }
+                    }
+                } else {
+                    emptyList()
+                }
+
+                appendDebugLog("  → 【FB候選掃描】${dir.name} 符合條件，加入FB候選清單")
+                candidates.add(UploadCandidate(dir, promoLink, narrationText, videoFile, productName, price, hashtags))
+            } catch (e: Exception) {
+                appendDebugLog("  → 【FB候選掃描】讀取 ${dir.name}/meta.json 失敗，跳過（${e.javaClass.simpleName}：${e.message}）")
+            }
+        }
+        appendDebugLog("  → 【FB候選掃描】掃描完成，共 ${candidates.size} 筆符合條件的FB候選商品")
+        return candidates
+    }
+
+    /**
+     * 【階段3開發用，暫時工具】確認FB候選商品掃得對不對，結果看debug log。
+     * 之後正式串上FB上架流程本體時可以拿掉，或整合進正式的上架函式裡。
+     */
+    fun testScanFbUploadCandidates() {
+        scanFbUploadCandidates()
+    }
+
     // ===================== 階段2第3塊：上架自動化本體 =====================
 
     private var uploadJob: Job? = null
@@ -1392,11 +1473,11 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 markShopeePosted(candidate.folder)
                 appendDebugLog("  → [${candidate.folder.name}] 上架成功，已標記 shopeePosted=true")
                 onEvent(UploadEvent.Log("✓ 上架成功：${candidate.folder.name}"))
-                // 上架成功後這個資料夾（圖片/meta.json/影片等）已經沒有留著的必要，
-                // 使用者反映日產能50~200支的量級下磁碟空間吃緊，上架完直接整個刪掉騰出空間，
-                // 不用等使用者事後手動清。刪除失敗（例如檔案被其他行程佔用中）只記log、
-                // 不影響本次上架已經成功的判定，也不中斷批次繼續處理下一筆。
-                deleteFolderAfterPosted(candidate.folder)
+                // 【2026-08-27改版】不再上架蝦皮完就立刻刪除整個資料夾——階段3(FB上架)要
+                // 重複利用這支影片，所以改成「兩邊都上架完才真的刪除」，見deleteFolderIfFullyPosted()。
+                // 目前FB階段還沒做完，這裡呼叫的當下實際上不會真的刪除，只是先把判斷邏輯接上，
+                // 之後FB流程做完、markFbPosted()寫入後，下次任何一邊呼叫這個函式就會自動清掉。
+                deleteFolderIfFullyPosted(candidate.folder)
             } else {
                 failCount++
                 appendDebugLog("  → [${candidate.folder.name}] 上架失敗，停止本次批次（避免對同樣的錯誤/每日上限持續重試）")
@@ -1984,21 +2065,53 @@ class ShopeeAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * 上架成功後整個刪除商品資料夾（圖片、meta.json、link.txt、caption.txt、output.mp4全部一起），
-     * 騰出磁碟空間。跟「檢查影片」畫面的單支刪除用同一種做法（folder.deleteRecursively()）。
-     * 這裡是「已經上架成功」之後才刪，跟上架失敗、還沒生成影片的資料夾完全無關，不會誤刪
-     * 還有用的資料。刪除失敗只記log不拋例外，不影響上架流程本身的成功判定。
+     * 【階段3新增】標記某個商品資料夾已經上架到FB成功：寫入 fbPosted=true 跟時間戳記，
+     * 跟markShopeePosted()是同一套機制，各自獨立標記兩個平台各自的上架狀態。
      */
-    private fun deleteFolderAfterPosted(folder: File) {
+    private fun markFbPosted(folder: File) {
         try {
+            val metaFile = File(folder, "meta.json")
+            if (!metaFile.isFile) return
+            val json = org.json.JSONObject(metaFile.readText())
+            json.put("fbPosted", true)
+            json.put("fbPostedAt", SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).format(Date()))
+            metaFile.writeText(json.toString(2))
+        } catch (e: Exception) {
+            appendDebugLog("  → 標記fbPosted失敗（${folder.name}）：${e.javaClass.simpleName} ${e.message}")
+        }
+    }
+
+    /**
+     * 【2026-08-27改版，取代原本的deleteFolderAfterPosted()】
+     * 原本蝦皮上架成功後會立刻整個刪除資料夾（含影片）騰空間，但階段3（FB上架）需要
+     * 重複利用同一支影片，蝦皮上架完就把影片刪了的話FB階段就沒有影片可以用了。
+     * 改成：兩個平台都上架完（shopeePosted=true 且 fbPosted=true）才真的刪除資料夾；
+     * 只完成其中一邊的話，先保留整個資料夾（含影片），等另一邊也完成再刪。
+     * 目前FB階段還沒開發，所以現況等於「蝦皮上架完先保留，之後接上FB流程才會真的清掉」，
+     * 磁碟空間吃緊的問題會回來，之後FB流程做完、跑順了要留意觀察空間狀況。
+     */
+    private fun deleteFolderIfFullyPosted(folder: File) {
+        try {
+            val metaFile = File(folder, "meta.json")
+            if (!metaFile.isFile) {
+                appendDebugLog("  → [${folder.name}] 找不到meta.json，無法判斷是否兩邊都上架完，暫不刪除")
+                return
+            }
+            val json = org.json.JSONObject(metaFile.readText())
+            val shopeePosted = json.optBoolean("shopeePosted", false)
+            val fbPosted = json.optBoolean("fbPosted", false)
+            if (!shopeePosted || !fbPosted) {
+                appendDebugLog("  → [${folder.name}] 尚未兩邊都上架完成（shopeePosted=$shopeePosted, fbPosted=$fbPosted），保留資料夾與影片")
+                return
+            }
             val deleted = folder.deleteRecursively()
             if (deleted) {
-                appendDebugLog("  → [${folder.name}] 上架成功後已刪除整個資料夾，騰出磁碟空間")
+                appendDebugLog("  → [${folder.name}] 蝦皮與FB都已上架完成，已刪除整個資料夾，騰出磁碟空間")
             } else {
-                appendDebugLog("  → [${folder.name}] 上架成功後刪除資料夾失敗（部分檔案可能刪除不完全），meta.json已標記shopeePosted=true不會被重複上架，但磁碟空間未釋放，可能需要手動清理")
+                appendDebugLog("  → [${folder.name}] 兩邊都上架完成但刪除資料夾失敗（部分檔案可能刪除不完全），可能需要手動清理")
             }
         } catch (e: Exception) {
-            appendDebugLog("  → [${folder.name}] 上架成功後刪除資料夾發生例外：${e.javaClass.simpleName} ${e.message}")
+            appendDebugLog("  → [${folder.name}] 判斷/刪除資料夾發生例外：${e.javaClass.simpleName} ${e.message}")
         }
     }
 
@@ -3351,6 +3464,9 @@ class ShopeeAccessibilityService : AccessibilityService() {
             // 不用另外維護一份清單、不用複製移動影片檔案。
             put("videoGeneratedAt", org.json.JSONObject.NULL)
             put("shopeePosted", false)
+            // 【階段3新增】跟shopeePosted成對，代表這支影片是否已經FB上架過；
+            // 新商品從一開始就寫false，舊資料靠scanFbUploadCandidates()的optBoolean預設值(false)相容。
+            put("fbPosted", false)
         }
         metaFile.writeText(metaJson.toString())
 

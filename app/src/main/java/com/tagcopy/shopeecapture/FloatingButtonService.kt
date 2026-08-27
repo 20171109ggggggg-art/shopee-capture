@@ -316,6 +316,7 @@ class FloatingButtonService : Service() {
         // testMediaStoreRegistration()/testScanUploadCandidates()/dumpCurrentNodeTree()/testUploadAutomation()/testDuetToggleGestures()都可以一起移除。
         service.testMediaStoreRegistration()
         service.testScanUploadCandidates()
+        service.testScanFbUploadCandidates()
         service.dumpCurrentNodeTree()
         service.testUploadAutomation()
         service.testDuetToggleGestures()
