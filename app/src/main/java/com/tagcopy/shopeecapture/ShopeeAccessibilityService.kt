@@ -1540,6 +1540,38 @@ class ShopeeAccessibilityService : AccessibilityService() {
 
         appendDebugLog("===== 上架自動化結束：成功 $successCount／失敗 $failCount，原因=$reason =====")
         onEvent(UploadEvent.Finished(successCount, failCount, reason))
+
+        // 【2026-08-28新增】蝦皮批次跑完後，若這次有任何一支成功上架（代表有新的FB候選商品
+        // 產生），自動啟動FB App、導航到「聯盟合作→商品」畫面，接著把FB那邊也跑完——
+        // 使用者要求「蝦皮上架完後接FB上架的導航，有辦法同時做」，整批蝦皮做完再整批做FB，
+        // 而不是一支一支來回切換App（來回切換實務上更容易卡、也更難除錯）。
+        if (successCount > 0) {
+            appendDebugLog("  → 蝦皮批次有成功商品，準備自動啟動FB App接續跑FB上架")
+            onEvent(UploadEvent.Log("蝦皮批次完成，準備接續FB上架..."))
+            val fbLaunched = try {
+                val launchIntent = packageManager.getLaunchIntentForPackage("com.facebook.katana")
+                if (launchIntent == null) {
+                    appendDebugLog("  → 找不到FB App（com.facebook.katana），可能未安裝，跳過FB接續")
+                    false
+                } else {
+                    launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    startActivity(launchIntent)
+                    true
+                }
+            } catch (e: Exception) {
+                appendDebugLog("  → 啟動FB App失敗：${e.javaClass.simpleName} ${e.message}")
+                false
+            }
+            if (fbLaunched) {
+                delay(3000) // 給FB App足夠時間完整啟動、畫面穩定，才開始導航
+                val fbCandidateCount = scanFbUploadCandidates().size
+                if (fbCandidateCount > 0) {
+                    fbUploadAutomationLoop(fbCandidateCount, onEvent)
+                } else {
+                    appendDebugLog("  → FB App已啟動但目前沒有符合條件的FB候選商品，跳過")
+                }
+            }
+        }
     }
 
     /**
@@ -2086,14 +2118,102 @@ class ShopeeAccessibilityService : AccessibilityService() {
         return clickNodeBestEffort(node)
     }
 
+    /**
+     * 【2026-08-28新增】根據使用者2026-08-28提供的5份節點樹dump重建，把FB App從「任何畫面」
+     * 自動導航到「聯盟合作→商品」畫面（搜尋框那個畫面）。完整路徑：
+     * 首頁→點左上角「功能表」→點「專業主控板」→點「營利」分頁→點「聯盟合作」→點「商品」分頁。
+     * 每一步都先確認畫面存在對應節點才點，任何一步找不到就回傳false（不會亂點）。
+     * 呼叫前提：FB App本身要已經在前景（這段不負責啟動FB App本身）。
+     */
+    private suspend fun navigateToFbAffiliateProductsScreen(): Boolean {
+        // 若已經在目標畫面（找得到「聯盟合作」字樣＋搜尋框），直接算成功，不用重新導航一次
+        rootInActiveWindow?.let { root ->
+            if (findTextContaining(root, "聯盟合作") != null && findSearchBoxNode(root) != null) {
+                appendDebugLog("  → [FB導航] 已經在「聯盟合作→商品」畫面，不用重新導航")
+                return true
+            }
+        }
+
+        appendDebugLog("  → [FB導航] 開始自動導航到「聯盟合作→商品」畫面")
+
+        // 1. 點左上角「功能表」（漢堡選單icon）
+        var root = rootInActiveWindow ?: run {
+            appendDebugLog("  → [FB導航] 讀不到目前畫面"); return false
+        }
+        val menuButton = findNodeByDescContaining(root, "功能表")
+        if (menuButton == null || !clickFbNode(menuButton)) {
+            appendDebugLog("  → [FB導航] 找不到或點擊「功能表」失敗，請確認目前在FB App首頁")
+            return false
+        }
+        delay(1200)
+
+        // 2. 點「專業主控板」
+        if (!waitForAnyText(listOf("專業主控板"), 3000)) {
+            appendDebugLog("  → [FB導航] 等不到選單裡的「專業主控板」"); return false
+        }
+        root = rootInActiveWindow ?: return false
+        val dashboardButton = findNodeByDescContaining(root, "專業主控板，按鈕")
+            ?: findNodeByTexts(root, listOf("專業主控板"))
+        if (dashboardButton == null || !clickFbNode(dashboardButton)) {
+            appendDebugLog("  → [FB導航] 找不到或點擊「專業主控板」失敗"); return false
+        }
+        delay(1500)
+
+        // 3. 點「營利」分頁（4個分頁之一：分析/內容/社群/營利）
+        if (!waitForAnyText(listOf("營利"), 3000)) {
+            appendDebugLog("  → [FB導航] 等不到「專業主控板」畫面的「營利」分頁"); return false
+        }
+        root = rootInActiveWindow ?: return false
+        val monetizeTab = findNodeByDescContaining(root, "營利，")
+            ?: findNodeByTexts(root, listOf("營利"))
+        if (monetizeTab == null || !clickFbNode(monetizeTab)) {
+            appendDebugLog("  → [FB導航] 找不到或點擊「營利」分頁失敗"); return false
+        }
+        delay(1500)
+
+        // 4. 點「聯盟合作」
+        if (!waitForAnyText(listOf("聯盟合作"), 4000)) {
+            appendDebugLog("  → [FB導航] 等不到「營利」畫面的「聯盟合作」項目"); return false
+        }
+        root = rootInActiveWindow ?: return false
+        val affiliateButton = findNodeByDescContaining(root, "聯盟合作")
+        if (affiliateButton == null || !clickFbNode(affiliateButton)) {
+            appendDebugLog("  → [FB導航] 找不到或點擊「聯盟合作」失敗"); return false
+        }
+        delay(1500)
+
+        // 5. 點「商品」子分頁（預設會停在「探索」分頁，要切到「商品」才有搜尋框）
+        if (!waitForAnyText(listOf("商品"), 4000)) {
+            appendDebugLog("  → [FB導航] 等不到「聯盟合作」畫面的「商品」分頁"); return false
+        }
+        root = rootInActiveWindow ?: return false
+        val productsTab = findNodeByDescContaining(root, "商品")
+        if (productsTab == null || !clickFbNode(productsTab)) {
+            appendDebugLog("  → [FB導航] 找不到或點擊「商品」分頁失敗"); return false
+        }
+        delay(1200)
+
+        // 最後確認真的到了目標畫面
+        root = rootInActiveWindow ?: return false
+        val arrived = findTextContaining(root, "聯盟合作") != null && findSearchBoxNode(root) != null
+        if (arrived) {
+            appendDebugLog("  → [FB導航] 已成功導航到「聯盟合作→商品」畫面")
+        } else {
+            appendDebugLog("  → [FB導航] 走完全部步驟但畫面不符合預期，請確認目前實際畫面狀態")
+        }
+        return arrived
+    }
+
     private suspend fun processOneFbUploadCandidate(candidate: UploadCandidate): Boolean {
-        // 0. 確認目前在FB「聯盟合作／商品」畫面（找得到搜尋框，且畫面上有「聯盟合作」字樣）
+        // 0. 確認目前在FB「聯盟合作／商品」畫面，不在的話先自動導航過去
+        // 【2026-08-28修正】原本要求使用者一定要先手動切到這個畫面才能按FB上架，
+        // 現在改成不管目前在FB App哪個畫面，都會自動導航過去（見navigateToFbAffiliateProductsScreen）。
+        if (!navigateToFbAffiliateProductsScreen()) {
+            appendDebugLog("  → [FB] 自動導航到「聯盟合作→商品」畫面失敗，請確認FB App目前是否在前景")
+            return false
+        }
         var root = rootInActiveWindow ?: run {
             appendDebugLog("  → [FB] 讀不到目前畫面"); return false
-        }
-        if (findTextContaining(root, "聯盟合作") == null) {
-            appendDebugLog("  → [FB] 目前畫面找不到「聯盟合作」字樣，請先手動導航到FB「聯盟合作→商品」畫面再啟動")
-            return false
         }
         val searchBox = findSearchBoxNode(root)
         if (searchBox == null) {
