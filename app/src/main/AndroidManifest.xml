@@ -6,6 +6,10 @@
         <package android:name="com.termux" />
         <package android:name="com.shopee.tw" />
         <package android:name="com.shopee.ph" />
+        <!-- 【2026-08-28新增】蝦皮批次上架完自動啟動FB App接續跑FB上架，需要先在這裡宣告
+             要查詢的套件名稱，否則Android 11+的package visibility限制會讓
+             getLaunchIntentForPackage()永遠回傳null，誤判成「FB未安裝」。 -->
+        <package android:name="com.facebook.katana" />
     </queries>
 
     <uses-permission android:name="android.permission.INTERNET" />
