@@ -27,6 +27,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import java.io.File
 import org.json.JSONObject
@@ -57,6 +58,26 @@ fun RootScreen() {
     var queueItems by remember { mutableStateOf(listOf<QueueItem>()) }
 
     val context = androidx.compose.ui.platform.LocalContext.current
+
+    // 【2026-08-28新增】通知權限（POST_NOTIFICATIONS，Android 13+才是runtime權限）。這個沒開，
+    // 懸浮視窗服務的常駐通知（包含「停止自動化」「停止」這兩顆按鈕）就完全不會顯示出來——
+    // 使用者會誤以為按鈕消失了或壞掉了，其實是系統根本沒把通知畫出來。用
+    // NotificationManagerCompat.areNotificationsEnabled()查，這個API在所有版本都能正常運作
+    // （低於Android 13的裝置這個權限預設就是granted，不影響判斷結果）。
+    var notificationPermissionGranted by remember {
+        mutableStateOf(NotificationManagerCompat.from(context).areNotificationsEnabled())
+    }
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        notificationPermissionGranted = granted || NotificationManagerCompat.from(context).areNotificationsEnabled()
+    }
+
+    // 「允許受限制的設定」是Android 13+對側載App的額外鎖，系統沒有公開API可以查詢目前狀態
+    // （見RestrictedSettingsPrefs.kt說明），只能讓使用者自己確認完之後手動勾選回報。
+    var restrictedSettingsConfirmed by remember {
+        mutableStateOf(RestrictedSettingsPrefs.isConfirmed(context))
+    }
 
     val overlayLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -95,6 +116,8 @@ fun RootScreen() {
                 overlayGranted = canDrawOverlays(context)
                 mediaPermissionGranted = hasMediaPermission(context)
                 allFilesAccessGranted = hasAllFilesAccess()
+                notificationPermissionGranted = NotificationManagerCompat.from(context).areNotificationsEnabled()
+                restrictedSettingsConfirmed = RestrictedSettingsPrefs.isConfirmed(context)
                 termuxRunCommandGranted = ContextCompat.checkSelfPermission(
                     context, "com.termux.permission.RUN_COMMAND"
                 ) == PackageManager.PERMISSION_GRANTED
@@ -131,6 +154,25 @@ fun RootScreen() {
         RegionSettingsCard(context)
 
         Spacer(Modifier.height(20.dp))
+
+        RestrictedSettingsStepCard(
+            confirmed = restrictedSettingsConfirmed,
+            onOpenSettings = {
+                context.startActivity(
+                    Intent(
+                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.parse("package:${context.packageName}")
+                    )
+                )
+            },
+            onToggleConfirmed = {
+                val newValue = !restrictedSettingsConfirmed
+                restrictedSettingsConfirmed = newValue
+                RestrictedSettingsPrefs.setConfirmed(context, newValue)
+            }
+        )
+
+        Spacer(Modifier.height(14.dp))
 
         SetupStepCard(
             stepNumber = "1",
@@ -184,6 +226,25 @@ fun RootScreen() {
 
         SetupStepCard(
             stepNumber = "4",
+            title = stringResource(R.string.step_notification_title),
+            description = stringResource(R.string.step_notification_desc),
+            done = notificationPermissionGranted,
+            buttonText = stringResource(R.string.btn_grant_permission),
+            onClick = {
+                if (Build.VERSION.SDK_INT >= 33) {
+                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                        .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                    context.startActivity(intent)
+                }
+            }
+        )
+
+        Spacer(Modifier.height(14.dp))
+
+        SetupStepCard(
+            stepNumber = "5",
             title = stringResource(R.string.step4_title),
             description = stringResource(R.string.step4_desc),
             done = mediaPermissionGranted,
@@ -201,7 +262,7 @@ fun RootScreen() {
         Spacer(Modifier.height(14.dp))
 
         SetupStepCard(
-            stepNumber = "5",
+            stepNumber = "6",
             title = stringResource(R.string.step5_title),
             description = stringResource(R.string.step5_desc),
             done = allFilesAccessGranted,
@@ -829,6 +890,54 @@ fun FilterRangeRow(
                 label = { Text(stringResource(R.string.label_max)) },
                 shape = RoundedCornerShape(0.dp)
             )
+        }
+    }
+}
+
+@Composable
+fun RestrictedSettingsStepCard(
+    confirmed: Boolean,
+    onOpenSettings: () -> Unit,
+    onToggleConfirmed: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White)
+            .padding(16.dp)
+    ) {
+        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .background(if (confirmed) Color(0xFF8A9A87) else InkColor)
+                    .padding(horizontal = 10.dp, vertical = 4.dp)
+            ) {
+                Text(if (confirmed) "✓" else "!", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+            Spacer(Modifier.width(10.dp))
+            Text(stringResource(R.string.step_restricted_title), fontSize = 15.sp, fontWeight = FontWeight.Bold, color = InkColor)
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(stringResource(R.string.step_restricted_desc), fontSize = 12.sp, color = MutedColor, lineHeight = 17.sp)
+        Spacer(Modifier.height(12.dp))
+        Row(
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Button(
+                onClick = onOpenSettings,
+                shape = RoundedCornerShape(0.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = AccentColor)
+            ) {
+                Text(stringResource(R.string.btn_go_to_settings), fontSize = 13.sp)
+            }
+            Row(
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                modifier = Modifier.clickable { onToggleConfirmed() }
+            ) {
+                Checkbox(checked = confirmed, onCheckedChange = { onToggleConfirmed() })
+                Text(stringResource(R.string.step_restricted_confirm_label), fontSize = 12.sp, color = InkColor)
+            }
         }
     }
 }

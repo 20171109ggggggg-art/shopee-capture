@@ -12,6 +12,10 @@
     <string name="step1_desc">Allow this app to read Shopee\'s screen content (Shopee only — no other apps are read)</string>
     <string name="btn_go_to_settings">Go to Settings</string>
 
+    <string name="step_restricted_title">Allow Restricted Settings</string>
+    <string name="step_restricted_desc">On some phones (especially Android 13+, non-MIUI), sideloaded apps have sensitive settings locked by default, which can make the \"Enable Accessibility Service\" step below greyed out or get silently turned back off. Go to App Info → the ⋮ menu in the top right → Allow restricted settings first, then continue with the steps below. The system provides no way to query this setting\'s status, so please check it off yourself once done.</string>
+    <string name="step_restricted_confirm_label">I\'ve done this</string>
+
     <string name="step2_title">Allow Display Over Other Apps</string>
     <string name="step2_desc">Let the floating capture button appear over the Shopee screen</string>
 
@@ -23,6 +27,9 @@
     <string name="toast_automation_stopped_from_notification">Current automation stopped</string>
     <string name="toast_no_automation_running">No automation is currently running</string>
     <string name="btn_start">Start</string>
+
+    <string name="step_notification_title">Enable Notification Permission</string>
+    <string name="step_notification_desc">The floating service\'s persistent notification (with the \"Stop Automation\" and \"Stop\" buttons) needs this permission to show up at all — without it, there\'s no way to stop automation while the floating button is hidden.</string>
 
     <string name="step4_title">Read Photo Library Permission</string>
     <string name="step4_desc">The share panel\'s download button captures the original image — reading the photo library is needed to fetch the file just saved.</string>

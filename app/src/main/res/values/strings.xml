@@ -12,6 +12,10 @@
     <string name="step1_desc">允許本 App 讀取蝦皮畫面內容（僅限蝦皮，不會讀取其他 App）</string>
     <string name="btn_go_to_settings">前往設定</string>
 
+    <string name="step_restricted_title">允許受限制的設定</string>
+    <string name="step_restricted_desc">部分手機（尤其 Android 13 以上、非小米系統）會把側載安裝的 App 預設鎖住敏感設定，導致下面「開啟無障礙服務」選項變成灰色點不動、或系統自動把它關掉。請先到「應用程式詳情頁→右上角選單（⋮）→允許受限制的設定」手動點開，再繼續下面的步驟。這個開關系統不提供查詢狀態的方式，所以完成後麻煩自己勾選確認。</string>
+    <string name="step_restricted_confirm_label">我已經設定過了</string>
+
     <string name="step2_title">允許顯示在其他 App 之上</string>
     <string name="step2_desc">讓懸浮擷取按鈕能顯示在蝦皮畫面上</string>
 
@@ -23,6 +27,9 @@
     <string name="toast_automation_stopped_from_notification">已停止目前的自動化流程</string>
     <string name="toast_no_automation_running">目前沒有自動化流程在執行</string>
     <string name="btn_start">啟動</string>
+
+    <string name="step_notification_title">開啟通知權限</string>
+    <string name="step_notification_desc">懸浮視窗服務常駐通知（含「停止自動化」「停止」兩顆按鈕）需要這個權限才會顯示出來，沒開的話浮球被隱藏期間會完全找不到任何地方可以喊停。</string>
 
     <string name="step4_title">讀取相簿權限</string>
     <string name="step4_desc">分享面板下載鈕擷取原圖，需要讀取相簿才能抓到剛存下的圖片檔案。</string>
