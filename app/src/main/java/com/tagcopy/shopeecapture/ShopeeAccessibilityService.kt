@@ -3930,7 +3930,6 @@ class ShopeeAccessibilityService : AccessibilityService() {
         var iterations = 0
 
         while (newCount < batchSize && iterations < maxIterations) {
-            if (!kotlinx.coroutines.currentCoroutineContext().isActive) break
             iterations++
 
             val r = rootInActiveWindow
