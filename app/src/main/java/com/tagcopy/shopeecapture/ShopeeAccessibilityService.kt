@@ -65,6 +65,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         get() = baseMatchRules.mergeWithRegion(RegionPrefs.getRegion(this))
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var autoJob: Job? = null
+    private var videoImportJob: Job? = null
     private var currentDebugLogFileName: String? = null
 
     override fun onServiceConnected() {
@@ -3850,6 +3851,195 @@ class ShopeeAccessibilityService : AccessibilityService() {
         } catch (e: Exception) {
             // 寫入永久歷史記錄失敗不影響本次擷取結果，SharedPreferences那份記錄依然有效
         }
+    }
+
+    // ========== 匯入舊短影音商品名稱（一次性功能，避免改用本App後重複擷取舊帳號已上架過的商品） ==========
+
+    fun isVideoImportRunning(): Boolean = videoImportJob?.isActive == true
+
+    /**
+     * 使用者換用本App之前，蝦皮帳號可能已經用別的工具上架過大量短影音（例如2000多支），
+     * 這些商品全部都處於「已收藏」狀態——但「已收藏」沒辦法用來分辨新舊，因為不管新品還是
+     * 舊品，要推廣都得先收藏，所以這些舊商品未來一定會照樣出現在「分潤按讚好物清單」，
+     * 被本App的擷取器當成全新商品重複處理。
+     *
+     * 解法：改成掃描「我的短影音」→「影片」分頁那個真正的已發布影片清單（見dump證實每支
+     * 影片的商品名稱可以從 viewIdResourceName=="anchor button" 節點讀到），把讀到的商品名稱
+     * 灌進既有的防重複資料庫（跟正常擷取共用同一份 captured_names／captured_history.jsonl），
+     * 之後自動擷取掃描候選清單時就會自動跳過這些商品，不需要改動任何既有的比對邏輯。
+     *
+     * 使用前提：目前畫面必須已經在「我的短影音」的「影片」分頁（格狀縮圖清單，如同截圖
+     * 那個畫面），本函式會自動點第一個縮圖進入影片feed，然後不斷往下滑讀取。
+     *
+     * batchSize：這次要新增幾筆「防重複資料庫裡原本沒有」的新商品名稱，達到就自動停止
+     * （不是滑過幾支影片就停止——已經在資料庫裡的舊資料只是快速略過，不計入這個數字）。
+     * 因為沒有辦法直接跳到清單中間某個位置，每次呼叫都得從第一支影片開始滑，所以分批次跑
+     * 的代價是：批次越多次，總共要重複滑過已經匯入過的部分也越多次——這是分批次唯一的
+     * 取捨，沒有更好的替代方案（蝦皮沒有提供直接跳到清單特定位置的方式）。
+     */
+    fun startVideoImport(batchSize: Int, onEvent: (VideoImportEvent) -> Unit) {
+        if (isVideoImportRunning()) return
+        FloatingButtonService.enterAutomationMode()
+        videoImportJob = serviceScope.launch {
+            try {
+                videoImportLoop(batchSize, onEvent)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                onEvent(VideoImportEvent.Log("已停止匯入"))
+            } catch (e: Exception) {
+                onEvent(VideoImportEvent.Log("發生未預期錯誤：${e.javaClass.simpleName} ${e.message}"))
+            } finally {
+                FloatingButtonService.exitAutomationMode()
+            }
+        }
+    }
+
+    fun stopVideoImport() {
+        videoImportJob?.cancel()
+    }
+
+    private suspend fun videoImportLoop(batchSize: Int, onEvent: (VideoImportEvent) -> Unit) {
+        appendDebugLog("===== [匯入舊影音] 開始，本批次目標新增 $batchSize 筆 =====")
+
+        var root = rootInActiveWindow
+        if (root == null) {
+            onEvent(VideoImportEvent.Log("讀不到目前畫面，請先切到蝦皮「我的短影音」的「影片」分頁再試一次"))
+            onEvent(VideoImportEvent.Finished(0, dedupNameCount(), "未開始：讀不到畫面"))
+            return
+        }
+
+        // 如果目前不在影片feed裡（沒有可見的anchor button節點），嘗試點第一個縮圖進入。
+        if (findVisibleVideoAnchorNode(root) == null) {
+            val firstThumb = findNodeByDescContaining(root, "click video 0")
+            if (firstThumb == null) {
+                onEvent(VideoImportEvent.Log("找不到第一支影片縮圖，請確認目前在「我的短影音」的「影片」分頁（格狀縮圖清單畫面）再試一次"))
+                onEvent(VideoImportEvent.Finished(0, dedupNameCount(), "未開始：找不到影片縮圖，畫面可能不對"))
+                return
+            }
+            clickNodeBestEffort(firstThumb)
+            delay(1200)
+        }
+
+        val existingNames = (getDedupPrefs().getStringSet("captured_names", emptySet()) ?: emptySet()).toMutableSet()
+        var newCount = 0
+        var consecutiveUnreadable = 0
+        var consecutiveNoChange = 0
+        var lastSeenName: String? = null
+        // 保險上限：避免資料庫裡已知的舊資料佔絕大多數時（例如快匯完的最後幾批）無窮迴圈跑不停，
+        // 抓一個「就算幾乎每支都要跳過，也該能跑到目標」的寬鬆倍數。
+        val maxIterations = (batchSize * 30).coerceAtLeast(300)
+        var iterations = 0
+
+        while (newCount < batchSize && iterations < maxIterations) {
+            if (!kotlinx.coroutines.currentCoroutineContext().isActive) break
+            iterations++
+
+            val r = rootInActiveWindow
+            if (r == null) {
+                appendDebugLog("  → [匯入舊影音] 讀不到目前畫面，停止")
+                onEvent(VideoImportEvent.Log("讀不到目前畫面，已停止"))
+                break
+            }
+
+            val name = findVisibleVideoProductName(r)
+            var wasNewThisRound = false
+
+            if (name.isNullOrBlank()) {
+                consecutiveUnreadable++
+                if (consecutiveUnreadable >= 8) {
+                    appendDebugLog("  → [匯入舊影音] 連續 8 支影片讀不到商品名稱，判定已經滑到清單底部或畫面跑掉，停止")
+                    onEvent(VideoImportEvent.Log("連續多支影片讀不到商品名稱，判定已到清單底部，停止匯入"))
+                    break
+                }
+            } else {
+                consecutiveUnreadable = 0
+                if (name == lastSeenName) {
+                    consecutiveNoChange++
+                    if (consecutiveNoChange >= 5) {
+                        appendDebugLog("  → [匯入舊影音] 連續 5 次滑動商品名稱都沒變化，判定已經滑到清單底部，停止")
+                        onEvent(VideoImportEvent.Log("連續多次滑動畫面沒有變化，判定已到清單底部，停止匯入"))
+                        break
+                    }
+                } else {
+                    consecutiveNoChange = 0
+                    lastSeenName = name
+                    if (existingNames.contains(name)) {
+                        appendDebugLog("  → [匯入舊影音] 「$name」已在防重複資料庫，快速略過")
+                    } else {
+                        existingNames.add(name)
+                        markAsCaptured(name, null)
+                        newCount++
+                        wasNewThisRound = true
+                        appendDebugLog("  → [匯入舊影音] 新增：「$name」（本批 $newCount/$batchSize，累積 ${existingNames.size} 筆）")
+                        onEvent(VideoImportEvent.Progress(newCount, batchSize, existingNames.size))
+                    }
+                }
+            }
+
+            if (newCount >= batchSize) break
+
+            swipeVideoFeedNext()
+            // 已知的舊資料只是路過，用較短等待加速略過；新資料（或讀不到）多等一點，
+            // 確保下一支影片畫面確實穩定下來才進行下一輪讀取，避免讀到轉場殘影。
+            delay(if (wasNewThisRound || name.isNullOrBlank()) 900 else 450)
+        }
+
+        val reason = when {
+            newCount >= batchSize -> "已達本批次目標 $batchSize 筆"
+            iterations >= maxIterations -> "已達安全上限（多半代表舊資料已經掃過一輪，剩下的都已在資料庫裡）"
+            else -> "已到清單底部或讀取中斷"
+        }
+        appendDebugLog("===== [匯入舊影音] 結束：本批次新增 $newCount 筆，資料庫累積共 ${existingNames.size} 筆，原因：$reason =====")
+        onEvent(VideoImportEvent.Finished(newCount, existingNames.size, reason))
+    }
+
+    private fun dedupNameCount(): Int =
+        (getDedupPrefs().getStringSet("captured_names", emptySet()) ?: emptySet()).size
+
+    /** 找目前畫面上「可見」的影片商品錨點節點（見 videoImportLoop 說明），忽略ViewPager預先載入、但還不可見的下一支影片。 */
+    private fun findVisibleVideoAnchorNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        var found: AccessibilityNodeInfo? = null
+        fun walk(node: AccessibilityNodeInfo?, depth: Int) {
+            if (node == null || found != null || depth > 30) return
+            if (node.viewIdResourceName == "anchor button" && node.isVisibleToUser) {
+                found = node
+                return
+            }
+            for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
+        }
+        walk(root, 0)
+        return found
+    }
+
+    /** 從可見的影片錨點節點裡，取出商品名稱文字（錨點節點本身通常沒有文字，文字在子節點的TextView上）。 */
+    private fun findVisibleVideoProductName(root: AccessibilityNodeInfo): String? {
+        val anchor = findVisibleVideoAnchorNode(root) ?: return null
+        if (!anchor.text.isNullOrBlank()) return anchor.text.toString().trim()
+        fun walk(node: AccessibilityNodeInfo?): String? {
+            if (node == null) return null
+            val t = node.text?.toString()?.trim()
+            if (!t.isNullOrBlank()) return t
+            for (i in 0 until node.childCount) {
+                walk(node.getChild(i))?.let { return it }
+            }
+            return null
+        }
+        return walk(anchor)
+    }
+
+    /** 短影音feed是上下滑動切換（類似抖音），從畫面下方往上滑到上方模擬滑到下一支影片。 */
+    private fun swipeVideoFeedNext() {
+        val metrics = resources.displayMetrics
+        val centerX = metrics.widthPixels / 2f
+        val startY = metrics.heightPixels * 0.75f
+        val endY = metrics.heightPixels * 0.25f
+        val path = Path().apply {
+            moveTo(centerX, startY)
+            lineTo(centerX, endY)
+        }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, 300))
+            .build()
+        dispatchGesture(gesture, null, null)
     }
 
     private fun findLikelyProductNameText(root: AccessibilityNodeInfo): String? {

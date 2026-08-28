@@ -294,6 +294,10 @@ fun RootScreen() {
 
         TermuxTestCard(context, termuxRunCommandGranted, termuxPermissionLauncher)
 
+        Spacer(Modifier.height(14.dp))
+
+        VideoImportCard(context)
+
         Spacer(Modifier.height(32.dp))
 
         Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
@@ -553,6 +557,116 @@ fun AutoCaptureSettingsCard(context: android.content.Context) {
             modifier = Modifier.fillMaxWidth().height(48.dp)
         ) {
             Text(stringResource(R.string.btn_save_params), fontSize = 15.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+/**
+ * 一次性功能：如果蝦皮帳號在改用本App之前，已經用別的工具上架過大量短影音（例如舊帳號
+ * 遷移過來），這些商品全部處於「已收藏」狀態，未來會被本App的擷取器當成全新商品重複處理。
+ * 這裡改成掃描蝦皮「我的短影音」的「影片」分頁那個真正的已發布清單，把讀到的商品名稱
+ * 灌進既有的防重複資料庫，之後擷取器掃描候選清單時會自動跳過——不用改動任何既有邏輯。
+ * 詳細原理見 ShopeeAccessibilityService.startVideoImport() 的說明。
+ */
+@Composable
+fun VideoImportCard(context: android.content.Context) {
+    var batchSizeText by remember { mutableStateOf("200") }
+    var statusText by remember { mutableStateOf<String?>(null) }
+    var isRunning by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            isRunning = ShopeeAccessibilityService.instance?.isVideoImportRunning() == true
+            kotlinx.coroutines.delay(1000)
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White)
+            .padding(16.dp)
+    ) {
+        Text("匯入舊短影音商品名稱（避免重複擷取）", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = InkColor)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "如果蝦皮帳號在改用本App之前，已經用別的工具上架過大量短影音，這些商品都已收藏、" +
+                "會被擷取器誤判成新商品。這裡改掃描「我的短影音」實際發布過的清單，把商品名稱" +
+                "灌進防重複資料庫，之後就會自動跳過。",
+            fontSize = 12.sp, color = MutedColor, lineHeight = 17.sp
+        )
+        Spacer(Modifier.height(10.dp))
+        Text(
+            "使用前請先在蝦皮App切到「我的」→頭像進個人主頁→「影片」分頁（格狀縮圖清單畫面），" +
+                "確認無障礙服務跟懸浮視窗都已開啟，再回來按下面的按鈕開始。",
+            fontSize = 12.sp, color = MutedColor, lineHeight = 17.sp
+        )
+        Spacer(Modifier.height(12.dp))
+
+        OutlinedTextField(
+            value = batchSizeText,
+            onValueChange = { batchSizeText = it.filter { c -> c.isDigit() } },
+            label = { Text("本批次要新增幾筆", fontSize = 12.sp) },
+            enabled = !isRunning,
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(Modifier.height(10.dp))
+
+        if (isRunning) {
+            Button(
+                onClick = {
+                    ShopeeAccessibilityService.instance?.stopVideoImport()
+                    statusText = "已送出停止請求…"
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFB3261E)),
+                shape = RoundedCornerShape(0.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("停止匯入")
+            }
+        } else {
+            Button(
+                onClick = {
+                    val service = ShopeeAccessibilityService.instance
+                    if (service == null) {
+                        statusText = "無障礙服務尚未啟動，請先完成上面的設定步驟"
+                        return@Button
+                    }
+                    val batchSize = batchSizeText.toIntOrNull()
+                    if (batchSize == null || batchSize <= 0) {
+                        statusText = "請輸入大於0的數字"
+                        return@Button
+                    }
+                    statusText = "開始匯入…請切到蝦皮App觀察進度"
+                    Toast.makeText(context, "已開始匯入，請切到蝦皮App", Toast.LENGTH_SHORT).show()
+                    service.startVideoImport(batchSize) { event ->
+                        when (event) {
+                            is VideoImportEvent.Log -> statusText = event.message
+                            is VideoImportEvent.Progress ->
+                                statusText = "已新增 ${event.newCount}/${event.batchTarget} 筆（資料庫累積 ${event.totalKnown} 筆）"
+                            is VideoImportEvent.Finished -> {
+                                statusText = "本批次結束：新增 ${event.newlyImportedCount} 筆，資料庫累積共 ${event.totalKnownCount} 筆\n原因：${event.reason}"
+                                Toast.makeText(
+                                    context,
+                                    "匯入結束，本批次新增 ${event.newlyImportedCount} 筆",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
+                    }
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = AccentColor),
+                shape = RoundedCornerShape(0.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("開始匯入這一批")
+            }
+        }
+
+        statusText?.let {
+            Spacer(Modifier.height(10.dp))
+            Text(it, fontSize = 12.sp, color = InkColor, lineHeight = 17.sp)
         }
     }
 }

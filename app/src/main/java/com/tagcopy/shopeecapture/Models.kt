@@ -211,3 +211,11 @@ sealed class UploadEvent {
         val reason: UploadFinishReason
     ) : UploadEvent()
 }
+
+/** 匯入舊短影音商品名稱（見ShopeeAccessibilityService.startVideoImport說明）的過程事件。 */
+sealed class VideoImportEvent {
+    data class Log(val message: String) : VideoImportEvent()
+    /** newCount：本批次目前新增幾筆；batchTarget：本批次目標；totalKnown：資料庫累積總筆數 */
+    data class Progress(val newCount: Int, val batchTarget: Int, val totalKnown: Int) : VideoImportEvent()
+    data class Finished(val newlyImportedCount: Int, val totalKnownCount: Int, val reason: String) : VideoImportEvent()
+}
