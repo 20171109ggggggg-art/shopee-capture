@@ -68,10 +68,30 @@ class FloatingButtonService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
+        // 【2026-08-28新增】擷取／上架自動化跑的期間浮球會被整個隱藏（見startAutoCapture／
+        // startUploadAutomation／startFbUploadAutomation），這段期間畫面上完全沒有任何按鈕
+        // 可以喊停。原本notification上唯一的「停止」按鈕只會關掉懸浮視窗服務本身（ACTION_STOP→
+        // stopSelf()），不會去取消跑在ShopeeAccessibilityService裡的自動化Job——也就是說按了
+        // 那顆鈕，背景的擷取/上架流程其實還是會繼續跑，反而更危險。這裡加一顆獨立的
+        // 「停止自動化」按鈕，直接呼叫無障礙服務把目前在跑的Job（不管是哪一種）取消掉，
+        // 取消後會觸發原本寫好的finally區塊，浮球也會跟著自動恢復顯示。
+        val stopAutomationIntent = Intent(this, FloatingButtonService::class.java).apply {
+            action = ACTION_STOP_AUTOMATION
+        }
+        val stopAutomationPending = PendingIntent.getService(
+            this, 1, stopAutomationIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
         val notification = Notification.Builder(this, channelId)
             .setContentTitle(getString(R.string.notif_title_running))
             .setContentText(getString(R.string.notif_text_running))
             .setSmallIcon(android.R.drawable.ic_menu_camera)
+            .addAction(
+                android.R.drawable.ic_menu_close_clear_cancel,
+                getString(R.string.btn_stop_automation),
+                stopAutomationPending
+            )
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, getString(R.string.btn_stop), stopPending)
             .build()
 
@@ -79,10 +99,44 @@ class FloatingButtonService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            stopSelf()
+        when (intent?.action) {
+            ACTION_STOP -> stopSelf()
+            ACTION_STOP_AUTOMATION -> stopAllRunningAutomation()
         }
         return START_STICKY
+    }
+
+    /**
+     * 「停止自動化」通知按鈕的實際動作：把無障礙服務裡目前在跑的自動化Job統統取消
+     * （三個stopXxx()各自都有isXxxRunning()/job為null的保護，不管當下實際在跑哪一種、
+     * 或根本沒有在跑，統統呼叫一輪都是安全的no-op）。浮球會因為對應Job的finally區塊
+     * 而自動恢復顯示，不用在這裡另外處理。
+     */
+    private fun stopAllRunningAutomation() {
+        val service = ShopeeAccessibilityService.instance
+        if (service == null) {
+            Toast.makeText(this, getString(R.string.toast_need_accessibility), Toast.LENGTH_SHORT).show()
+            return
+        }
+        var stoppedAny = false
+        if (service.isAutoCaptureRunning()) {
+            service.stopAutoCapture()
+            stoppedAny = true
+        }
+        if (service.isUploadAutomationRunning()) {
+            service.stopUploadAutomation()
+            stoppedAny = true
+        }
+        if (service.isFbUploadAutomationRunning()) {
+            service.stopFbUploadAutomation()
+            stoppedAny = true
+        }
+        Toast.makeText(
+            this,
+            if (stoppedAny) getString(R.string.toast_automation_stopped_from_notification)
+            else getString(R.string.toast_no_automation_running),
+            Toast.LENGTH_SHORT
+        ).show()
     }
 
     private fun showFloatingButton() {
@@ -568,6 +622,7 @@ class FloatingButtonService : Service() {
 
     companion object {
         const val ACTION_STOP = "com.tagcopy.shopeecapture.STOP"
+        const val ACTION_STOP_AUTOMATION = "com.tagcopy.shopeecapture.STOP_AUTOMATION"
 
         // 讓 ShopeeAccessibilityService 在截圖前後可以直接呼叫，隱藏/恢復懸浮視窗，
         // 避免「擷取／自動／偵測」這幾顆按鈕被一起拍進商品圖片裡。

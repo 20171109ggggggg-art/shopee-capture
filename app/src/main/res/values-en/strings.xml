@@ -19,6 +19,9 @@
     <string name="step3_desc_running">Running — switch to the Shopee app to start using it</string>
     <string name="step3_desc_idle">Tap, then switch to the Shopee app to see the floating button</string>
     <string name="btn_stop">Stop</string>
+    <string name="btn_stop_automation">Stop Automation</string>
+    <string name="toast_automation_stopped_from_notification">Current automation stopped</string>
+    <string name="toast_no_automation_running">No automation is currently running</string>
     <string name="btn_start">Start</string>
 
     <string name="step4_title">Read Photo Library Permission</string>

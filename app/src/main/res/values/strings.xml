@@ -19,6 +19,9 @@
     <string name="step3_desc_running">運作中，可以切到蝦皮 App 開始使用</string>
     <string name="step3_desc_idle">點擊後切換到蝦皮 App 即可看到懸浮按鈕</string>
     <string name="btn_stop">停止</string>
+    <string name="btn_stop_automation">停止自動化</string>
+    <string name="toast_automation_stopped_from_notification">已停止目前的自動化流程</string>
+    <string name="toast_no_automation_running">目前沒有自動化流程在執行</string>
     <string name="btn_start">啟動</string>
 
     <string name="step4_title">讀取相簿權限</string>
