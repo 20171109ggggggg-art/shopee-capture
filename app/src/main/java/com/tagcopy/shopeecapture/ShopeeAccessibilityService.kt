@@ -2244,13 +2244,41 @@ class ShopeeAccessibilityService : AccessibilityService() {
         delay(1200)
 
         // 8b. 若跳出「已新增商品連結」提示橫幅，點「關閉」讓畫面乾淨（不影響商品已自動帶入的結果）
+        // 【2026-08-28修正】原本用findNodeByTexts(listOf("關閉"))全畫面搜尋，實測發現誤點到
+        // 「分享到限時動態」那一列底下顯示目前狀態的文字（剛好也是「關閉」二字，代表該功能
+        // 目前是關閉狀態），點下去變成跳轉進那個功能的子設定畫面，完全跑錯地方。改成限定只在
+        // 畫面最上方1/3範圍內找「關閉」——橫幅一定緊貼在Reel設定畫面最上面，這樣可以跟畫面
+        // 中段那些「功能狀態文字」明確區分開來。
         root = rootInActiveWindow ?: return false
         findTextContaining(root, "已新增商品連結")?.let {
-            val closeBtn = findNodeByTexts(root, listOf("關閉"))
+            val screenHeight = resources.displayMetrics.heightPixels
+            val topThreshold = screenHeight / 3
+            val matches = root.findAccessibilityNodeInfosByText("關閉")
+            var closeBtn: AccessibilityNodeInfo? = null
+            for (node in matches) {
+                val b = Rect()
+                node.getBoundsInScreen(b)
+                if (b.top in 1 until topThreshold) {
+                    closeBtn = if (node.isClickable) node else {
+                        var parent = node.parent
+                        var depth = 0
+                        var found: AccessibilityNodeInfo? = null
+                        while (parent != null && depth < 6) {
+                            if (parent.isClickable) { found = parent; break }
+                            parent = parent.parent
+                            depth++
+                        }
+                        found
+                    }
+                    if (closeBtn != null) break
+                }
+            }
             if (closeBtn != null) {
                 clickFbNode(closeBtn)
                 appendDebugLog("  → [FB] 已關閉「已新增商品連結」提示橫幅")
                 delay(600)
+            } else {
+                appendDebugLog("  → [FB] 偵測到「已新增商品連結」橫幅但畫面上方找不到對應的關閉按鈕，略過不關閉（不影響後續流程）")
             }
         }
 
