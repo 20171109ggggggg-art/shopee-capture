@@ -11,8 +11,8 @@ android {
         applicationId = "com.tagcopy.shopeecapture"
         minSdk = 30
         targetSdk = 34
-        versionCode = 7
-        versionName = "1.006"
+        versionCode = 8
+        versionName = "1.007"
     }
 
     buildTypes {

@@ -93,10 +93,10 @@ class ShopeeAccessibilityService : AccessibilityService() {
 
     fun startAutoCapture(config: AutoCaptureConfig, onEvent: (AutoCaptureEvent) -> Unit) {
         if (isAutoCaptureRunning()) return
-        // 【2026-08-28新增】整段自動擷取跑的期間都把浮球藏起來（不是只有單張截圖前後那一瞬間），
-        // 避免浮球擋住畫面或被自動化的點擊誤觸；不管是正常跑完、被手動停止還是中途出例外，
-        // finally都會把浮球恢復顯示，不會有「跑完了浮球卻消失」的狀況。
-        FloatingButtonService.hideForScreenshot()
+        // 【2026-08-28修正】整段自動擷取跑的期間，浮球收合成單一「停止自動化」按鈕（不是整個
+        // 隱藏），畫面上隨時都點得到，不用依賴通知權限才能喊停；不管是正常跑完、被手動停止
+        // 還是中途出例外，finally都會把浮球恢復成原本7顆按鈕的長條清單。
+        FloatingButtonService.enterAutomationMode()
         autoJob = serviceScope.launch {
             try {
                 autoCaptureLoop(config, onEvent)
@@ -105,7 +105,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             } catch (e: Exception) {
                 onEvent(AutoCaptureEvent.Log(getString(R.string.auto_capture_error, e.message)))
             } finally {
-                FloatingButtonService.restoreAfterScreenshot()
+                FloatingButtonService.exitAutomationMode()
             }
         }
     }
@@ -1459,8 +1459,8 @@ class ShopeeAccessibilityService : AccessibilityService() {
      */
     fun startUploadAutomation(maxCount: Int, onEvent: (UploadEvent) -> Unit) {
         if (isUploadAutomationRunning()) return
-        // 【2026-08-28新增】整段上架自動化跑的期間都把浮球藏起來，理由同startAutoCapture。
-        FloatingButtonService.hideForScreenshot()
+        // 【2026-08-28修正】整段上架自動化跑的期間，浮球收合成單一「停止自動化」按鈕，理由同startAutoCapture。
+        FloatingButtonService.enterAutomationMode()
         uploadJob = serviceScope.launch {
             try {
                 uploadAutomationLoop(maxCount, onEvent)
@@ -1469,7 +1469,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             } catch (e: Exception) {
                 onEvent(UploadEvent.Log("發生未預期錯誤：${e.javaClass.simpleName} ${e.message}"))
             } finally {
-                FloatingButtonService.restoreAfterScreenshot()
+                FloatingButtonService.exitAutomationMode()
             }
         }
     }
@@ -2027,8 +2027,8 @@ class ShopeeAccessibilityService : AccessibilityService() {
      */
     fun startFbUploadAutomation(maxCount: Int, onEvent: (UploadEvent) -> Unit) {
         if (isFbUploadAutomationRunning()) return
-        // 【2026-08-28新增】整段FB上架自動化跑的期間都把浮球藏起來，理由同startAutoCapture。
-        FloatingButtonService.hideForScreenshot()
+        // 【2026-08-28修正】整段FB上架自動化跑的期間，浮球收合成單一「停止自動化」按鈕，理由同startAutoCapture。
+        FloatingButtonService.enterAutomationMode()
         fbUploadJob = serviceScope.launch {
             try {
                 fbUploadAutomationLoop(maxCount, onEvent)
@@ -2037,7 +2037,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             } catch (e: Exception) {
                 onEvent(UploadEvent.Log("發生未預期錯誤：${e.javaClass.simpleName} ${e.message}"))
             } finally {
-                FloatingButtonService.restoreAfterScreenshot()
+                FloatingButtonService.exitAutomationMode()
             }
         }
     }

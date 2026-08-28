@@ -31,14 +31,21 @@ class FloatingButtonService : Service() {
     private val calibrationTimeoutHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private var calibrationTimeoutRunnable: Runnable? = null
 
+    // 【2026-08-28新增】原本7顆按鈕的長條清單跟「自動化期間收合成一顆停止鈕」共用同一組視圖，
+    // companion object要能個別控制每顆按鈕的顯示/隱藏，所以把這幾個原本只在showFloatingButton()
+    // 裡的區域變數升級成實例欄位。
+    private var regularButtons: List<TextView> = emptyList()
+    private var stopAutomationFloatingButton: TextView? = null
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         instance = this
-        // 服務重新啟動時把隱藏計數歸零，避免上次執行中途被強制關閉、計數卡在非0，
-        // 導致這次浮球一開起來就莫名其妙被視為「還在隱藏中」。
+        // 服務重新啟動時把隱藏計數與自動化模式歸零，避免上次執行中途被強制關閉、狀態卡住，
+        // 導致這次浮球一開起來就莫名其妙顯示錯誤的樣子。
         hideRequestCount = 0
+        automationModeActive = false
         startForegroundWithNotification()
         showFloatingButton()
     }
@@ -216,6 +223,20 @@ class FloatingButtonService : Service() {
             setPadding(36, 24, 36, 24)
         }
 
+        // 【2026-08-28新增】自動化（擷取／上架／FB上架）跑的期間，原本7顆按鈕的長條清單會整組
+        // 收合、只留這一顆「停止自動化」按鈕（跟原本使用者熟悉的「長條→自動化開始後只剩一顆
+        // 按鈕」操作習慣一致），比起把整個懸浮視窗完全隱藏、只能靠下拉通知欄才能喊停，
+        // 這樣不用額外依賴通知權限，畫面上隨時都點得到。平常（沒有自動化在跑）預設是GONE。
+        val stopAutomationButton = TextView(this).apply {
+            text = getString(R.string.btn_stop_automation)
+            setBackgroundColor(0xFFB3261E.toInt())
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 14f
+            setPadding(36, 24, 36, 24)
+            visibility = View.GONE
+        }
+        stopAutomationFloatingButton = stopAutomationButton
+
         container.addView(captureButton)
         container.addView(autoButton)
         container.addView(detectButton)
@@ -223,6 +244,9 @@ class FloatingButtonService : Service() {
         container.addView(uploadButton)
         container.addView(fbUploadButton)
         container.addView(closeButton)
+        container.addView(stopAutomationButton)
+
+        regularButtons = listOf(captureButton, autoButton, detectButton, calibrateButton, uploadButton, fbUploadButton, closeButton)
 
         val layoutFlag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -277,6 +301,7 @@ class FloatingButtonService : Service() {
                             uploadButton -> onUploadButtonTapped(uploadButton)
                             fbUploadButton -> onFbUploadButtonTapped(fbUploadButton)
                             closeButton -> stopSelf()
+                            stopAutomationButton -> stopAllRunningAutomation()
                         }
                     }
                     true
@@ -291,6 +316,7 @@ class FloatingButtonService : Service() {
         uploadButton.setOnTouchListener(dragListener)
         fbUploadButton.setOnTouchListener(dragListener)
         closeButton.setOnTouchListener(dragListener)
+        stopAutomationButton.setOnTouchListener(dragListener)
 
         floatingView = container
         floatingViewParams = params
@@ -643,18 +669,58 @@ class FloatingButtonService : Service() {
         @Volatile
         private var hideRequestCount = 0
 
+        // 【2026-08-28新增】使用者反映：原本「自動」按鈕點下去，是留在7顆按鈕的長條清單裡、
+        // 只有自己的文字變成進度「0/20」；後來為了不讓浮球擋畫面/被拍進商品照片，
+        // 改成整段自動化期間直接把整個懸浮視窗隱藏——但這樣一來，唯一能中途喊停的地方
+        // 只剩下拉通知欄，還額外依賴通知權限，實測發現使用者那邊還是常常按不到。改成
+        // 「自動化模式」：不是整個隱藏，而是把原本7顆按鈕收合、只留一顆醒目的「停止自動化」
+        // 按鈕留在畫面上，隨時點得到，不依賴通知權限；单張商品截圖的那個瞬間（hideRequestCount
+        // >0）還是會連這顆停止鈕一起完全隱藏，避免拍進商品照片。
+        @Volatile
+        private var automationModeActive = false
+
+        @Synchronized
+        private fun applyVisibilityState() {
+            val svc = instance ?: return
+            if (hideRequestCount > 0) {
+                // 截圖瞬間：不管是不是自動化模式，統統完全隱藏，確保不會拍進商品照片。
+                svc.floatingView?.visibility = View.INVISIBLE
+                return
+            }
+            svc.floatingView?.visibility = View.VISIBLE
+            if (automationModeActive) {
+                svc.regularButtons.forEach { it.visibility = View.GONE }
+                svc.stopAutomationFloatingButton?.visibility = View.VISIBLE
+            } else {
+                svc.regularButtons.forEach { it.visibility = View.VISIBLE }
+                svc.stopAutomationFloatingButton?.visibility = View.GONE
+            }
+        }
+
         @Synchronized
         fun hideForScreenshot() {
             hideRequestCount++
-            instance?.floatingView?.visibility = View.INVISIBLE
+            applyVisibilityState()
         }
 
         @Synchronized
         fun restoreAfterScreenshot() {
             hideRequestCount = (hideRequestCount - 1).coerceAtLeast(0)
-            if (hideRequestCount == 0) {
-                instance?.floatingView?.visibility = View.VISIBLE
-            }
+            applyVisibilityState()
+        }
+
+        /** 整段自動化（擷取／上架／FB上架）開始時呼叫：收合成單一「停止自動化」按鈕。 */
+        @Synchronized
+        fun enterAutomationMode() {
+            automationModeActive = true
+            applyVisibilityState()
+        }
+
+        /** 整段自動化結束（正常跑完／手動停止／例外）時呼叫：恢復成原本7顆按鈕的長條清單。 */
+        @Synchronized
+        fun exitAutomationMode() {
+            automationModeActive = false
+            applyVisibilityState()
         }
     }
 }
