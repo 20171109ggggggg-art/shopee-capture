@@ -36,6 +36,9 @@ class FloatingButtonService : Service() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        // 服務重新啟動時把隱藏計數歸零，避免上次執行中途被強制關閉、計數卡在非0，
+        // 導致這次浮球一開起來就莫名其妙被視為「還在隱藏中」。
+        hideRequestCount = 0
         startForegroundWithNotification()
         showFloatingButton()
     }
@@ -629,12 +632,29 @@ class FloatingButtonService : Service() {
         @Volatile
         private var instance: FloatingButtonService? = null
 
+        // 【2026-08-28修正】原本是單純的開/關，但呼叫端有兩層：外層「整段自動化期間隱藏」
+        // （startAutoCapture/startUploadAutomation/startFbUploadAutomation）跟內層「單張商品截圖
+        // 前後隱藏」（captureGalleryImages，每擷取完一件商品的圖片輪播就會恢復一次）會互相打架——
+        // 內層每處理完一件商品就呼叫一次restoreAfterScreenshot()，會把外層才剛設定好的「整段
+        // 自動化都要隱藏」狀態蓋掉，導致自動化明明還在跑（例如20件商品才處理到第1件），浮球卻已
+        // 經被內層恢復顯示。改成計數式：hide每呼叫一次count+1並確保隱藏，restore每呼叫一次
+        // count-1，只有count真的歸零（代表所有隱藏需求都已經解除）才真的恢復顯示，這樣不管外層
+        // 內層呼叫順序、巢狀幾層，都不會有「內層還沒做完，外層卻先被恢復顯示」的狀況。
+        @Volatile
+        private var hideRequestCount = 0
+
+        @Synchronized
         fun hideForScreenshot() {
+            hideRequestCount++
             instance?.floatingView?.visibility = View.INVISIBLE
         }
 
+        @Synchronized
         fun restoreAfterScreenshot() {
-            instance?.floatingView?.visibility = View.VISIBLE
+            hideRequestCount = (hideRequestCount - 1).coerceAtLeast(0)
+            if (hideRequestCount == 0) {
+                instance?.floatingView?.visibility = View.VISIBLE
+            }
         }
     }
 }

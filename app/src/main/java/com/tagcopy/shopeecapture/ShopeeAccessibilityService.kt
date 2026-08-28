@@ -93,6 +93,10 @@ class ShopeeAccessibilityService : AccessibilityService() {
 
     fun startAutoCapture(config: AutoCaptureConfig, onEvent: (AutoCaptureEvent) -> Unit) {
         if (isAutoCaptureRunning()) return
+        // 【2026-08-28新增】整段自動擷取跑的期間都把浮球藏起來（不是只有單張截圖前後那一瞬間），
+        // 避免浮球擋住畫面或被自動化的點擊誤觸；不管是正常跑完、被手動停止還是中途出例外，
+        // finally都會把浮球恢復顯示，不會有「跑完了浮球卻消失」的狀況。
+        FloatingButtonService.hideForScreenshot()
         autoJob = serviceScope.launch {
             try {
                 autoCaptureLoop(config, onEvent)
@@ -100,6 +104,8 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 onEvent(AutoCaptureEvent.Log(getString(R.string.auto_capture_stopped)))
             } catch (e: Exception) {
                 onEvent(AutoCaptureEvent.Log(getString(R.string.auto_capture_error, e.message)))
+            } finally {
+                FloatingButtonService.restoreAfterScreenshot()
             }
         }
     }
@@ -312,6 +318,21 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 if (recheck != metrics) {
                     appendDebugLog("  → 數值確認：分潤率/價格/已售出/已推廣者第一次讀到的跟 2 秒後不一致，改用較晚讀到的結果（原=$metrics，改=$recheck）")
                     metrics = recheck
+                }
+
+                // 【2026-08-28新增】連續自動擷取時發現過商品名稱抓錯的案例：從上一個商品的詳情頁
+                // 切換到這個商品的詳情頁那個瞬間，畫面還在轉場、舊畫面的文字節點可能還沒被完全換掉，
+                // 這時候讀到的標題有機率混進「新舊畫面疊在一起」的殘影文字（尤其findLikelyProductNameText
+                // 是「挑最長候選」，疊字疊出來的長文字反而更容易被誤選中）。這裡趁著上面已經為了核對
+                // metrics等了4秒（畫面這時候一定已經完全穩定、轉場早就結束）的這個時間點，順便重讀
+                // 一次標題，跟第一次讀到的不一樣就代表第一次讀到的是不穩定的殘影，改用這次重讀的結果。
+                val freshRootForNameRecheck = rootInActiveWindow
+                if (freshRootForNameRecheck != null) {
+                    val recheckedName = findLikelyProductNameText(freshRootForNameRecheck)
+                    if (!recheckedName.isNullOrBlank() && recheckedName != productName) {
+                        appendDebugLog("  → ⚠ 商品名稱確認：第一次讀到「$productName」，4秒後重讀變成「$recheckedName」，判定第一次讀到的是轉場殘影文字，改用重讀結果")
+                        productName = recheckedName
+                    }
                 }
             }
         }
@@ -1438,6 +1459,8 @@ class ShopeeAccessibilityService : AccessibilityService() {
      */
     fun startUploadAutomation(maxCount: Int, onEvent: (UploadEvent) -> Unit) {
         if (isUploadAutomationRunning()) return
+        // 【2026-08-28新增】整段上架自動化跑的期間都把浮球藏起來，理由同startAutoCapture。
+        FloatingButtonService.hideForScreenshot()
         uploadJob = serviceScope.launch {
             try {
                 uploadAutomationLoop(maxCount, onEvent)
@@ -1445,6 +1468,8 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 onEvent(UploadEvent.Log("已停止上架自動化"))
             } catch (e: Exception) {
                 onEvent(UploadEvent.Log("發生未預期錯誤：${e.javaClass.simpleName} ${e.message}"))
+            } finally {
+                FloatingButtonService.restoreAfterScreenshot()
             }
         }
     }
@@ -2002,6 +2027,8 @@ class ShopeeAccessibilityService : AccessibilityService() {
      */
     fun startFbUploadAutomation(maxCount: Int, onEvent: (UploadEvent) -> Unit) {
         if (isFbUploadAutomationRunning()) return
+        // 【2026-08-28新增】整段FB上架自動化跑的期間都把浮球藏起來，理由同startAutoCapture。
+        FloatingButtonService.hideForScreenshot()
         fbUploadJob = serviceScope.launch {
             try {
                 fbUploadAutomationLoop(maxCount, onEvent)
@@ -2009,6 +2036,8 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 onEvent(UploadEvent.Log("已停止FB上架自動化"))
             } catch (e: Exception) {
                 onEvent(UploadEvent.Log("發生未預期錯誤：${e.javaClass.simpleName} ${e.message}"))
+            } finally {
+                FloatingButtonService.restoreAfterScreenshot()
             }
         }
     }
