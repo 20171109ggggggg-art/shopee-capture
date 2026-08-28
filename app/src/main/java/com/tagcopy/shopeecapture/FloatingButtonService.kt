@@ -213,6 +213,17 @@ class FloatingButtonService : Service() {
             setPadding(36, 24, 36, 24)
         }
 
+        // 【2026-08-29新增】匯入舊短影音商品名稱（一次性功能，見ShopeeAccessibilityService.
+        // startVideoImport說明）。使用前提：目前畫面必須已經在蝦皮「我的短影音」的「影片」
+        // 分頁（格狀縮圖清單畫面）。批次大小在App主畫面設定（VideoImportPrefs），這裡直接讀取。
+        val videoImportButton = TextView(this).apply {
+            text = getString(R.string.btn_video_import)
+            setBackgroundColor(0xFF6D4C41.toInt())
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 14f
+            setPadding(36, 24, 36, 24)
+        }
+
         // 關閉按鈕：讓使用者不用特地下拉通知欄找停止動作，直接在懸浮視窗上就能收起整個服務。
         // 跟通知欄的停止按鈕（ACTION_STOP）共用同一套stopSelf()邏輯。
         val closeButton = TextView(this).apply {
@@ -243,10 +254,11 @@ class FloatingButtonService : Service() {
         container.addView(calibrateButton)
         container.addView(uploadButton)
         container.addView(fbUploadButton)
+        container.addView(videoImportButton)
         container.addView(closeButton)
         container.addView(stopAutomationButton)
 
-        regularButtons = listOf(captureButton, autoButton, detectButton, calibrateButton, uploadButton, fbUploadButton, closeButton)
+        regularButtons = listOf(captureButton, autoButton, detectButton, calibrateButton, uploadButton, fbUploadButton, videoImportButton, closeButton)
 
         val layoutFlag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -300,6 +312,7 @@ class FloatingButtonService : Service() {
                             calibrateButton -> toggleCoordinateCalibrationOverlay()
                             uploadButton -> onUploadButtonTapped(uploadButton)
                             fbUploadButton -> onFbUploadButtonTapped(fbUploadButton)
+                            videoImportButton -> onVideoImportButtonTapped()
                             closeButton -> stopSelf()
                             stopAutomationButton -> stopAllRunningAutomation()
                         }
@@ -315,6 +328,7 @@ class FloatingButtonService : Service() {
         calibrateButton.setOnTouchListener(dragListener)
         uploadButton.setOnTouchListener(dragListener)
         fbUploadButton.setOnTouchListener(dragListener)
+        videoImportButton.setOnTouchListener(dragListener)
         closeButton.setOnTouchListener(dragListener)
         stopAutomationButton.setOnTouchListener(dragListener)
 
@@ -342,16 +356,10 @@ class FloatingButtonService : Service() {
             return
         }
 
-        val service = ShopeeAccessibilityService.instance
-        if (service == null) {
-            Toast.makeText(this, getString(R.string.toast_need_accessibility), Toast.LENGTH_LONG).show()
-            return
-        }
-
         val overlay = View(this)
         overlay.setOnTouchListener { _, event ->
             if (event.action == MotionEvent.ACTION_DOWN) {
-                service.logCalibrationTap(event.rawX, event.rawY)
+                ShopeeAccessibilityService.instance?.logCalibrationTap(event.rawX, event.rawY)
                 Toast.makeText(this, "已記錄：X=${event.rawX.toInt()} Y=${event.rawY.toInt()}", Toast.LENGTH_SHORT).show()
             }
             true
@@ -461,9 +469,11 @@ class FloatingButtonService : Service() {
                 }
                 is AutoCaptureEvent.Progress -> {
                     autoButton.text = "${event.current}/${event.total}"
+                    stopAutomationFloatingButton?.text = "${getString(R.string.btn_stop_automation)}\n${event.current}/${event.total}"
                 }
                 is AutoCaptureEvent.Finished -> {
                     autoButton.text = getString(R.string.btn_auto)
+                    stopAutomationFloatingButton?.text = getString(R.string.btn_stop_automation)
                     when (event.reason) {
                         FinishReason.TIME_LIMIT_REACHED -> showAlertNotification(
                             getString(R.string.alert_title_time_limit),
@@ -519,9 +529,11 @@ class FloatingButtonService : Service() {
                 }
                 is UploadEvent.Progress -> {
                     uploadButton.text = "${event.current}/${event.total}"
+                    stopAutomationFloatingButton?.text = "${getString(R.string.btn_stop_automation)}\n${event.current}/${event.total}"
                 }
                 is UploadEvent.Finished -> {
                     uploadButton.text = getString(R.string.btn_upload)
+                    stopAutomationFloatingButton?.text = getString(R.string.btn_stop_automation)
                     val reasonText = when (event.reason) {
                         UploadFinishReason.ALL_DONE -> getString(R.string.upload_finish_reason_all_done)
                         UploadFinishReason.MAX_COUNT_REACHED -> getString(R.string.upload_finish_reason_max_count)
@@ -538,10 +550,50 @@ class FloatingButtonService : Service() {
     }
 
     /**
+     * 匯入舊短影音商品名稱（一次性功能）。按下前提：目前畫面必須已經在蝦皮「我的短影音」
+     * 的「影片」分頁（格狀縮圖清單畫面）。批次大小在App主畫面設定（VideoImportPrefs）。
+     */
+    private fun onVideoImportButtonTapped() {
+        val service = ShopeeAccessibilityService.instance
+        if (service == null) {
+            Toast.makeText(this, getString(R.string.toast_need_accessibility), Toast.LENGTH_LONG).show()
+            return
+        }
+
+        if (service.isVideoImportRunning()) {
+            service.stopVideoImport()
+            Toast.makeText(this, "已送出停止匯入請求", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val batchSize = VideoImportPrefs.loadBatchSize(this)
+        stopAutomationFloatingButton?.text = "${getString(R.string.btn_stop_automation)}\n0/$batchSize"
+        Toast.makeText(this, "開始匯入舊短影音商品名稱，目標本批 $batchSize 筆", Toast.LENGTH_SHORT).show()
+
+        service.startVideoImport(batchSize) { event ->
+            when (event) {
+                is VideoImportEvent.Log -> {
+                    Toast.makeText(this, event.message, Toast.LENGTH_SHORT).show()
+                }
+                is VideoImportEvent.Progress -> {
+                    stopAutomationFloatingButton?.text = "${getString(R.string.btn_stop_automation)}\n${event.newCount}/${event.batchTarget}"
+                }
+                is VideoImportEvent.Finished -> {
+                    stopAutomationFloatingButton?.text = getString(R.string.btn_stop_automation)
+                    showAlertNotification(
+                        "匯入舊短影音結束",
+                        "本批次新增 ${event.newlyImportedCount} 筆，資料庫累積共 ${event.totalKnownCount} 筆\n原因：${event.reason}"
+                    )
+                }
+            }
+        }
+    }
+
+
+    /**
      * FB上架自動化按鈕（階段3）。按下前提：目前畫面必須已經在FB App「聯盟合作→商品」
      * 分頁（畫面上看得到「搜尋商品、品牌或連結」搜尋框），這段導航目前還沒自動化，
-     * 需要先手動切過去。【測試階段】固定只處理1支，全程盯著畫面觀察，
-     * 跑順了之後再考慮開放調整支數（比照UploadAutomationPrefs的做法）。
+     * 需要先手動切過去。
      */
     private fun onFbUploadButtonTapped(fbUploadButton: TextView) {
         val service = ShopeeAccessibilityService.instance
@@ -578,9 +630,11 @@ class FloatingButtonService : Service() {
                 }
                 is UploadEvent.Progress -> {
                     fbUploadButton.text = "${event.current}/${event.total}"
+                    stopAutomationFloatingButton?.text = "${getString(R.string.btn_stop_automation)}\n${event.current}/${event.total}"
                 }
                 is UploadEvent.Finished -> {
                     fbUploadButton.text = getString(R.string.btn_fb_upload)
+                    stopAutomationFloatingButton?.text = getString(R.string.btn_stop_automation)
                     val reasonText = when (event.reason) {
                         UploadFinishReason.ALL_DONE -> getString(R.string.upload_finish_reason_all_done)
                         UploadFinishReason.MAX_COUNT_REACHED -> getString(R.string.upload_finish_reason_max_count)

@@ -97,6 +97,7 @@
     <string name="btn_calibrate">Calibrate</string>
     <string name="btn_upload">Upload</string>
     <string name="btn_fb_upload">FB Upload</string>
+    <string name="btn_video_import">Import Videos</string>
 
     <string name="toast_upload_need_accessibility">Please enable \"Accessibility Service\" first</string>
     <string name="toast_upload_started">Started upload automation, up to %1$d this batch</string>
