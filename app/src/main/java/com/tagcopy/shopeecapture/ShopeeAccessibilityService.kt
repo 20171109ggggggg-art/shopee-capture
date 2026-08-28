@@ -2074,6 +2074,18 @@ class ShopeeAccessibilityService : AccessibilityService() {
      * 處理一筆候選商品的完整FB上架流程。任何一步逾時或失敗就回傳false並記錄詳細原因，
      * 不拋例外（呼叫端已包try/catch保護整批）。
      */
+    /**
+     * 【2026-08-28新增】FB畫面按鈕的統一點擊輔助函式。實測證實FB多處自繪UI元件
+     * （搜尋結果商品卡）對accessibility的ACTION_CLICK完全沒反應（回報成功但畫面沒變化），
+     * 改用真實座標手勢點擊才有效。這裡FB流程裡「所有」按鈕點擊都先改用座標點擊，
+     * 一次到位，不用每顆按鈕各自撞牆一次才修正；如果座標手勢送出本身就失敗（極少見，
+     * 例如節點bounds是0），才退回原本的ACTION_CLICK當保底。
+     */
+    private fun clickFbNode(node: AccessibilityNodeInfo): Boolean {
+        if (tapNodeCenter(node)) return true
+        return clickNodeBestEffort(node)
+    }
+
     private suspend fun processOneFbUploadCandidate(candidate: UploadCandidate): Boolean {
         // 0. 確認目前在FB「聯盟合作／商品」畫面（找得到搜尋框，且畫面上有「聯盟合作」字樣）
         var root = rootInActiveWindow ?: run {
@@ -2102,7 +2114,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             appendDebugLog("  → [FB] 這筆候選商品沒有商品名稱(productName為空)，無法用名稱搜尋，跳過")
             return false
         }
-        clickNodeBestEffort(searchBox)
+        clickFbNode(searchBox)
         delay(600)
         root = rootInActiveWindow ?: return false
         val focusedSearchBox = findSearchBoxNode(root) ?: searchBox
@@ -2173,7 +2185,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         delay(600)
         root = rootInActiveWindow ?: return false
         val createPostButton = findNodeByTexts(root, listOf("建立貼文"))
-        if (createPostButton == null || !clickNodeBestEffort(createPostButton)) {
+        if (createPostButton == null || !clickFbNode(createPostButton)) {
             appendDebugLog("  → [FB] 找不到或點擊「建立貼文」失敗"); return false
         }
         delay(1200)
@@ -2184,7 +2196,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
         root = rootInActiveWindow ?: return false
         val addToReelButton = findNodeByTexts(root, listOf("加到新 Reel", "加到新Reel"))
-        if (addToReelButton == null || !clickNodeBestEffort(addToReelButton)) {
+        if (addToReelButton == null || !clickFbNode(addToReelButton)) {
             appendDebugLog("  → [FB] 找不到或點擊「加到新Reel」失敗"); return false
         }
         delay(2500)
@@ -2196,7 +2208,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         delay(500)
         root = rootInActiveWindow ?: return false
         val galleryButton = findNodeByTexts(root, listOf("圖庫"))
-        if (galleryButton == null || !clickNodeBestEffort(galleryButton)) {
+        if (galleryButton == null || !clickFbNode(galleryButton)) {
             appendDebugLog("  → [FB] 找不到或點擊「圖庫」失敗"); return false
         }
         delay(1500)
@@ -2208,7 +2220,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         delay(500)
         root = rootInActiveWindow ?: return false
         val firstVideoItem = findNodeByDescContaining(root, "項目1，拍攝於")
-        if (firstVideoItem == null || !clickNodeBestEffort(firstVideoItem)) {
+        if (firstVideoItem == null || !clickFbNode(firstVideoItem)) {
             appendDebugLog("  → [FB] 找不到或點擊相簿第一個影片項目失敗"); return false
         }
         delay(1800)
@@ -2220,7 +2232,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         delay(600)
         root = rootInActiveWindow ?: return false
         val editorNextButton = findNodeByTexts(root, listOf("下一步"))
-        if (editorNextButton == null || !clickNodeBestEffort(editorNextButton)) {
+        if (editorNextButton == null || !clickFbNode(editorNextButton)) {
             appendDebugLog("  → [FB] 找不到或點擊影片編輯預覽「下一步」失敗"); return false
         }
         delay(2200)
@@ -2236,7 +2248,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         findTextContaining(root, "已新增商品連結")?.let {
             val closeBtn = findNodeByTexts(root, listOf("關閉"))
             if (closeBtn != null) {
-                clickNodeBestEffort(closeBtn)
+                clickFbNode(closeBtn)
                 appendDebugLog("  → [FB] 已關閉「已新增商品連結」提示橫幅")
                 delay(600)
             }
@@ -2278,7 +2290,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             val alreadyChecked = aiTagToggle.isChecked
             if (alreadyChecked) {
                 appendDebugLog("  → [FB] 「新增AI標籤」開關本來就是開啟狀態，不用再點")
-            } else if (clickNodeBestEffort(aiTagToggle)) {
+            } else if (clickFbNode(aiTagToggle)) {
                 appendDebugLog("  → [FB] 已點擊開啟「新增AI標籤」開關")
             } else {
                 appendDebugLog("  → [FB] 找到「新增AI標籤」開關但點擊失敗，跳過不開啟（不當作整體失敗）")
@@ -2299,7 +2311,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (shareButton == null) {
             appendDebugLog("  → [FB] 捲動4次後仍找不到「立即分享」按鈕"); return false
         }
-        if (!clickNodeBestEffort(shareButton)) {
+        if (!clickFbNode(shareButton)) {
             appendDebugLog("  → [FB] 點擊「立即分享」失敗"); return false
         }
 
