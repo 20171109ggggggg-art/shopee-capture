@@ -1479,6 +1479,8 @@ class ShopeeAccessibilityService : AccessibilityService() {
         uploadJob = null
     }
 
+    // 【2026-08-28調整】使用者反映蝦皮上架跑太快，這個函式以下到navigateBackToLikesListAfterPost()
+    // 為止的所有delay()等待時間，整體統一拉長40%，讓每個動作之間停留久一點、更接近真人操作節奏。
     private suspend fun uploadAutomationLoop(maxCount: Int, onEvent: (UploadEvent) -> Unit) {
         appendDebugLog("===== 開始上架自動化，本次上限 $maxCount 支 =====")
         onEvent(UploadEvent.Log("開始上架自動化，本次上限 $maxCount 支"))
@@ -1534,7 +1536,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             }
 
             if (successCount < maxCount) {
-                delay(Random.nextLong(9000, 15000))
+                delay(Random.nextLong(12600, 21000))
             }
         }
 
@@ -1563,7 +1565,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 false
             }
             if (fbLaunched) {
-                delay(3000) // 給FB App足夠時間完整啟動、畫面穩定，才開始導航
+                delay(4800) // 給FB App足夠時間完整啟動、畫面穩定，才開始導航（比照FB流程+60%的節奏）
                 val fbCandidateCount = scanFbUploadCandidates().size
                 if (fbCandidateCount > 0) {
                     fbUploadAutomationLoop(fbCandidateCount, onEvent)
@@ -1610,7 +1612,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             if (!waitForAnyText(listOf("從匯入連結新增", "Add by Import Link"), 3000)) {
                 appendDebugLog("  → [$attemptLabel] 等不到「從匯入連結新增」選單"); return false
             }
-            delay(1200)
+            delay(1700)
             val importMenuNode = findNodeByTexts(rootInActiveWindow ?: return false, listOf("從匯入連結新增", "Add by Import Link"))
             if (importMenuNode == null || !clickNodeBestEffort(importMenuNode)) {
                 appendDebugLog("  → [$attemptLabel] 點擊「從匯入連結新增」失敗"); return false
@@ -1619,7 +1621,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             if (!waitForAnyText(listOf("商品連結", "Products URL"), 3000)) {
                 appendDebugLog("  → [$attemptLabel] 等不到「商品連結」輸入畫面"); return false
             }
-            delay(1200)
+            delay(1700)
             var root2 = rootInActiveWindow ?: return false
             val linkInput = findSearchBoxNode(root2)
             if (linkInput == null) {
@@ -1630,18 +1632,18 @@ class ShopeeAccessibilityService : AccessibilityService() {
             }
             linkInput.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, bundle)
             appendDebugLog("  → [$attemptLabel] 貼上商品連結")
-            delay(1500)
+            delay(2100)
             // 填完文字後鍵盤還開著、輸入框還focus著，「新增至按讚好物」按鈕不會被觸發／可能被鍵盤蓋住，
             // 要主動清除焦點+收起鍵盤，模擬使用者「點輸入框外面一下」的動作，畫面才會切到確認狀態。
             root2 = rootInActiveWindow ?: return false
             (findSearchBoxNode(root2) ?: linkInput).performAction(AccessibilityNodeInfo.ACTION_CLEAR_FOCUS)
-            delay(450)
+            delay(650)
             val imm2 = getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
             imm2?.hideSoftInputFromWindow(null, 0)
-            delay(1050)
+            delay(1450)
             root2 = rootInActiveWindow ?: return false
             findNodeByTexts(root2, listOf("商品連結", "Products URL"))?.let { clickNodeBestEffort(it) }
-            delay(1050)
+            delay(1450)
 
             root2 = rootInActiveWindow ?: return false
             val addToListButton = findNodeByTexts(root2, listOf("新增至按讚好物", "Add to My Likes"))
@@ -1649,7 +1651,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 appendDebugLog("  → [$attemptLabel] 找不到或點擊「新增至按讚好物」失敗"); return false
             }
             appendDebugLog("  → [$attemptLabel] 已按下「新增至按讚好物」")
-            delay(3750)
+            delay(5250)
             return true
         }
 
@@ -1668,7 +1670,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (!waitForAnyText(listOf("分潤按讚好物", "My Likes"), 4000)) {
             appendDebugLog("  → 新增連結後等不到回到清單畫面"); return false
         }
-        delay(5250)
+        delay(7350)
         root = rootInActiveWindow ?: return false
         val firstCheckbox = findFirstNodeById(root, "AN_Checkbox_CheckedIconUnCheckIcon_Img")
         if (firstCheckbox == null) {
@@ -1686,7 +1688,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (!clickNodeBestEffort(firstCheckbox)) {
             appendDebugLog("  → 點擊清單第一筆的勾選框失敗"); return false
         }
-        delay(1800)
+        delay(2500)
 
         // 5. 點「分享」
         root = rootInActiveWindow ?: return false
@@ -1715,9 +1717,9 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
 
         // 7. 趁畫面切換的空檔，把影片登記進媒體庫，確保等一下的選片畫面找得到
-        delay(3000)
+        delay(4200)
         registerVideoInMediaStore(candidate.videoFile)
-        delay(1500)
+        delay(2100)
 
         // 8. 點「媒體庫」
         root = rootInActiveWindow ?: run { appendDebugLog("  → 等不到短影音錄影頁"); return false }
@@ -1730,20 +1732,20 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (!waitForAnyText(listOf("相片集", "Gallery"), 4000)) {
             appendDebugLog("  → 等不到媒體庫選片畫面"); return false
         }
-        delay(1500)
+        delay(2100)
         root = rootInActiveWindow ?: return false
         val videoTab = (root.findAccessibilityNodeInfosByText("短影音") + root.findAccessibilityNodeInfosByText("Video"))
             .firstOrNull { it.isClickable }
         if (videoTab != null) {
             clickNodeBestEffort(videoTab)
-            delay(1800)
+            delay(2500)
         }
         root = rootInActiveWindow ?: return false
         val firstGalleryItem = findNodeByIdSuffix(root, "ll_check")
         if (firstGalleryItem == null || !clickNodeBestEffort(firstGalleryItem)) {
             appendDebugLog("  → 找不到或點擊媒體庫第一個項目失敗"); return false
         }
-        delay(1500)
+        delay(2100)
 
         // 10. 點「下一步」
         root = rootInActiveWindow ?: return false
@@ -1759,13 +1761,13 @@ class ShopeeAccessibilityService : AccessibilityService() {
         // 這個畫面有自己獨立的「下一步」按鈕，要點過這關才會進到撰寫內文畫面——
         // 之前漏掉這一關，才會一直卡在「等不到撰寫內文畫面」。
         if (waitForAnyText(listOf("剪輯", "配音", "音效", "Trimmer", "Voiceover", "Stickers"), 5000)) {
-            delay(2250)
+            delay(3150)
             root = rootInActiveWindow ?: return false
             val editorNextButton = findNodeByTexts(root, listOf("下一步", "Next"))
             if (editorNextButton != null) {
                 clickNodeBestEffort(editorNextButton)
                 appendDebugLog("  → 影片編輯預覽畫面：已點擊下一步")
-                delay(1500)
+                delay(2100)
             } else {
                 appendDebugLog("  → 影片編輯預覽畫面：找不到「下一步」按鈕，嘗試繼續往下走")
             }
@@ -1777,7 +1779,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (!waitForAnyText(listOf("撰寫內文", "為您的短影音撰寫內文", "Add Caption", "Add caption to your videos"), 5000)) {
             appendDebugLog("  → 等不到「撰寫內文」畫面"); return false
         }
-        delay(1700)
+        delay(2400)
 
         // 12. 確認商品卡是否自動帶入（只記錄不當失敗條件，避免因為判斷誤差擋住整個流程）
         root = rootInActiveWindow ?: return false
@@ -1793,19 +1795,19 @@ class ShopeeAccessibilityService : AccessibilityService() {
         // 【診斷用，暫時對調順序】懷疑蝦皮可能有「合拍／拼接至少要保留一個開啟」的隱藏驗證規則，
         // 先關閉的那個會被系統改回開啟——這次先點拼接、再點合拍，用來驗證這個猜測，
         // 如果猜測成立，這次應該會變成「拼接」被改回開啟、「合拍」關閉成功（順序互換）。
-        delay(2500)
+        delay(3500)
         root = rootInActiveWindow ?: return false
         findNodeByIdSuffix(root, "tv_allow_stitch")?.let {
             val (tapX, tapY) = tapToggleNearLabel(it)
             appendDebugLog("  → 已點擊「允許他人拼接」開關（座標點擊法，實際點擊位置 X=%.1f Y=%.1f）".format(tapX, tapY))
         }
-        delay(1190)
+        delay(1650)
         root = rootInActiveWindow ?: return false
         findNodeByIdSuffix(root, "tv_allow_duet")?.let {
             val (tapX, tapY) = tapToggleNearLabel(it)
             appendDebugLog("  → 已點擊「允許他人合拍」開關（座標點擊法，實際點擊位置 X=%.1f Y=%.1f）".format(tapX, tapY))
         }
-        delay(1190)
+        delay(1650)
         root = rootInActiveWindow ?: return false
         findNodeByIdSuffix(root, "tv_ai_generated_title")?.let { titleNode ->
             // 實測校正發現：這顆開關的垂直位置不是對齊標題那一行，而是對齊「標題+底下
@@ -1831,7 +1833,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             }
             appendDebugLog("  → 已點擊「AI生成影片標記」開關（座標點擊法，標題+說明文字合併中點，實際點擊位置 X=%.1f Y=%.1f）".format(aiTapX, aiTapY))
         }
-        delay(1700)
+        delay(2400)
 
         // 14. 填入文案（【順序調整】改到最後，緊接著點「發佈」之前）
         root = rootInActiveWindow ?: return false
@@ -1846,11 +1848,11 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, shortVideoCaption)
             }
             captionInput.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, captionBundle)
-            delay(1700)
+            delay(2400)
             captionInput.performAction(AccessibilityNodeInfo.ACTION_CLEAR_FOCUS)
             val imm2 = getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
             imm2?.hideSoftInputFromWindow(null, 0)
-            delay(1190)
+            delay(1650)
             // 填完文案後，畫面有時會卡在「文字選取模式」（螢幕上出現綠色選取控點、背景變暗），
             // 這是ACTION_CLEAR_FOCUS在部分機型上被系統誤判成長按選取文字，沒有真的跳出來，
             // 導致後面點發佈其實點在這層看不見的選取狀態上、完全沒反應。
@@ -1866,7 +1868,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
                     appendDebugLog("  → 找不到安全錨點文字，改用座標點擊跳出文字選取模式")
                 }
             }
-            delay(1190)
+            delay(1650)
         }
 
         // 15. 點「發佈」
@@ -1877,7 +1879,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
 
         // 16. 判定成功的依據：按下發佈後，畫面上不再有文案輸入框（代表已經離開撰寫內文畫面）
-        delay(5100)
+        delay(7150)
         val stillOnCaptionScreen = rootInActiveWindow?.let { findNodeByIdSuffix(it, "et_caption") } != null
         if (stillOnCaptionScreen) {
             appendDebugLog("  → 按下發佈後仍停在撰寫內文畫面，判定失敗（可能跳出錯誤提示或達到每日上限）")
@@ -1902,14 +1904,14 @@ class ShopeeAccessibilityService : AccessibilityService() {
      */
     private suspend fun navigateBackToLikesListAfterPost() {
         // 17a-0. 等畫面穩定下來——使用者實測發現，發佈成功後跳轉到「Live & Video」動態牆
-        // 的時間不固定（有時很快、有時明顯較慢），原本寫死delay(1500)不夠、常常太早去找
+        // 的時間不固定（有時很快、有時明顯較慢），原本寫死delay(2100)不夠、常常太早去找
         // 底部導覽列時畫面還沒渲染完成。原本改成等「Home」/「首頁」文字出現，但實測發現
         // TW的首頁分頁其實叫「蝦拼」（蝦皮暱稱，不是「首頁」），害這一步在TW每次都空等滿10秒
         // 才繼續。改成直接等「我的」分頁本身出現（含跨地區共用、不受語言影響的
         // contentDescription「tab_bar_button_me」），這樣不用去猜各地區「首頁」分頁叫什麼，
         // 而且等到的東西就是接下來步驟17b真正要點的目標，一次到位。
         waitForAnyText(listOf("我的", "我", "Me", "tab_bar_button_me"), 10000)
-        delay(800)
+        delay(1100)
 
         // 17a. 若跳出「Share to Whatsapp」分享詢問彈窗，點「Cancel」跳過（PH特有，目前未見TW版本）
         var root = rootInActiveWindow
@@ -1920,7 +1922,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             } else {
                 appendDebugLog("  → [返回清單] 偵測到「Share to Whatsapp」彈窗，但點擊Cancel失敗")
             }
-            delay(1200)
+            delay(1700)
         }
 
         // 17b. 點底部導覽列「我／Me」
@@ -1936,14 +1938,14 @@ class ShopeeAccessibilityService : AccessibilityService() {
             meTab = root?.let { findBottommostNodeByTexts(it, listOf("我的", "我", "Me", "tab_bar_button_me")) }
             if (meTab != null) break
             appendDebugLog("  → [返回清單] 第${attempt}次找不到底部導覽列「我／Me」，1秒後重試")
-            delay(1000)
+            delay(1400)
         }
         if (meTab == null || !clickNodeBestEffort(meTab)) {
             appendDebugLog("  → [返回清單] 找不到或點擊底部導覽列「我／Me」失敗，請手動導航回清單畫面")
             rootInActiveWindow?.let { dumpClickableNodesToLog(it) }
             return
         }
-        delay(1500)
+        delay(2100)
 
         // 17c. 等「Affiliate Program／蝦皮分潤計畫」卡片出現並點擊
         // （TW實測確認正確文字是「蝦皮分潤計畫」，之前猜的「聯盟計畫」「聯盟合作」都是錯的）
@@ -1962,7 +1964,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             }
             appendDebugLog("  → [返回清單] 第${attempt}次找不到「Affiliate Program」卡片，往下滑動後重試")
             performScrollDown()
-            delay(600)
+            delay(850)
         }
         if (affiliateProgramCard == null) {
             appendDebugLog("  → [返回清單] 滑動3次後仍找不到「Affiliate Program」卡片，請手動導航回清單畫面")
@@ -1972,7 +1974,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             appendDebugLog("  → [返回清單] 點擊「Affiliate Program」卡片失敗，請手動導航回清單畫面")
             return
         }
-        delay(1800)
+        delay(2500)
 
         // 17d. 等分潤首頁出現，點「My Likes／分潤按讚好物」圖示進清單畫面
         if (!waitForAnyText(listOf("My Likes", "分潤按讚好物"), 3000)) {
@@ -1985,7 +1987,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             appendDebugLog("  → [返回清單] 點擊「My Likes」入口失敗，請手動導航回清單畫面")
             return
         }
-        delay(1500)
+        delay(2100)
 
         // 17e. 確認真的回到清單畫面（標題含括號數字）
         val backOk = waitForAnyText(listOf("My Likes(", "分潤按讚好物("), 3000)
@@ -2039,6 +2041,9 @@ class ShopeeAccessibilityService : AccessibilityService() {
         fbUploadJob = null
     }
 
+    // 【2026-08-28調整】使用者反映FB上架跑太快，這個函式以下到processOneFbUploadCandidate()
+    // 結尾為止的所有delay()等待時間，整體統一拉長60%（比蝦皮那邊拉更多，因為FB流程步驟更多、
+    // 每一步都要等畫面真的載入穩定才能繼續，原本的等待更容易不夠）。
     private suspend fun fbUploadAutomationLoop(maxCount: Int, onEvent: (UploadEvent) -> Unit) {
         appendDebugLog("===== 開始FB上架自動化，本次上限 $maxCount 支 =====")
         onEvent(UploadEvent.Log("開始FB上架自動化，本次上限 $maxCount 支"))
@@ -2094,7 +2099,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             }
 
             if (successCount < maxCount) {
-                delay(Random.nextLong(9000, 15000))
+                delay(Random.nextLong(14400, 24000))
             }
         }
 
@@ -2140,12 +2145,25 @@ class ShopeeAccessibilityService : AccessibilityService() {
         var root = rootInActiveWindow ?: run {
             appendDebugLog("  → [FB導航] 讀不到目前畫面"); return false
         }
-        val menuButton = findNodeByDescContaining(root, "功能表")
+        var menuButton = findNodeByDescContaining(root, "功能表")
+        if (menuButton == null) {
+            // 【2026-08-28新增】如果一開始就找不到「功能表」，可能是卡在商品詳情頁等其他子畫面
+            // （例如上一筆處理完的返回導航沒有真的回到首頁）。先按最多2次返回鍵嘗試退回首頁，
+            // 每次都重新找一次「功能表」，這樣即使正常返回失敗，這裡也有機會自己救回來。
+            for (backAttempt in 1..2) {
+                appendDebugLog("  → [FB導航] 找不到「功能表」，嘗試按返回鍵退回首頁（第${backAttempt}次）")
+                performGlobalAction(GLOBAL_ACTION_BACK)
+                delay(1900)
+                root = rootInActiveWindow ?: continue
+                menuButton = findNodeByDescContaining(root, "功能表")
+                if (menuButton != null) break
+            }
+        }
         if (menuButton == null || !clickFbNode(menuButton)) {
             appendDebugLog("  → [FB導航] 找不到或點擊「功能表」失敗，請確認目前在FB App首頁")
             return false
         }
-        delay(1200)
+        delay(1900)
 
         // 2. 點「專業主控板」
         if (!waitForAnyText(listOf("專業主控板"), 3000)) {
@@ -2157,7 +2175,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (dashboardButton == null || !clickFbNode(dashboardButton)) {
             appendDebugLog("  → [FB導航] 找不到或點擊「專業主控板」失敗"); return false
         }
-        delay(1500)
+        delay(2400)
 
         // 3. 點「營利」分頁（4個分頁之一：分析/內容/社群/營利）
         if (!waitForAnyText(listOf("營利"), 3000)) {
@@ -2169,7 +2187,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (monetizeTab == null || !clickFbNode(monetizeTab)) {
             appendDebugLog("  → [FB導航] 找不到或點擊「營利」分頁失敗"); return false
         }
-        delay(1500)
+        delay(2400)
 
         // 4. 點「聯盟合作」
         if (!waitForAnyText(listOf("聯盟合作"), 4000)) {
@@ -2180,7 +2198,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (affiliateButton == null || !clickFbNode(affiliateButton)) {
             appendDebugLog("  → [FB導航] 找不到或點擊「聯盟合作」失敗"); return false
         }
-        delay(1500)
+        delay(2400)
 
         // 5. 點「商品」子分頁（預設會停在「探索」分頁，要切到「商品」才有搜尋框）
         if (!waitForAnyText(listOf("商品"), 4000)) {
@@ -2191,7 +2209,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (productsTab == null || !clickFbNode(productsTab)) {
             appendDebugLog("  → [FB導航] 找不到或點擊「商品」分頁失敗"); return false
         }
-        delay(1200)
+        delay(1900)
 
         // 最後確認真的到了目標畫面
         root = rootInActiveWindow ?: return false
@@ -2235,7 +2253,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             return false
         }
         clickFbNode(searchBox)
-        delay(600)
+        delay(950)
         root = rootInActiveWindow ?: return false
         val focusedSearchBox = findSearchBoxNode(root) ?: searchBox
         val searchBundle = android.os.Bundle().apply {
@@ -2243,12 +2261,12 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
         focusedSearchBox.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, searchBundle)
         appendDebugLog("  → [FB] 已貼上商品名稱到搜尋框：${candidate.productName}")
-        delay(1000)
+        delay(1600)
         root = rootInActiveWindow ?: return false
         val searchBoxBeforeSubmit = findSearchBoxNode(root) ?: focusedSearchBox
         val imeEnterOk = searchBoxBeforeSubmit.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
         appendDebugLog("  → [FB] 送出搜尋（ACTION_IME_ENTER）：${if (imeEnterOk) "成功" else "失敗，畫面可能仍停在貼字狀態未執行搜尋"}")
-        delay(2200)
+        delay(3500)
 
         // 2. 點搜尋結果的商品卡（【未完全確認】找同時符合「有可點擊」+「子節點desc含蝦皮購物」
         // 的最外層卡片節點；貼連結後理論上應該只會出現這一件商品的結果）
@@ -2268,7 +2286,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (!tapNodeCenter(resultCard)) {
             appendDebugLog("  → [FB] 點擊搜尋結果商品卡失敗（手勢送出失敗）"); return false
         }
-        delay(1800)
+        delay(2900)
 
         // 【2026-08-28新增診斷】點擊後兩種方式（ACTION_CLICK、座標手勢）都實測失敗過，
         // 先不急著猜第三種，直接截圖記錄點擊後當下畫面實況，比繼續猜更快找到真正原因。
@@ -2302,13 +2320,13 @@ class ShopeeAccessibilityService : AccessibilityService() {
             dumpCurrentNodeTree()
             return false
         }
-        delay(600)
+        delay(950)
         root = rootInActiveWindow ?: return false
         val createPostButton = findNodeByTexts(root, listOf("建立貼文"))
         if (createPostButton == null || !clickFbNode(createPostButton)) {
             appendDebugLog("  → [FB] 找不到或點擊「建立貼文」失敗"); return false
         }
-        delay(1200)
+        delay(1900)
 
         // 4. 等「加到新Reel／加到新貼文」選單，點「加到新Reel」
         if (!waitForAnyText(listOf("加到新 Reel", "加到新Reel"), 3000)) {
@@ -2319,49 +2337,49 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (addToReelButton == null || !clickFbNode(addToReelButton)) {
             appendDebugLog("  → [FB] 找不到或點擊「加到新Reel」失敗"); return false
         }
-        delay(2500)
+        delay(4000)
 
         // 5. 等Reel錄影介面，點左下角「圖庫」
         if (!waitForAnyText(listOf("圖庫"), 5000)) {
             appendDebugLog("  → [FB] 等不到Reel錄影介面「圖庫」按鈕"); return false
         }
-        delay(500)
+        delay(800)
         root = rootInActiveWindow ?: return false
         val galleryButton = findNodeByTexts(root, listOf("圖庫"))
         if (galleryButton == null || !clickFbNode(galleryButton)) {
             appendDebugLog("  → [FB] 找不到或點擊「圖庫」失敗"); return false
         }
-        delay(1500)
+        delay(2400)
 
         // 6. 等相簿選片畫面，點「項目1」（最近登記進媒體庫、時間戳記最新的就是目標影片）
         if (!waitForAnyText(listOf("建立 Reel", "項目1"), 4000)) {
             appendDebugLog("  → [FB] 等不到相簿選片畫面"); return false
         }
-        delay(500)
+        delay(800)
         root = rootInActiveWindow ?: return false
         val firstVideoItem = findNodeByDescContaining(root, "項目1，拍攝於")
         if (firstVideoItem == null || !clickFbNode(firstVideoItem)) {
             appendDebugLog("  → [FB] 找不到或點擊相簿第一個影片項目失敗"); return false
         }
-        delay(1800)
+        delay(2900)
 
         // 7. 等影片編輯預覽畫面，點「下一步」
         if (!waitForAnyText(listOf("下一步"), 5000)) {
             appendDebugLog("  → [FB] 等不到影片編輯預覽畫面「下一步」"); return false
         }
-        delay(600)
+        delay(950)
         root = rootInActiveWindow ?: return false
         val editorNextButton = findNodeByTexts(root, listOf("下一步"))
         if (editorNextButton == null || !clickFbNode(editorNextButton)) {
             appendDebugLog("  → [FB] 找不到或點擊影片編輯預覽「下一步」失敗"); return false
         }
-        delay(2200)
+        delay(3500)
 
         // 8. 等「Reel設定」畫面
         if (!waitForAnyText(listOf("Reel 設定", "Reel設定"), 4000)) {
             appendDebugLog("  → [FB] 等不到「Reel設定」畫面"); return false
         }
-        delay(1200)
+        delay(1900)
 
         // 8b. 若跳出「已新增商品連結」提示橫幅，點「關閉」讓畫面乾淨（不影響商品已自動帶入的結果）
         // 【2026-08-28修正】原本用findNodeByTexts(listOf("關閉"))全畫面搜尋，實測發現誤點到
@@ -2396,7 +2414,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             if (closeBtn != null) {
                 clickFbNode(closeBtn)
                 appendDebugLog("  → [FB] 已關閉「已新增商品連結」提示橫幅")
-                delay(600)
+                delay(950)
             } else {
                 appendDebugLog("  → [FB] 偵測到「已新增商品連結」橫幅但畫面上方找不到對應的關閉按鈕，略過不關閉（不影響後續流程）")
             }
@@ -2414,11 +2432,11 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
         captionInput.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, captionBundle)
         appendDebugLog("  → [FB] 已填入文案（長度=${fbCaption.length}字）")
-        delay(1500)
+        delay(2400)
         captionInput.performAction(AccessibilityNodeInfo.ACTION_CLEAR_FOCUS)
         val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
         imm?.hideSoftInputFromWindow(null, 0)
-        delay(1000)
+        delay(1600)
 
         // 10. 往下捲動找「新增 AI 標籤」開關並開啟（跟蝦皮流程的「AI生成影片標記」對應，
         // 使用者要求跟蝦皮一樣開啟。這顆開關跟蝦皮那幾顆自訂繪製的開關不同，節點樹裡有
@@ -2430,7 +2448,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             if (aiTagToggle != null) break
             appendDebugLog("  → [FB] 第${attempt}次找不到「新增AI標籤」開關，往下滑動後重試")
             performScrollDown()
-            delay(700)
+            delay(1100)
         }
         if (aiTagToggle == null) {
             appendDebugLog("  → [FB] 捲動4次後仍找不到「新增AI標籤」開關，跳過不開啟（不當作整體失敗）")
@@ -2443,7 +2461,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             } else {
                 appendDebugLog("  → [FB] 找到「新增AI標籤」開關但點擊失敗，跳過不開啟（不當作整體失敗）")
             }
-            delay(900)
+            delay(1450)
         }
 
         // 11. 往下捲動，找「立即分享」按鈕（畫面較長，不一定在可視範圍內）
@@ -2454,7 +2472,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             if (shareButton != null) break
             appendDebugLog("  → [FB] 第${attempt}次找不到「立即分享」，往下滑動後重試")
             performScrollDown()
-            delay(700)
+            delay(1100)
         }
         if (shareButton == null) {
             appendDebugLog("  → [FB] 捲動4次後仍找不到「立即分享」按鈕"); return false
@@ -2464,14 +2482,25 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
 
         // 12. 判定成功：按下分享後，畫面上不再有「Reel設定」標題
-        delay(4500)
+        delay(7200)
         val stillOnSettingsScreen = rootInActiveWindow?.let { findTextContaining(it, "Reel 設定") != null || findTextContaining(it, "Reel設定") != null } == true
         if (stillOnSettingsScreen) {
             appendDebugLog("  → [FB] 按下分享後仍停在「Reel設定」畫面，判定失敗")
             return false
         }
 
-        appendDebugLog("  → [FB] 發佈完成，尚未自動導航回「聯盟合作」搜尋畫面，下一筆需要手動導航回去（待之後補上自動導航）")
+        // 13. 發佈成功後，根據實測：畫面會停在商品詳情頁（「建立貼文」按鈕那個畫面），
+        // 按一次返回鍵就會回到「聯盟合作→商品」搜尋結果畫面。這樣同一個FB App session裡
+        // 才能接續處理下一筆候選商品，不用每筆之間手動介入。
+        delay(1600)
+        performGlobalAction(GLOBAL_ACTION_BACK)
+        delay(2400)
+        val backToSearchOk = waitForAnyText(listOf("搜尋結果", "聯盟合作"), 4000)
+        if (backToSearchOk) {
+            appendDebugLog("  → [FB] 發佈完成，已自動導航回搜尋結果畫面，可接續處理下一筆")
+        } else {
+            appendDebugLog("  → [FB] 發佈完成，但按返回鍵後畫面不是預期的搜尋結果畫面，下一筆可能需要手動確認畫面狀態")
+        }
         return true
     }
 
@@ -3420,12 +3449,17 @@ class ShopeeAccessibilityService : AccessibilityService() {
      */
     private fun findProductCards(root: AccessibilityNodeInfo): List<AccessibilityNodeInfo> {
         val result = mutableListOf<AccessibilityNodeInfo>()
+        // 【2026-08-28調整】原本高度上限900px，實測發現部分商品卡片（例如宣傳banner圖特別高
+        // 的款式）實際高度會超過900px，被這個條件篩掉、永遠不會被辨識成商品卡片，導致
+        // auto_capture反覆找不到新卡片、疊加好幾次滑動，把這些卡片整個跳過去沒擷取到。
+        // 放寬到1400px（螢幕高度約1600~2700px不等，1400仍遠小於整頁，不會誤抓到整個列表容器）。
+        val rejectedForDebug = mutableListOf<String>()
         fun walk(node: AccessibilityNodeInfo?, depth: Int) {
             if (node == null || depth > 20 || result.size > 50) return
             if (node.isClickable) {
                 val bounds = Rect()
                 node.getBoundsInScreen(bounds)
-                if (bounds.height() in 120..900 && bounds.width() in 120..1200) {
+                if (bounds.height() in 120..1400 && bounds.width() in 120..1200) {
                     val texts = mutableListOf<String>()
                     collectTextNodes(node, texts, maxDepth = 6)
                     val hasPrice = texts.any { txt -> matchRules.priceIndicatorPrefixes.any { txt.contains(it) } }
@@ -3433,11 +3467,24 @@ class ShopeeAccessibilityService : AccessibilityService() {
                         result.add(node)
                         return
                     }
+                } else if (bounds.height() > 1400 && rejectedForDebug.size < 5) {
+                    // 診斷用：記錄因為尺寸不符被篩掉、但看起來像商品卡片的節點（高度超標),
+                    // 之後若再發生類似「卡片被跳過」的狀況，靠這行log就能直接看出實際尺寸，
+                    // 不用再猜或翻錄影畫面比對。
+                    val texts = mutableListOf<String>()
+                    collectTextNodes(node, texts, maxDepth = 6)
+                    val hasPrice = texts.any { txt -> matchRules.priceIndicatorPrefixes.any { txt.contains(it) } }
+                    if (hasPrice) {
+                        rejectedForDebug.add("高度=${bounds.height()} 寬度=${bounds.width()} 文字=${texts.take(2)}")
+                    }
                 }
             }
             for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
         }
         walk(root, 0)
+        if (rejectedForDebug.isNotEmpty()) {
+            appendDebugLog("  → 【findProductCards診斷】有 ${rejectedForDebug.size} 個節點疑似商品卡片但因高度超過1400px被篩掉：${rejectedForDebug.joinToString(" | ")}")
+        }
         return result
     }
 
