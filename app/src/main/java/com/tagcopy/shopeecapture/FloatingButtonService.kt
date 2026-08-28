@@ -321,6 +321,11 @@ class FloatingButtonService : Service() {
         floatingView = container
         floatingViewParams = params
         windowManager?.addView(container, params)
+
+        // 【2026-08-28新增】防呆保險：服務剛啟動時，不管companion object裡的狀態理論上對不對，
+        // 都強制依目前狀態重新套用一次顯示邏輯，確保畫面上看到的一定跟實際狀態一致
+        // （避免萬一先前有殘留狀態沒清乾淨，導致浮球一開起來就顯示錯誤的樣子）。
+        applyVisibilityStateNow()
     }
 
     /**
@@ -695,6 +700,12 @@ class FloatingButtonService : Service() {
                 svc.regularButtons.forEach { it.visibility = View.VISIBLE }
                 svc.stopAutomationFloatingButton?.visibility = View.GONE
             }
+        }
+
+        /** 給showFloatingButton()結尾呼叫的防呆保險，見該處註解。 */
+        @Synchronized
+        fun applyVisibilityStateNow() {
+            applyVisibilityState()
         }
 
         @Synchronized

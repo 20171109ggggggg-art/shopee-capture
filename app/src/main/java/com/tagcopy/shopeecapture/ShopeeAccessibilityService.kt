@@ -541,12 +541,12 @@ class ShopeeAccessibilityService : AccessibilityService() {
         // 真正可靠的判斷依據是「位置」：商品自己的分潤率數字節點，緊接在價格節點之後幾個節點內出現。
         val barePercentRegex = Regex("^([\\d]+\\.?[\\d]*)\\s*%$")
 
-        // 已售出：中文「已售出 1,234」或英文「10K+ sold」「10K+ Sold」
-        val soldRegex = Regex("已售出\\s*([\\d,]+)\\+?")
+        // 已售出：中文「已售出 1,234」「已售出 2萬+」或英文「10K+ sold」「10K+ Sold」
+        val soldRegex = Regex("已售出\\s*([\\d,]+\\.?[\\d]*)\\s*(萬)?\\+?")
         val soldAbbrevRegex = Regex("([\\d.]+)\\s*([KM])?\\+?\\s*[Ss]old")
 
-        // 已推廣者：中文「64 位推廣者」或英文「11.5K+ Affiliates Promoted」
-        val promoterRegex = Regex("([\\d,]+)\\s*位推廣者")
+        // 已推廣者：中文「64 位推廣者」「2萬+ 位推廣者」或英文「11.5K+ Affiliates Promoted」
+        val promoterRegex = Regex("([\\d,]+\\.?[\\d]*)\\s*(萬)?\\s*位推廣者")
         val promoterAbbrevRegex = Regex("([\\d.]+)\\s*([KM])?\\+?\\s*Affiliates?\\s*Promoted", RegexOption.IGNORE_CASE)
 
         // 價格：$ ₱ ฿ ₫ 等貨幣符號開頭的數字（範圍價格如 ₱17.00-₱66.00 只取第一個數字當代表值）
@@ -599,13 +599,17 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 }
             }
             if (sold == null) {
-                soldRegex.find(text)?.let { sold = it.groupValues[1].replace(",", "").toIntOrNull() }
+                soldRegex.find(text)?.let {
+                    sold = parseAbbreviatedNumber(it.groupValues[1].replace(",", ""), it.groupValues[2].ifBlank { null })
+                }
                 if (sold == null) {
                     soldAbbrevRegex.find(text)?.let { sold = parseAbbreviatedNumber(it.groupValues[1], it.groupValues[2]) }
                 }
             }
             if (promoter == null) {
-                promoterRegex.find(text)?.let { promoter = it.groupValues[1].replace(",", "").toIntOrNull() }
+                promoterRegex.find(text)?.let {
+                    promoter = parseAbbreviatedNumber(it.groupValues[1].replace(",", ""), it.groupValues[2].ifBlank { null })
+                }
                 if (promoter == null) {
                     promoterAbbrevRegex.find(text)?.let { promoter = parseAbbreviatedNumber(it.groupValues[1], it.groupValues[2]) }
                 }
@@ -635,13 +639,17 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 }
             }
             if (sold == null) {
-                soldRegex.find(combined)?.let { sold = it.groupValues[1].replace(",", "").toIntOrNull() }
+                soldRegex.find(combined)?.let {
+                    sold = parseAbbreviatedNumber(it.groupValues[1].replace(",", ""), it.groupValues[2].ifBlank { null })
+                }
                 if (sold == null) {
                     soldAbbrevRegex.find(combined)?.let { sold = parseAbbreviatedNumber(it.groupValues[1], it.groupValues[2]) }
                 }
             }
             if (promoter == null) {
-                promoterRegex.find(combined)?.let { promoter = it.groupValues[1].replace(",", "").toIntOrNull() }
+                promoterRegex.find(combined)?.let {
+                    promoter = parseAbbreviatedNumber(it.groupValues[1].replace(",", ""), it.groupValues[2].ifBlank { null })
+                }
                 if (promoter == null) {
                     promoterAbbrevRegex.find(combined)?.let { promoter = parseAbbreviatedNumber(it.groupValues[1], it.groupValues[2]) }
                 }
@@ -743,11 +751,16 @@ class ShopeeAccessibilityService : AccessibilityService() {
     }
 
     /** 把「10」「K」這種拆開的數字＋單位轉成整數，例如 (10, "K") -> 10000，(11.5, "M") -> 11500000。 */
+    /**
+     * 【2026-08-28新增】原本只支援K/M（英文縮寫），中文版蝦皮「已售出」「位推廣者」數字破萬
+     * 之後常會顯示成「2萬+」這種中文單位縮寫，多這個分支支援。
+     */
     private fun parseAbbreviatedNumber(numberPart: String, suffix: String?): Int? {
         val base = numberPart.toDoubleOrNull() ?: return null
         val multiplier = when (suffix?.uppercase()) {
             "K" -> 1_000.0
             "M" -> 1_000_000.0
+            "萬" -> 10_000.0
             else -> 1.0
         }
         return (base * multiplier).toInt()
