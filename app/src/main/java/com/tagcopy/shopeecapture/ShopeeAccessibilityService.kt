@@ -3831,7 +3831,27 @@ class ShopeeAccessibilityService : AccessibilityService() {
         // 商品標題天生是全畫面裡最長的一段自然語言文字（完整品名+規格描述），一定比任何徽章／
         // 標籤文字長出一截，改成「挑最長」從根本上堵住整類「短文字搶先誤判」的問題，
         // 不用再窮舉每一種可能出現的徽章文字。
-        val result = validCandidates.maxByOrNull { it.length }
+        val rawResult = validCandidates.maxByOrNull { it.length }
+
+        // 【2026-08-28修正】商城商品標題最前面的「商城」官方標籤圖示，是用inline image span
+        // 嵌在標題TextView文字最前面，無障礙服務會把這個圖示讀成字面上的「0」字元，直接黏在
+        // 標題文字最前面（node樹dump證實：text="0【米大師】..."，畫面上完全看不到這個「0」，
+        // 純粹是圖示的無障礙替代字元）。這個「0」不影響擷取本身，但會讓後續FB上架流程拿商品
+        // 名稱去FB搜尋框搜尋時，因為多了這個字元導致搜尋不到任何結果、整筆商品卡在FB上架失敗。
+        // 只有「開頭剛好是0、後面緊接著不是數字」才符合這種圖示殘留的特徵（真正的商品標題不會
+        // 用「0」加數字這種格式開頭，蝦皮商品名稱規則不允許純數字開頭），符合才去除，避免誤刪
+        // 商品名稱裡本來就有的合法數字（例如「0-3歲適用」這類敘述，開頭0後面接的是「-」不是
+        // 中文字或方括號，但為求保守，只要非數字就一併判定為圖示殘留並去除，因為即使誤判，
+        // 頂多是標題少一個字元，遠比整筆商品卡在FB上架失敗、需要人工排查影響小）。
+        val result = rawResult?.let { name ->
+            if (name.startsWith("0") && name.length > 1 && !name[1].isDigit()) {
+                val stripped = name.substring(1)
+                appendDebugLog("  → 商品名稱開頭偵測到「商城」圖示殘留的0字元，已去除：「$name」→「$stripped」")
+                stripped
+            } else {
+                name
+            }
+        }
 
         if (result == null) {
             // 找不到時記錄候選清單前 15 筆，方便下次排查是「標題太長/太短被排除」還是「根本沒掃到標題」
