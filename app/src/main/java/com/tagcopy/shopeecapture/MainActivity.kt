@@ -15,8 +15,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -226,6 +224,10 @@ fun RootScreen() {
         Spacer(Modifier.height(14.dp))
 
         UploadAutomationSettingsCard(context)
+
+        Spacer(Modifier.height(14.dp))
+
+        BatteryAndAutostartCard(context)
 
         Spacer(Modifier.height(14.dp))
 
@@ -638,8 +640,114 @@ fun TermuxTestCard(
 }
 
 @Composable
+fun BatteryAndAutostartCard(context: android.content.Context) {
+    // 【2026-08-28新增】使用者反映App在背景跑上架/FB上架時，行程會被系統強制關掉、
+    // log整個沒有收尾。這張卡片幫忙處理兩件事：
+    // 1. 電池優化排除——Android官方有提供的API，可以直接跳系統對話框請求，比去設定裡層層找快。
+    // 2. 自啟動——沒有官方API（Android刻意不開放，避免App自己解鎖背景常駐被惡意濫用），
+    //    這裡只能依廠牌（小米/紅米/POCO、OPPO、VIVO、華為等）嘗試導頁到對應的設定頁面，
+    //    最後「允許」還是要使用者自己手動點。抓不到對應廠牌時，退回App本身的系統設定頁。
+    val isIgnoringBatteryOptimizations = remember {
+        mutableStateOf(isIgnoringBatteryOptimizations(context))
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White)
+            .padding(16.dp)
+    ) {
+        Text(stringResource(R.string.battery_autostart_title), fontSize = 15.sp, fontWeight = FontWeight.Bold, color = InkColor)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            stringResource(R.string.battery_autostart_desc),
+            fontSize = 12.sp, color = MutedColor, lineHeight = 17.sp
+        )
+        Spacer(Modifier.height(14.dp))
+
+        SetupStepCard(
+            stepNumber = "電",
+            title = stringResource(R.string.battery_optimization_title),
+            description = stringResource(R.string.battery_optimization_desc),
+            done = isIgnoringBatteryOptimizations.value,
+            buttonText = stringResource(R.string.btn_go_to_settings),
+            onClick = {
+                try {
+                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = Uri.parse("package:${context.packageName}")
+                    }
+                    context.startActivity(intent)
+                } catch (e: Exception) {
+                    try {
+                        val fallback = Intent(
+                            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            Uri.parse("package:${context.packageName}")
+                        )
+                        context.startActivity(fallback)
+                    } catch (_: Exception) { }
+                }
+            }
+        )
+
+        Spacer(Modifier.height(14.dp))
+
+        SetupStepCard(
+            stepNumber = "啟",
+            title = stringResource(R.string.autostart_title),
+            description = stringResource(R.string.autostart_desc),
+            done = false,
+            buttonText = stringResource(R.string.btn_go_to_settings),
+            onClick = { openAutostartSettings(context) }
+        )
+    }
+}
+
+fun isIgnoringBatteryOptimizations(context: android.content.Context): Boolean {
+    val powerManager = context.getSystemService(android.content.Context.POWER_SERVICE) as? android.os.PowerManager
+        ?: return false
+    return powerManager.isIgnoringBatteryOptimizations(context.packageName)
+}
+
+fun openAutostartSettings(context: android.content.Context) {
+    val manufacturer = Build.MANUFACTURER.lowercase()
+    val candidates = when {
+        manufacturer.contains("xiaomi") -> listOf(
+            Intent().setClassName("com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity")
+        )
+        manufacturer.contains("oppo") -> listOf(
+            Intent().setClassName("com.coloros.safecenter", "com.coloros.safecenter.permission.startup.StartupAppListActivity"),
+            Intent().setClassName("com.oppo.safe", "com.oppo.safe.permission.startup.StartupAppListActivity")
+        )
+        manufacturer.contains("vivo") -> listOf(
+            Intent().setClassName("com.vivo.permissionmanager", "com.vivo.permissionmanager.activity.BgStartUpManagerActivity")
+        )
+        manufacturer.contains("huawei") -> listOf(
+            Intent().setClassName("com.huawei.systemmanager", "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity")
+        )
+        else -> emptyList()
+    }
+    for (intent in candidates) {
+        try {
+            context.startActivity(intent)
+            return
+        } catch (_: Exception) { }
+    }
+    try {
+        val fallback = Intent(
+            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+            Uri.parse("package:${context.packageName}")
+        )
+        context.startActivity(fallback)
+    } catch (_: Exception) { }
+}
+
+@Composable
 fun UploadAutomationSettingsCard(context: android.content.Context) {
     var countText by remember { mutableStateOf(UploadAutomationPrefs.getTargetCount(context).toString()) }
+    // 【2026-08-28新增】FB上架功能總開關：關掉之後，蝦皮批次跑完不會自動啟動FB接續，
+    // 懸浮視窗的「FB上架」按鈕也會直接提示已關閉、不執行。使用者已在使用FB上架接龍，
+    // 所以預設是開啟的，這裡是給需要暫時停用時用的（例如FB上架流程還在調整、先不想被自動觸發）。
+    var fbUploadEnabled by remember { mutableStateOf(UploadAutomationPrefs.isFbUploadEnabled(context)) }
 
     Column(
         modifier = Modifier
@@ -668,6 +776,28 @@ fun UploadAutomationSettingsCard(context: android.content.Context) {
             singleLine = true,
             shape = RoundedCornerShape(0.dp)
         )
+
+        Spacer(Modifier.height(16.dp))
+        Row(
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(stringResource(R.string.fb_upload_enabled_label), fontSize = 12.sp, color = InkColor, fontWeight = FontWeight.Bold)
+                Text(
+                    stringResource(R.string.fb_upload_enabled_desc),
+                    fontSize = 11.sp, color = MutedColor
+                )
+            }
+            Switch(
+                checked = fbUploadEnabled,
+                onCheckedChange = {
+                    fbUploadEnabled = it
+                    UploadAutomationPrefs.setFbUploadEnabled(context, it)
+                }
+            )
+        }
     }
 }
 

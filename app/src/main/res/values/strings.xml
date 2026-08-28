@@ -65,7 +65,15 @@
     <string name="no_link">（無連結）</string>
 
     <string name="upload_settings_title">上架自動化設定</string>
-    <string name="upload_settings_desc">在蝦皮「分潤按讚好物」清單畫面點懸浮視窗的「上架」按鈕，會依這裡設定的支數連續處理候選商品（已生成影片但還沒上架的），自動匯入連結、選片、撰寫內文並發佈</string>
+    <string name="upload_settings_desc">在蝦皮「分潤按讚好物」清單畫面點懸浮視窗的「上架」按鈕，會依這裡設定的支數連續處理候選商品（已生成影片但還沒上架的），自動匯入連結、選片、撰寫內文並發佈。這個支數設定跟「FB上架」按鈕共用同一個數字</string>
+    <string name="fb_upload_enabled_label">FB上架功能</string>
+    <string name="fb_upload_enabled_desc">關閉後，蝦皮批次跑完不會自動啟動FB接續上架，懸浮視窗的「FB上架」按鈕也會直接提示已關閉</string>
+    <string name="battery_autostart_title">電池與自啟動設定</string>
+    <string name="battery_autostart_desc">App長時間在背景跑上架/FB上架時，如果被系統強制關閉會整個中斷。以下兩個設定可以大幅降低被強制關閉的機會（無法100%保證，跟手機廠牌的省電機制有關）</string>
+    <string name="battery_optimization_title">排除電池優化</string>
+    <string name="battery_optimization_desc">避免系統為了省電把這個App的背景行程限制或關閉</string>
+    <string name="autostart_title">允許自啟動</string>
+    <string name="autostart_desc">部分廠牌手機（小米/OPPO/VIVO/華為等）需要另外開啟自啟動權限，App才能穩定長時間在背景執行</string>
     <string name="upload_target_count_label">本次最多處理支數</string>
 
     <!-- FloatingButtonService -->
@@ -90,8 +98,9 @@
     <string name="upload_finish_reason_no_candidates">沒有找到符合條件的候選商品</string>
     <string name="upload_finish_reason_stopped_on_failure">某一支失敗，已停止本次批次</string>
 
-    <string name="toast_fb_upload_started">開始FB上架自動化（測試階段，固定只跑1支）</string>
+    <string name="toast_fb_upload_started">開始FB上架自動化</string>
     <string name="toast_fb_upload_stopped">已停止FB上架自動化</string>
+    <string name="toast_fb_upload_disabled">FB上架功能目前已關閉，請到設定畫面重新開啟</string>
     <string name="alert_title_fb_upload_finished">FB上架自動化結束</string>
     <string name="alert_msg_fb_upload_finished">成功 %1$d 支／失敗 %2$d 支（原因：%3$s）</string>
 

@@ -681,31 +681,6 @@ class ShopeeAccessibilityService : AccessibilityService() {
         lines.forEach { appendDebugLog("     $it") }
     }
 
-    /**
-     * 【診斷用，一次性】列出分享面板內所有節點的 class、bounds、clickable、text/desc、resource-id，
-     * 用來確認使用者手動測試發現的「輪播縮圖下載鈕」在無障礙服務眼中長什麼樣子
-     * （class name／content-description／resource-id／座標範圍），才能準確地找到並自動點擊它。
-     * 不限制要有文字/描述才列出（既有的 dumpClickableNodesToLog 會漏掉純圖示按鈕），
-     * 且额外印出 bounds 方便比對畫面上的實際位置。
-     */
-    private fun dumpShareSheetFullTreeToLog(root: AccessibilityNodeInfo) {
-        val lines = mutableListOf<String>()
-        fun walk(node: AccessibilityNodeInfo?, depth: Int) {
-            if (node == null || depth > 25 || lines.size > 150) return
-            val text = node.text?.toString()?.trim()
-            val desc = node.contentDescription?.toString()?.trim()
-            val id = node.viewIdResourceName
-            val cls = node.className?.toString()
-            val b = Rect()
-            node.getBoundsInScreen(b)
-            lines.add("depth=$depth class=${cls ?: "-"} text=${text ?: "-"} desc=${desc ?: "-"} id=${id ?: "-"} clickable=${node.isClickable} bounds=$b")
-            for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
-        }
-        walk(root, 0)
-        appendDebugLog("  → 【診斷】分享面板完整節點樹（前 ${lines.size} 個）：")
-        lines.forEach { appendDebugLog("     $it") }
-    }
-
     private fun appendDebugLog(line: String) {
         try {
             val dir = File(
@@ -1547,7 +1522,9 @@ class ShopeeAccessibilityService : AccessibilityService() {
         // 產生），自動啟動FB App、導航到「聯盟合作→商品」畫面，接著把FB那邊也跑完——
         // 使用者要求「蝦皮上架完後接FB上架的導航，有辦法同時做」，整批蝦皮做完再整批做FB，
         // 而不是一支一支來回切換App（來回切換實務上更容易卡、也更難除錯）。
-        if (successCount > 0) {
+        if (successCount > 0 && !UploadAutomationPrefs.isFbUploadEnabled(this)) {
+            appendDebugLog("  → 蝦皮批次有成功商品，但FB上架功能目前已關閉（設定畫面可重新開啟），跳過自動接續FB上架")
+        } else if (successCount > 0) {
             appendDebugLog("  → 蝦皮批次有成功商品，準備自動啟動FB App接續跑FB上架")
             onEvent(UploadEvent.Log("蝦皮批次完成，準備接續FB上架..."))
             val fbLaunched = try {

@@ -462,6 +462,11 @@ class FloatingButtonService : Service() {
             return
         }
 
+        if (!UploadAutomationPrefs.isFbUploadEnabled(this)) {
+            Toast.makeText(this, getString(R.string.toast_fb_upload_disabled), Toast.LENGTH_LONG).show()
+            return
+        }
+
         if (service.isFbUploadAutomationRunning()) {
             service.stopFbUploadAutomation()
             fbUploadButton.text = getString(R.string.btn_fb_upload)
@@ -469,11 +474,14 @@ class FloatingButtonService : Service() {
             return
         }
 
-        val fixedTargetCount = 1
-        fbUploadButton.text = "0/$fixedTargetCount"
+        // 【2026-08-28修正】原本FB上架固定只跑1支（測試階段刻意先限制），使用者確認FB流程
+        // 穩定度已經夠信任，改成跟蝦皮上架共用同一個「本次最多處理支數」設定
+        // （UploadAutomationPrefs.getTargetCount），不用各自維護一份支數。
+        val targetCount = UploadAutomationPrefs.getTargetCount(this)
+        fbUploadButton.text = "0/$targetCount"
         Toast.makeText(this, getString(R.string.toast_fb_upload_started), Toast.LENGTH_SHORT).show()
 
-        service.startFbUploadAutomation(fixedTargetCount) { event ->
+        service.startFbUploadAutomation(targetCount) { event ->
             when (event) {
                 is UploadEvent.Log -> {
                     if (event.message.startsWith("✓") || event.message.startsWith("✗")) {

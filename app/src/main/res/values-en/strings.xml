@@ -65,7 +65,15 @@
     <string name="no_link">(No link)</string>
 
     <string name="upload_settings_title">Upload Automation Settings</string>
-    <string name="upload_settings_desc">From the Shopee \"My Likes\" list screen, tap the \"Upload\" button on the floating window to process candidate products in a row (video already generated but not yet posted) — auto-importing the link, picking the video, filling the caption, and publishing</string>
+    <string name="upload_settings_desc">From the Shopee \"My Likes\" list screen, tap the \"Upload\" button on the floating window to process candidate products in a row (video already generated but not yet posted) — auto-importing the link, picking the video, filling the caption, and publishing. This count is shared with the \"FB Upload\" button</string>
+    <string name="fb_upload_enabled_label">FB Upload Feature</string>
+    <string name="fb_upload_enabled_desc">When off, finishing a Shopee batch won\'t auto-launch FB, and the floating \"FB Upload\" button will just show a disabled notice</string>
+    <string name="battery_autostart_title">Battery &amp; Autostart Settings</string>
+    <string name="battery_autostart_desc">If the app runs in the background for a long time during upload/FB upload, the system may force-kill it and interrupt the whole batch. These two settings greatly reduce that risk (not a 100% guarantee — depends on the phone brand\'s power-saving behavior)</string>
+    <string name="battery_optimization_title">Exclude from Battery Optimization</string>
+    <string name="battery_optimization_desc">Prevent the system from restricting or killing this app\'s background process to save power</string>
+    <string name="autostart_title">Allow Autostart</string>
+    <string name="autostart_desc">Some phone brands (Xiaomi/OPPO/VIVO/Huawei, etc.) require a separate autostart permission for the app to run reliably in the background for long periods</string>
     <string name="upload_target_count_label">Max Count This Batch</string>
 
     <!-- FloatingButtonService -->
@@ -90,8 +98,9 @@
     <string name="upload_finish_reason_no_candidates">No matching candidate products found</string>
     <string name="upload_finish_reason_stopped_on_failure">Stopped after one product failed</string>
 
-    <string name="toast_fb_upload_started">Started FB upload automation (test stage, fixed at 1 item)</string>
+    <string name="toast_fb_upload_started">Started FB upload automation</string>
     <string name="toast_fb_upload_stopped">FB upload automation stopped</string>
+    <string name="toast_fb_upload_disabled">FB upload is currently disabled. Enable it in settings.</string>
     <string name="alert_title_fb_upload_finished">FB Upload Automation Finished</string>
     <string name="alert_msg_fb_upload_finished">%1$d succeeded / %2$d failed (reason: %3$s)</string>
 
