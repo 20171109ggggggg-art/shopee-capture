@@ -325,7 +325,7 @@ private fun buildDetailedResultText(context: Context, headerText: String, p: Ter
  * 【2026-08-29新增】「生成影片」畫面的商品清單資料：讀取CaptionQueue底下每個商品資料夾的
  * 基本資訊（名稱、圖片清單、是否已經選過圖、是否已經有影片），給下面的勾選清單跟人工選圖畫面用。
  */
-private data class CapturedProduct(
+private data class GenerateQueueItem(
     val folder: File,
     val productName: String?,
     val imagePaths: List<File>,
@@ -333,7 +333,7 @@ private data class CapturedProduct(
     val selectionDone: Boolean
 )
 
-private fun loadCapturedProducts(root: File): List<CapturedProduct> {
+private fun loadCapturedProducts(root: File): List<GenerateQueueItem> {
     if (!root.exists()) return emptyList()
     return root.listFiles()
         ?.filter { it.isDirectory }
@@ -351,7 +351,7 @@ private fun loadCapturedProducts(root: File): List<CapturedProduct> {
                     .firstOrNull { it.exists() }
             }
             if (images.isEmpty()) return@mapNotNull null
-            CapturedProduct(
+            GenerateQueueItem(
                 folder = dir,
                 productName = name,
                 imagePaths = images,
@@ -366,7 +366,7 @@ private fun loadCapturedProducts(root: File): List<CapturedProduct> {
 /** 清單裡單一商品的一列：打勾決定要不要納入這次生成批次，點整列（打勾框以外的地方）進去選圖。 */
 @Composable
 private fun ProductSelectRow(
-    product: CapturedProduct,
+    product: GenerateQueueItem,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
     onClickImages: () -> Unit
@@ -422,7 +422,7 @@ private fun ProductSelectRow(
  * 沒打勾的圖片直接刪除——只有這裡選定的圖片會留下來，之後生成影片只會用到這幾張。
  */
 @Composable
-private fun ImageSelectionContent(context: Context, product: CapturedProduct, onDone: () -> Unit) {
+private fun ImageSelectionContent(context: Context, product: GenerateQueueItem, onDone: () -> Unit) {
     val scope = rememberCoroutineScope()
     // 預設全選：使用者從裡面取消勾選不要的圖，比從零開始一張一張勾快。
     var chosen by remember { mutableStateOf(product.imagePaths.map { it.name }.toSet()) }
