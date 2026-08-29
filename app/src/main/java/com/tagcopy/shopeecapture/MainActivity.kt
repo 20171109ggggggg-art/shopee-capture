@@ -298,6 +298,10 @@ fun RootScreen() {
 
         VideoImportCard(context)
 
+        Spacer(Modifier.height(14.dp))
+
+        AiBackgroundCard(context)
+
         Spacer(Modifier.height(32.dp))
 
         Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
@@ -607,6 +611,85 @@ fun VideoImportCard(context: android.content.Context) {
             },
             label = { Text("每次要新增幾筆", fontSize = 12.sp) },
             singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+    }
+}
+
+/**
+ * AI換背景（測試功能）：保留商品本體，只換背景，用Nano Banana 2 Lite（Gemini API）處理。
+ * 預設關閉，開啟後每次擷取商品時，圖片存檔前會先送去Gemini API改圖；呼叫失敗一律靜默改用
+ * 原圖，不會影響原本的擷取流程。
+ */
+@Composable
+fun AiBackgroundCard(context: android.content.Context) {
+    var apiKey by remember { mutableStateOf(GeminiApiPrefs.getApiKey(context)) }
+    var enabled by remember { mutableStateOf(GeminiApiPrefs.isEnabled(context)) }
+    var prompt by remember { mutableStateOf(GeminiApiPrefs.getPrompt(context)) }
+    var apiKeyVisible by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White)
+            .padding(16.dp)
+    ) {
+        Row(
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("AI換背景（測試功能）", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = InkColor)
+            Switch(
+                checked = enabled,
+                onCheckedChange = {
+                    enabled = it
+                    GeminiApiPrefs.setEnabled(context, it)
+                }
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "保留商品本體不變，只把背景換掉（用Google Nano Banana 2 Lite）。開啟後每次擷取商品，" +
+                "圖片存檔前會先送去AI改圖；改圖失敗（沒網路、Key錯誤、額度用完）會自動改用原圖，" +
+                "不影響原本的擷取結果。",
+            fontSize = 12.sp, color = MutedColor, lineHeight = 17.sp
+        )
+        Spacer(Modifier.height(10.dp))
+        Text(
+            "還沒有API Key？瀏覽器打開 aistudio.google.com/apikey，用Google帳號登入後點" +
+                "「Create API key」，複製產生的金鑰貼到下面欄位即可。有免費額度可以先試用。",
+            fontSize = 12.sp, color = MutedColor, lineHeight = 17.sp
+        )
+        Spacer(Modifier.height(12.dp))
+
+        OutlinedTextField(
+            value = apiKey,
+            onValueChange = {
+                apiKey = it
+                GeminiApiPrefs.setApiKey(context, it)
+            },
+            label = { Text("Gemini API Key", fontSize = 12.sp) },
+            singleLine = true,
+            visualTransformation = if (apiKeyVisible) androidx.compose.ui.text.input.VisualTransformation.None
+                else androidx.compose.ui.text.input.PasswordVisualTransformation(),
+            trailingIcon = {
+                TextButton(onClick = { apiKeyVisible = !apiKeyVisible }) {
+                    Text(if (apiKeyVisible) "隱藏" else "顯示", fontSize = 11.sp)
+                }
+            },
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(Modifier.height(10.dp))
+
+        OutlinedTextField(
+            value = prompt,
+            onValueChange = {
+                prompt = it
+                GeminiApiPrefs.setPrompt(context, it)
+            },
+            label = { Text("換背景提示詞（可自行調整）", fontSize = 12.sp) },
+            minLines = 3,
             modifier = Modifier.fillMaxWidth()
         )
     }

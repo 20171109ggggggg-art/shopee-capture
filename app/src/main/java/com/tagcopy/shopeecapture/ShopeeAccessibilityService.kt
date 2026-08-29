@@ -3900,6 +3900,21 @@ class ShopeeAccessibilityService : AccessibilityService() {
     private suspend fun videoImportLoop(batchSize: Int, onEvent: (VideoImportEvent) -> Unit) {
         appendDebugLog("===== [匯入舊影音] 開始，本批次目標新增 $batchSize 筆 =====")
 
+        // 【2026-08-29新增】這個功能的觸發按鈕放在App主畫面（不是懸浮球），使用者按下去的當下
+        // 人還在擷取器App本身，不是蝦皮——這裡先等使用者切換過去，不然一開始讀到的畫面會是
+        // 擷取器自己的主畫面，誤判成「讀不到蝦皮畫面」而失敗。最多等20秒，每0.5秒檢查一次
+        // 目前最上層App是不是蝦皮。
+        onEvent(VideoImportEvent.Log("請在接下來幾秒內切換到蝦皮App的「我的短影音」影片分頁畫面"))
+        var waitedMs = 0L
+        val waitStepMs = 500L
+        val maxWaitMs = 20_000L
+        while (waitedMs < maxWaitMs) {
+            val pkg = getCurrentPackageName()
+            if (pkg != null && pkg.startsWith("com.shopee")) break
+            delay(waitStepMs)
+            waitedMs += waitStepMs
+        }
+
         var root = rootInActiveWindow
         if (root == null) {
             onEvent(VideoImportEvent.Log("讀不到目前畫面，請先切到蝦皮「我的短影音」的「影片」分頁再試一次"))
@@ -4240,13 +4255,17 @@ class ShopeeAccessibilityService : AccessibilityService() {
     ) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
             // API 30 以下沒有 takeScreenshot()，直接存純文字資料，不含圖片
-            val saved = saveResult(productName, link, caption = null, bitmaps = emptyList())
-            onResult(saved)
+            serviceScope.launch {
+                val saved = saveResult(productName, link, caption = null, bitmaps = emptyList())
+                onResult(saved)
+            }
             return
         }
         takeScreenshotCompat { bitmap ->
-            val saved = saveResult(productName, link, caption = null, bitmaps = listOfNotNull(bitmap))
-            onResult(saved)
+            serviceScope.launch {
+                val saved = saveResult(productName, link, caption = null, bitmaps = listOfNotNull(bitmap))
+                onResult(saved)
+            }
         }
     }
 
@@ -4275,13 +4294,35 @@ class ShopeeAccessibilityService : AccessibilityService() {
         )
     }
 
-    private fun saveResult(
+    private suspend fun saveResult(
         productName: String?,
         link: String?,
         caption: String?,
         bitmaps: List<Bitmap>,
         metrics: ProductMetrics? = null
     ): CaptureResult {
+        // 【2026-08-29新增，測試功能】AI換背景：如果App主畫面有開啟這個開關且已填API Key，
+        // 每張圖片存檔前先送去Gemini API做「保留商品本體、只換背景」的改圖。呼叫失敗（沒網路、
+        // API Key錯誤、額度用完等）一律靜默改用原圖繼續，絕對不會因為這裡出錯而讓整筆商品
+        // 擷取失敗——這只是錦上添花的功能，不能變成擷取流程的單點故障。
+        val processedBitmaps: List<Bitmap> = if (GeminiApiPrefs.isEnabled(this) && bitmaps.isNotEmpty()) {
+            val apiKey = GeminiApiPrefs.getApiKey(this)
+            val prompt = GeminiApiPrefs.getPrompt(this)
+            appendDebugLog("  → [AI換背景] 已啟用，開始處理 ${bitmaps.size} 張圖片")
+            bitmaps.mapIndexed { index, original ->
+                val result = GeminiImageEditor.editBackground(original, apiKey, prompt)
+                if (result.success && result.editedBitmap != null) {
+                    appendDebugLog("  → [AI換背景] 第${index + 1}張成功")
+                    result.editedBitmap
+                } else {
+                    appendDebugLog("  → [AI換背景] 第${index + 1}張失敗，改用原圖：${result.errorMessage}")
+                    original
+                }
+            }
+        } else {
+            bitmaps
+        }
+
         val id = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val baseDir = File(
             android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
@@ -4290,7 +4331,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (!baseDir.exists()) baseDir.mkdirs()
 
         // 多張圖片依序存成 image_1.jpg、image_2.jpg...；只有一張的話同時存一份 image.jpg 保留舊格式相容
-        bitmaps.forEachIndexed { index, bitmap ->
+        processedBitmaps.forEachIndexed { index, bitmap ->
             try {
                 val imgFile = File(baseDir, "image_${index + 1}.jpg")
                 FileOutputStream(imgFile).use { out ->
@@ -4300,11 +4341,11 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 // 單張圖片存檔失敗不影響其他張與文字資料
             }
         }
-        if (bitmaps.size == 1) {
+        if (processedBitmaps.size == 1) {
             try {
                 val imgFile = File(baseDir, "image.jpg")
                 FileOutputStream(imgFile).use { out ->
-                    bitmaps[0].compress(Bitmap.CompressFormat.JPEG, 90, out)
+                    processedBitmaps[0].compress(Bitmap.CompressFormat.JPEG, 90, out)
                 }
             } catch (e: Exception) {
                 // 忽略
@@ -4338,7 +4379,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             put("price", metrics?.price ?: org.json.JSONObject.NULL)
             put("soldCount", metrics?.soldCount ?: org.json.JSONObject.NULL)
             put("promoterCount", metrics?.promoterCount ?: org.json.JSONObject.NULL)
-            put("imageCount", bitmaps.size)
+            put("imageCount", processedBitmaps.size)
             put("capturedAt", System.currentTimeMillis())
             // 地區判斷：目前只支援台灣蝦皮(com.shopee.tw)，菲律賓套件名稱慣例格式為 com.shopee.ph，
             // 這裡先做好判斷邏輯，之後真的要支援菲律賓時不用回頭改資料結構。
