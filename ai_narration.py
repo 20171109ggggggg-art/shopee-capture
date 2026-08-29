@@ -62,12 +62,14 @@ def determine_ai_sentence_count(num_images: int, max_sentences: int = 4) -> int:
     超出15~18秒目標範圍太多，得靠+50%語速上限硬壓才勉強壓進去，聲音會偏快、不自然；
     4句通常落在18~20秒左右，只需要小幅調速甚至不用調速就能落在目標範圍內。
 
-    【2026-08-29修改】原本4句是寫死的，改成可調參數max_sentences（來源：設定檔
-    ~/.shopee_ai_config.json 的 "max_sentences" 欄位，沒設定就維持預設4，行為不變）。
-    各張數區間的基礎句數不變，只是最後統一用max_sentences當作實際上限——
-    如果使用者把上限調低（例如設2），連原本張數多也該給3、4句的情況也會一併被壓到2句，
-    這是刻意的：使用者調這個參數就是要控制文案長度上限，不該讓區間判斷繞過去。
+    【2026-08-29修改】原本4句是寫死的，現在可調（見上方max_sentences參數）。
+    另外基礎起始句數也不再直接用區間值（1/2/3/4），改成至少從4句起跳——
+    實測發現從2句開始，重試迴圈要一路調到4~5句才夠15秒，等於每次都要重試好幾輪，
+    浪費API呼叫次數也拖慢生成速度；改成起始至少4句，讓重試迴圈的起點更接近目標，
+    重試次數自然變少。如果max_sentences刻意設得比4低（例如想要精簡文案），
+    仍然以max_sentences為準，不會被這個最低起始值蓋過去。
     """
+    MIN_BASE_SENTENCES = 4
     if num_images <= 2:
         base = 1
     elif num_images <= 4:
@@ -76,6 +78,7 @@ def determine_ai_sentence_count(num_images: int, max_sentences: int = 4) -> int:
         base = 3
     else:
         base = 4  # 8~10張（目前影片圖片上限10張）
+    base = max(base, MIN_BASE_SENTENCES)
     return min(base, max_sentences)
 
 
@@ -128,8 +131,9 @@ def build_prompt(product_info: str, num_sentences: int, region: str) -> str:
             f"- Natural spoken Taglish tone, like a friend recommending something (e.g. mixing words "
             f'like "sobrang", "grabe", "talaga", "kasi", "na", "pa" naturally with English product '
             f'terms), no hype openers like "Hey check this out"\n'
-            f"- Keep each sentence SHORT: 6-9 words total (this is a strict limit — the narration will "
-            f"be read aloud and must fit a tight video runtime), avoid repeating the same selling "
+            f"- Keep each sentence to 8-14 words (not a strict hard cap like before — a slightly "
+            f"longer, more descriptive sentence is fine and preferred over a clipped one; the "
+            f"narration will be read aloud), avoid repeating the same selling "
             f"point across sentences\n"
             f"- Output exactly {num_sentences} sentences, one per line, no numbering, no quotes, "
             f"no extra explanation\n"
@@ -145,9 +149,12 @@ def build_prompt(product_info: str, num_sentences: int, region: str) -> str:
         f"- 絕對不要提到品牌名稱、型號、產品編號，就算商品資訊裡有寫也不要唸出來，"
         f"改用一般性的方式描述這個商品\n"
         f"- 每句提到1個具體、有辨識度的賣點特徵（從商品資訊裡挑，但不包含品牌/型號），"
-        f"避免空泛的形容詞（如「品質優良」「CP值高」）；只有在不會拉長句子的情況下才加第二個賣點\n"
+        f"避免空泛的形容詞（如「品質優良」「CP值高」）；如果商品本身賣點不多、想不出新的不重複"
+        f"賣點，可以針對同一個賣點寫得更完整、更有畫面感（例如加上使用情境、感受），"
+        f"不要為了湊句數硬擠出空洞的短句\n"
         f"- 語氣自然口語，像朋友介紹商品，不要有「嗨！快來看看」這種業配開場白\n"
-        f"- 每句嚴格控制在8~12個中文字（這是硬性上限——旁白要念出來，必須配合較短的影片長度），"
+        f"- 每句字數放寬到10~16個中文字（不是原本8~12那種硬性上限——句子寫得完整、"
+        f"有畫面感比湊字數更重要，太短的句子反而讓總長度湊不到目標時長），"
         f"句子之間不要重複相同的賣點\n"
         f"- 直接輸出{num_sentences}句話，每句一行，不要加編號、不要加引號、不要有其他說明文字\n"
         f"- 句子輸出完後，最後加一行以「HASHTAGS:」開頭，接5個跟這個商品類別相關的中文標籤詞"
