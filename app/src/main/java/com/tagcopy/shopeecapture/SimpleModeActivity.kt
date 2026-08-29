@@ -452,8 +452,8 @@ private fun ProductSelectRow(
 @Composable
 private fun ImageSelectionContent(context: Context, product: GenerateQueueItem, onDone: () -> Unit) {
     val scope = rememberCoroutineScope()
-    // 預設全選：使用者從裡面取消勾選不要的圖，比從零開始一張一張勾快。
-    var chosen by remember { mutableStateOf(product.imagePaths.map { it.name }.toSet()) }
+    // 預設全不選：使用者自己挑要保留的幾張，比全選後再取消不要的更符合預期。
+    var chosen by remember { mutableStateOf(emptySet<String>()) }
     var isProcessing by remember { mutableStateOf(false) }
     var errorText by remember { mutableStateOf<String?>(null) }
 
@@ -468,7 +468,7 @@ private fun ImageSelectionContent(context: Context, product: GenerateQueueItem, 
         ) {
             InstructionCard(
                 lines = listOf(
-                    "點選圖片可以取消／恢復勾選，只有打勾的圖片會保留下來，其餘直接刪除",
+                    "點選圖片可以打勾／取消，只有打勾的圖片會保留下來，其餘直接刪除（預設全部不勾選）",
                     if (GeminiApiPrefs.isEnabled(context))
                         "確認後，打勾的圖片會送去AI換背景（AI換背景目前是開啟狀態）"
                     else
@@ -581,7 +581,18 @@ private fun ImageSelectionContent(context: Context, product: GenerateQueueItem, 
     }
 }
 
-/** 實際執行選圖結果：沒打勾的刪除，打勾的視AI換背景開關決定要不要送去改圖。 */
+/**
+ * 實際執行選圖結果：沒打勾的刪除，打勾的視AI換背景開關決定要不要送去改圖，
+ * 最後把留下來的圖片重新依序編號成image_1.jpg、image_2.jpg...。
+ *
+ * 【2026-08-29修正】原本只刪除沒打勾的圖，留下來的圖維持原本編號——但make_video.py／
+ * batch_generate.py判斷「這是不是一個有效商品資料夾」的依據，是死板地檢查image_1.jpg
+ * 存不存在（find_product_folders()），找圖片時也是嚴格從image_1.jpg開始往後找
+ * （find_images()）。如果使用者剛好取消勾選第1張（或前幾張），資料夾裡就不會有
+ * image_1.jpg，導致整個資料夾被Python那邊當成「不是商品資料夾」直接跳過，
+ * 明明選好圖了、生成時卻完全找不到——這正是使用者實測到的問題。改成確認選圖後
+ * 立刻重新編號，保證資料夾一定從image_1.jpg開始連續往下，不管使用者勾選的是哪幾張。
+ */
 private suspend fun applyImageSelection(
     context: Context,
     folder: File,
@@ -592,22 +603,39 @@ private suspend fun applyImageSelection(
     val apiKey = GeminiApiPrefs.getApiKey(context)
     val prompt = GeminiApiPrefs.getPrompt(context)
 
+    val kept = mutableListOf<File>()
     for (file in allImages) {
         if (file.name !in chosenNames) {
             file.delete()
             continue
         }
         if (aiEnabled && apiKey.isNotBlank()) {
-            val original = android.graphics.BitmapFactory.decodeFile(file.path) ?: continue
-            val result = GeminiImageEditor.editBackground(original, apiKey, prompt)
-            if (result.success && result.editedBitmap != null) {
-                java.io.FileOutputStream(file).use { out ->
-                    result.editedBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, out)
+            val original = android.graphics.BitmapFactory.decodeFile(file.path)
+            if (original != null) {
+                val result = GeminiImageEditor.editBackground(original, apiKey, prompt)
+                if (result.success && result.editedBitmap != null) {
+                    java.io.FileOutputStream(file).use { out ->
+                        result.editedBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, out)
+                    }
                 }
+                // 改圖失敗就保留原圖不動，不中斷整批選圖流程。
             }
-            // 改圖失敗就保留原圖不動，不中斷整批選圖流程。
+        }
+        kept.add(file)
+    }
+
+    // 重新編號：kept是依原本編號由小到大排的，第k個（0-index）的目標編號是k+1，
+    // 一定 <= 它原本的編號（因為前面最多k個檔案被跳過/已重新命名挪走），所以依序
+    // 處理不會發生「要改的目標檔名還被別的檔案佔用」的衝突，不需要額外用暫存檔名。
+    kept.forEachIndexed { index, file ->
+        val newIndex = index + 1
+        val ext = file.extension.ifBlank { "jpg" }
+        val newFile = File(folder, "image_$newIndex.$ext")
+        if (file.path != newFile.path) {
+            file.renameTo(newFile)
         }
     }
+
     File(folder, ".image_selection_done").createNewFile()
 }
 
