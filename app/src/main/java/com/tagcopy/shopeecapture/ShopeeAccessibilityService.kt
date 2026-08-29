@@ -29,10 +29,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
 import java.io.File
@@ -3993,7 +3996,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
 
         kotlinx.coroutines.coroutineScope {
             allTasks.map { task ->
-                kotlinx.coroutines.async {
+                async {
                     semaphore.withPermit {
                         val original = android.graphics.BitmapFactory.decodeFile(task.file.path)
                         if (original == null) {
