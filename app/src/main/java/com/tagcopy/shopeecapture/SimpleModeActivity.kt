@@ -365,6 +365,29 @@ private fun loadCapturedProducts(root: File): List<GenerateQueueItem> {
 }
 
 /** 清單裡單一商品的一列：打勾決定要不要納入這次生成批次，點整列（打勾框以外的地方）進去選圖。 */
+/**
+ * 正確做法的縮圖解碼：先用inJustDecodeBounds讀出圖片實際尺寸，算出剛好夠用的縮小倍率
+ * 再正式解碼一次——不能像原本那樣直接套一個寫死的inSampleSize去解，圖片實際尺寸跟這個
+ * 倍率兜不起來時，某些手機的BitmapFactory會直接解碼失敗回傳null（看起來就是縮圖整個
+ * 消失、只剩打勾圖示這個症狀）。targetSize是想要的縮圖邊長（像素）。
+ */
+private fun decodeSampledBitmap(path: String, targetSize: Int): android.graphics.Bitmap? {
+    return try {
+        val boundsOpts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeFile(path, boundsOpts)
+        var sampleSize = 1
+        var halfWidth = boundsOpts.outWidth / 2
+        var halfHeight = boundsOpts.outHeight / 2
+        while (halfWidth / sampleSize >= targetSize && halfHeight / sampleSize >= targetSize) {
+            sampleSize *= 2
+        }
+        val decodeOpts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sampleSize }
+        android.graphics.BitmapFactory.decodeFile(path, decodeOpts)
+    } catch (e: Exception) {
+        null
+    }
+}
+
 @Composable
 private fun ProductSelectRow(
     product: GenerateQueueItem,
@@ -384,10 +407,7 @@ private fun ProductSelectRow(
         Spacer(Modifier.width(4.dp))
         val thumb = product.imagePaths.firstOrNull()
         val bitmap = remember(thumb?.path) {
-            thumb?.let {
-                val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = 6 }
-                android.graphics.BitmapFactory.decodeFile(it.path, opts)
-            }
+            thumb?.let { decodeSampledBitmap(it.path, 48) }
         }
         if (bitmap != null) {
             Image(
@@ -458,13 +478,11 @@ private fun ImageSelectionContent(context: Context, product: GenerateQueueItem, 
             ) {
                 items(product.imagePaths) { file ->
                     val isChosen = chosen.contains(file.name)
-                    val bitmap = remember(file.path) {
-                        val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = 4 }
-                        android.graphics.BitmapFactory.decodeFile(file.path, opts)
-                    }
+                    val bitmap = remember(file.path) { decodeSampledBitmap(file.path, 120) }
                     Box(
                         modifier = Modifier
                             .size(120.dp)
+                            .background(Color(0xFFE0DCD4))
                             .clickable {
                                 chosen = if (isChosen) chosen - file.name else chosen + file.name
                             }
@@ -475,6 +493,15 @@ private fun ImageSelectionContent(context: Context, product: GenerateQueueItem, 
                                 contentDescription = null,
                                 modifier = Modifier.fillMaxSize(),
                                 contentScale = ContentScale.Crop
+                            )
+                        } else {
+                            // 解碼失敗時明確顯示檔名，方便排查是哪張圖有問題，
+                            // 而不是留一片看不出所以然的空白。
+                            Text(
+                                file.name,
+                                fontSize = 10.sp,
+                                color = SimpleMuted,
+                                modifier = Modifier.align(Alignment.Center).padding(4.dp)
                             )
                         }
                         if (!isChosen) {
