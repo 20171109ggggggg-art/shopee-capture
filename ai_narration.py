@@ -52,27 +52,38 @@ DEFAULT_MODELS = {
 REQUEST_TIMEOUT_SEC = 15
 
 
-def determine_ai_sentence_count(num_images: int) -> int:
+def determine_ai_sentence_count(num_images: int, max_sentences: int = 4) -> int:
     """
     AI文案專用的句數門檻，比規則模板那組（generate_narration.determine_sentence_count）
     更寬鬆——AI生成的句子品質好、值得讓多圖商品的旁白更飽滿一點，兩條路徑分開設定，
     改這裡不會影響規則模板那邊原本調好的行為。
-    上限訂在4句：AI單句平均約4.5~5秒，5句常常讓語音總長度衝到23~28秒，
+
+    上限預設4句：AI單句平均約4.5~5秒，5句常常讓語音總長度衝到23~28秒，
     超出15~18秒目標範圍太多，得靠+50%語速上限硬壓才勉強壓進去，聲音會偏快、不自然；
     4句通常落在18~20秒左右，只需要小幅調速甚至不用調速就能落在目標範圍內。
+
+    【2026-08-29修改】原本4句是寫死的，改成可調參數max_sentences（來源：設定檔
+    ~/.shopee_ai_config.json 的 "max_sentences" 欄位，沒設定就維持預設4，行為不變）。
+    各張數區間的基礎句數不變，只是最後統一用max_sentences當作實際上限——
+    如果使用者把上限調低（例如設2），連原本張數多也該給3、4句的情況也會一併被壓到2句，
+    這是刻意的：使用者調這個參數就是要控制文案長度上限，不該讓區間判斷繞過去。
     """
     if num_images <= 2:
-        return 1
+        base = 1
     elif num_images <= 4:
-        return 2
+        base = 2
     elif num_images <= 7:
-        return 3
+        base = 3
     else:
-        return 4  # 8~10張（目前影片圖片上限10張）
+        base = 4  # 8~10張（目前影片圖片上限10張）
+    return min(base, max_sentences)
 
 
 def load_ai_config():
-    """讀取AI設定檔，沒有這個檔案或格式不對就回傳 None（代表不啟用AI，維持規則模板）"""
+    """讀取AI設定檔，沒有這個檔案或格式不對就回傳 None（代表不啟用AI，維持規則模板）。
+    【2026-08-29新增】可選欄位"max_sentences"：AI旁白句數上限，沒填就用預設值4
+    （determine_ai_sentence_count()的預設參數），填了就覆蓋——必須是正整數，
+    不是正整數就忽略、退回預設4，不會讓整個設定檔判定失敗。"""
     if not os.path.isfile(CONFIG_PATH):
         return None
     try:
@@ -85,7 +96,10 @@ def load_ai_config():
         model = config.get("model") or DEFAULT_MODELS.get(provider)
         if not model:
             return None
-        return {"provider": provider, "api_key": api_key, "model": model}
+        max_sentences = config.get("max_sentences", 4)
+        if not isinstance(max_sentences, int) or max_sentences < 1:
+            max_sentences = 4
+        return {"provider": provider, "api_key": api_key, "model": model, "max_sentences": max_sentences}
     except Exception:
         return None
 
@@ -276,7 +290,7 @@ def generate_ai_sentences(folder: str, sentence_count_override: int = None):
     region = load_region(folder)
     product_info = extract_product_info(caption, region)
     num_images = count_images(folder)
-    num_sentences = sentence_count_override if sentence_count_override is not None else determine_ai_sentence_count(num_images)
+    num_sentences = sentence_count_override if sentence_count_override is not None else determine_ai_sentence_count(num_images, config["max_sentences"])
 
     prompt = build_prompt(product_info, num_sentences, region)
     provider = config["provider"]

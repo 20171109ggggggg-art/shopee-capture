@@ -42,9 +42,10 @@ except ImportError:
 from generate_narration import build_narration_sentences, build_hashtags, load_region
 
 try:
-    from ai_narration import generate_ai_sentences
+    from ai_narration import generate_ai_sentences, load_ai_config
 except ImportError:
     generate_ai_sentences = None
+    load_ai_config = None
 
 # ===== 可調參數 =====
 IMAGE_DURATION = 2.5       # 無旁白（退回無聲版本）時，每張圖片停留秒數
@@ -77,7 +78,12 @@ VOICE_MAP = {
 # 語速去配合影片長度目標，只重試一次（避免無限迴圈、AI版還會多花一次API成本）。
 TARGET_MIN_DURATION_SEC = 15.0
 TARGET_MAX_DURATION_SEC = 18.0
-MAX_SENTENCE_COUNT = 4
+# 【2026-08-29修改】句數上限原本寫死4，改成跟ai_narration.py共用同一份設定檔
+# （~/.shopee_ai_config.json 的 "max_sentences" 欄位）——沒設定檔或讀取失敗時
+# 退回預設值4，行為不變。retry邏輯（語音長度不在目標範圍內時調整句數重來）用的
+# 上限如果跟AI文案產生時用的上限對不上，會出現「retry想加到5句，但AI那邊上限
+# 是4句拿不到」的矛盾，所以這裡要跟ai_narration.py讀同一個值。
+MAX_SENTENCE_COUNT = (load_ai_config() or {}).get("max_sentences", 4) if load_ai_config else 4
 MIN_SENTENCE_COUNT = 1
 
 
