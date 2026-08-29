@@ -24,6 +24,7 @@ model 欄位可省略，省略時使用下面 DEFAULT_MODELS 的預設值（各�
 """
 import json
 import os
+import random
 import sys
 
 try:
@@ -111,7 +112,32 @@ def build_prompt(product_info: str, num_sentences: int, region: str) -> str:
     """組出給AI的提示詞，中英文各一版。
     【2026-08-29修改】原本要求AI帶入品牌名稱，現在改成明確禁止提及品牌/型號——
     因為圖片那邊已經改用AI去除商品上的品牌logo，文案這邊也要跟著避開，
-    不然畫面已經去了品牌，旁白卻還在講品牌名稱，會兜不起來。"""
+    不然畫面已經去了品牌，旁白卻還在講品牌名稱，會兜不起來。
+
+    【2026-08-29新增】隨機切入角度：光靠調高API的temperature，實測發現這種主題固定、
+    規則寫得很細的短文案提示詞，模型還是很容易收斂到差不多的答案（同一個商品重新生成
+    常常逐字相同）。改成每次呼叫都從一組切入角度裡隨機抽一個明確塞進提示詞，強迫AI
+    這次要用「這個角度」去寫，跟temperature的隨機性疊加，同一個商品重新生成才會真的
+    有感的不一樣，不只是碰運氣。"""
+    angle_pool_zh = [
+        "這次的切入角度：從「使用前 vs 使用後的差別」下手，強調用了這個商品之後生活哪裡變輕鬆",
+        "這次的切入角度：從「一個具體的生活場景」下手（例如某個時間點、某個空間），把商品放進那個畫面裡描述",
+        "這次的切入角度：從「別人問起時你會怎麼推薦給朋友」的口吻下手，像在跟朋友聊天分享心得",
+        "這次的切入角度：從「最讓人驚訝的一個細節」下手，挑一個最容易讓人「欸真的假的」的特點放在最前面",
+        "這次的切入角度：從「解決了什麼煩惱」下手，先點出困擾、再帶出商品怎麼處理掉這個困擾",
+        "這次的切入角度：從「感官體驗」下手（摸起來、看起來、用起來的實際感受），少講規格多講感受",
+    ]
+    angle_pool_en = [
+        "This time's angle: focus on the before-vs-after difference once you start using this product",
+        "This time's angle: anchor it in one specific everyday moment or space, describing the product inside that scene",
+        "This time's angle: write it like you're casually recommending this to a friend who just asked about it",
+        "This time's angle: lead with the single most surprising detail about this product",
+        "This time's angle: open with the annoyance/problem this solves, then bring in how the product fixes it",
+        "This time's angle: focus on sensory experience (how it feels, looks, sounds to use) rather than specs",
+    ]
+    angle_hint_zh = random.choice(angle_pool_zh)
+    angle_hint_en = random.choice(angle_pool_en)
+
     if region == "PH":
         return (
             f"You are a professional voice-over scriptwriter for short product videos targeting "
@@ -120,6 +146,7 @@ def build_prompt(product_info: str, num_sentences: int, region: str) -> str:
             f"and English that Filipinos actually speak/type online — not pure English, and not "
             f"formal/textbook Tagalog).\n\n"
             f"Product info:\n{product_info}\n\n"
+            f"{angle_hint_en}\n\n"
             f"Rules:\n"
             f"- Do NOT mention the brand name, model number, or product code anywhere in the "
             f"sentences, even if they appear in the product info above — describe the product "
@@ -145,6 +172,7 @@ def build_prompt(product_info: str, num_sentences: int, region: str) -> str:
     return (
         f"你是短影音商品旁白文案的專業寫手。請根據以下商品資訊，寫出 {num_sentences} 句口語化的旁白文案。\n\n"
         f"商品資訊：\n{product_info}\n\n"
+        f"{angle_hint_zh}\n\n"
         f"規則：\n"
         f"- 絕對不要提到品牌名稱、型號、產品編號，就算商品資訊裡有寫也不要唸出來，"
         f"改用一般性的方式描述這個商品\n"
@@ -173,6 +201,7 @@ def _call_claude(prompt: str, api_key: str, model: str) -> str:
         json={
             "model": model,
             "max_tokens": 400,
+            "temperature": 1.0,
             "messages": [{"role": "user", "content": prompt}],
         },
         timeout=REQUEST_TIMEOUT_SEC,
@@ -190,6 +219,7 @@ def _call_openai(prompt: str, api_key: str, model: str) -> str:
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 400,
+            "temperature": 1.1,
         },
         timeout=REQUEST_TIMEOUT_SEC,
     )
@@ -207,6 +237,12 @@ def _call_deepseek(prompt: str, api_key: str, model: str) -> str:
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 400,
+            # 【2026-08-29新增】DeepSeek官方文件建議一般對話/文案類用1.3，預設值1.0本身
+            # 不算低，但實測發現這種主題固定、規則寫得很細的短文案提示詞，模型輸出
+            # 收斂得很快，同一個商品重複生成常常逐字相同。調高到1.3增加隨機性，
+            # 讓同一個商品每次重新生成的文案有機會不一樣（不影響已經很穩定的句數/
+            # 時長重試邏輯，那套是靠時長數字判斷、跟文字內容本身無關）。
+            "temperature": 1.3,
         },
         timeout=REQUEST_TIMEOUT_SEC,
     )
@@ -220,7 +256,10 @@ def _call_gemini(prompt: str, api_key: str, model: str) -> str:
         f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
         params={"key": api_key},
         headers={"Content-Type": "application/json"},
-        json={"contents": [{"parts": [{"text": prompt}]}]},
+        json={
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 1.1},
+        },
         timeout=REQUEST_TIMEOUT_SEC,
     )
     resp.raise_for_status()
