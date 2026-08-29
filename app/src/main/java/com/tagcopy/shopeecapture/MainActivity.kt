@@ -626,6 +626,7 @@ fun AiBackgroundCard(context: android.content.Context) {
     var apiKey by remember { mutableStateOf(GeminiApiPrefs.getApiKey(context)) }
     var enabled by remember { mutableStateOf(GeminiApiPrefs.isEnabled(context)) }
     var prompt by remember { mutableStateOf(GeminiApiPrefs.getPrompt(context)) }
+    var editCountText by remember { mutableStateOf(GeminiApiPrefs.getEditCount(context).toString()) }
     var apiKeyVisible by remember { mutableStateOf(false) }
 
     Column(
@@ -690,6 +691,18 @@ fun AiBackgroundCard(context: android.content.Context) {
             },
             label = { Text("換背景提示詞（可自行調整）", fontSize = 12.sp) },
             minLines = 3,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(Modifier.height(10.dp))
+
+        OutlinedTextField(
+            value = editCountText,
+            onValueChange = {
+                editCountText = it.filter { c -> c.isDigit() }
+                editCountText.toIntOrNull()?.let { n -> GeminiApiPrefs.setEditCount(context, n) }
+            },
+            label = { Text("每件商品只處理前幾張（其餘存原圖，省成本）", fontSize = 12.sp) },
+            singleLine = true,
             modifier = Modifier.fillMaxWidth()
         )
     }
