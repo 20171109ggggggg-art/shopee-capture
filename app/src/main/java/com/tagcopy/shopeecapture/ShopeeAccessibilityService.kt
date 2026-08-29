@@ -4301,18 +4301,17 @@ class ShopeeAccessibilityService : AccessibilityService() {
         bitmaps: List<Bitmap>,
         metrics: ProductMetrics? = null
     ): CaptureResult {
-        // 【2026-08-29新增，測試功能】AI換背景：如果App主畫面有開啟這個開關且已填API Key，
-        // 只挑「前N張」（設定值，預設3張）送去Gemini API做「保留商品本體、只換背景」的改圖，
-        // 其餘照舊存原圖——擷取一件商品通常有10幾張，不需要每張都花錢改圖，後製影片也用不到
-        // 那麼多張。呼叫失敗（沒網路、API Key錯誤、額度用完等）一律靜默改用原圖繼續，絕對不會
-        // 因為這裡出錯而讓整筆商品擷取失敗——這只是錦上添花的功能，不能變成擷取流程的單點故障。
+        // 【2026-08-29修正】原本是「只處理前N張、其餘仍照舊存原圖」，但後製影片
+        // （make_video.py的MAX_IMAGES_IN_VIDEO=10）預設會把資料夾裡所有image_N.jpg都用進去，
+        // 等於3張改過的乾淨圖混著7張帶logo的原圖一起出現在影片裡，沒有達到「影片只出現改過的圖」
+        // 的效果。改成：只取前N張送AI改圖，其餘的直接捨棄、不存檔——資料夾裡最後只會有N張圖
+        // （而且全部都是AI改過的），影片生成端不用改，自然就只會用到這幾張。
         val processedBitmaps: List<Bitmap> = if (GeminiApiPrefs.isEnabled(this) && bitmaps.isNotEmpty()) {
             val apiKey = GeminiApiPrefs.getApiKey(this)
             val prompt = GeminiApiPrefs.getPrompt(this)
             val editCount = GeminiApiPrefs.getEditCount(this).coerceAtMost(bitmaps.size)
-            appendDebugLog("  → [AI換背景] 已啟用，共 ${bitmaps.size} 張圖片，只處理前 $editCount 張，其餘維持原圖")
-            bitmaps.mapIndexed { index, original ->
-                if (index >= editCount) return@mapIndexed original
+            appendDebugLog("  → [AI換背景] 已啟用，共 ${bitmaps.size} 張圖片，只取前 $editCount 張送去改圖，其餘不存檔")
+            bitmaps.take(editCount).mapIndexed { index, original ->
                 val result = GeminiImageEditor.editBackground(original, apiKey, prompt)
                 if (result.success && result.editedBitmap != null) {
                     appendDebugLog("  → [AI換背景] 第${index + 1}張成功")

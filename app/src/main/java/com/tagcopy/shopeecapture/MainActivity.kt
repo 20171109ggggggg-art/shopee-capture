@@ -701,7 +701,7 @@ fun AiBackgroundCard(context: android.content.Context) {
                 editCountText = it.filter { c -> c.isDigit() }
                 editCountText.toIntOrNull()?.let { n -> GeminiApiPrefs.setEditCount(context, n) }
             },
-            label = { Text("每件商品只處理前幾張（其餘存原圖，省成本）", fontSize = 12.sp) },
+            label = { Text("每件商品只保留並處理前幾張（其餘直接捨棄不存檔）", fontSize = 12.sp) },
             singleLine = true,
             modifier = Modifier.fillMaxWidth()
         )
