@@ -66,6 +66,10 @@ class ShopeeAccessibilityService : AccessibilityService() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var autoJob: Job? = null
     private var videoImportJob: Job? = null
+    private var aiImageBatchJob: Job? = null
+    // AI改圖批次同時處理幾張圖片——太高可能撞到Gemini API的速率限制（Paid Tier一般
+    // 也才150~300次/分鐘），3張是兼顧速度跟穩定性的折衷值。
+    private val aiBatchConcurrency = 3
     private var currentDebugLogFileName: String? = null
 
     override fun onServiceConnected() {
@@ -3895,6 +3899,133 @@ class ShopeeAccessibilityService : AccessibilityService() {
 
     fun stopVideoImport() {
         videoImportJob?.cancel()
+    }
+
+    // ========== AI改圖背景批次（選圖跟AI改圖拆開後的第二階段） ==========
+
+    fun isAiImageBatchRunning(): Boolean = aiImageBatchJob?.isActive == true
+
+    /**
+     * 一次處理所有「已選圖但還沒AI改過」的商品（CaptionQueue底下有.image_selection_done
+     * 但沒有.ai_processed標記的資料夾）。使用者原本的痛點：選圖跟AI改圖綁在一起同步進行，
+     * 選一個商品要等AI跑完才能選下一個，幾十個商品要一直卡在等待。拆開後選圖只做本地檔案
+     * 操作（見SimpleModeActivity.applyImageSelection），可以很快選完全部商品，
+     * 再用這個背景批次一次跑，同時平行處理多張圖片（aiBatchConcurrency張同時送出）
+     * 加快總時間，不用一張一張排隊等。
+     *
+     * 每個資料夾的圖片全部處理完（不管每張成功或失敗）才會標記.ai_processed，避免只處理到
+     * 一半就標記完成、之後漏掉沒處理的圖片。單張圖片解碼/呼叫API失敗不影響其他張，
+     * 失敗的那張就是保留原圖，不會讓整個批次中斷。
+     */
+    fun startAiImageBatch(onEvent: (AiImageBatchEvent) -> Unit) {
+        if (isAiImageBatchRunning()) return
+        FloatingButtonService.enterAutomationMode()
+        aiImageBatchJob = serviceScope.launch {
+            try {
+                aiImageBatchLoop(onEvent)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                onEvent(AiImageBatchEvent.Log("已停止AI改圖批次"))
+            } catch (e: Exception) {
+                onEvent(AiImageBatchEvent.Log("發生未預期錯誤：${e.javaClass.simpleName} ${e.message}"))
+            } finally {
+                FloatingButtonService.exitAutomationMode()
+            }
+        }
+    }
+
+    fun stopAiImageBatch() {
+        aiImageBatchJob?.cancel()
+    }
+
+    private data class AiImageTask(val folder: File, val file: File)
+
+    private suspend fun aiImageBatchLoop(onEvent: (AiImageBatchEvent) -> Unit) {
+        val captionQueueDir = File(
+            android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
+            "CaptionQueue"
+        )
+
+        if (!GeminiApiPrefs.isEnabled(this)) {
+            appendDebugLog("===== [AI改圖批次] AI換背景目前是關閉狀態，沒有東西要處理 =====")
+            onEvent(AiImageBatchEvent.Log("AI換背景目前是關閉狀態，請先到主畫面開啟"))
+            onEvent(AiImageBatchEvent.Finished(0, 0, "AI換背景未開啟"))
+            return
+        }
+        val apiKey = GeminiApiPrefs.getApiKey(this)
+        if (apiKey.isBlank()) {
+            appendDebugLog("===== [AI改圖批次] 尚未設定API Key，沒有東西要處理 =====")
+            onEvent(AiImageBatchEvent.Log("尚未設定Gemini API Key，請先到主畫面設定"))
+            onEvent(AiImageBatchEvent.Finished(0, 0, "尚未設定API Key"))
+            return
+        }
+        val prompt = GeminiApiPrefs.getPrompt(this)
+
+        val pendingFolders = captionQueueDir.listFiles()
+            ?.filter { it.isDirectory && File(it, ".image_selection_done").exists() && !File(it, ".ai_processed").exists() }
+            ?.sortedBy { it.name }
+            ?: emptyList()
+
+        if (pendingFolders.isEmpty()) {
+            appendDebugLog("===== [AI改圖批次] 沒有待處理的商品（都還沒選圖，或已經處理過） =====")
+            onEvent(AiImageBatchEvent.Log("沒有待處理的商品，請先到「生成影片」畫面點商品選圖"))
+            onEvent(AiImageBatchEvent.Finished(0, 0, "沒有待處理商品"))
+            return
+        }
+
+        val allTasks = mutableListOf<AiImageTask>()
+        for (folder in pendingFolders) {
+            val images = (1..20).mapNotNull { i ->
+                listOf("jpg", "jpeg", "png")
+                    .map { ext -> File(folder, "image_$i.$ext") }
+                    .firstOrNull { it.exists() }
+            }
+            images.forEach { allTasks.add(AiImageTask(folder, it)) }
+        }
+
+        appendDebugLog("===== [AI改圖批次] 開始，共 ${pendingFolders.size} 個商品、${allTasks.size} 張圖片，同時處理 $aiBatchConcurrency 張 =====")
+        onEvent(AiImageBatchEvent.Progress(0, allTasks.size))
+
+        val semaphore = kotlinx.coroutines.sync.Semaphore(aiBatchConcurrency)
+        var completed = 0
+        val progressLock = Any()
+        val folderTaskCounts = allTasks.groupingBy { it.folder }.eachCount()
+        val folderDoneCounts = mutableMapOf<File, Int>()
+
+        kotlinx.coroutines.coroutineScope {
+            allTasks.map { task ->
+                kotlinx.coroutines.async {
+                    semaphore.withPermit {
+                        val original = android.graphics.BitmapFactory.decodeFile(task.file.path)
+                        if (original == null) {
+                            appendDebugLog("  → [AI改圖批次] ${task.folder.name}/${task.file.name} 讀不到原圖，跳過")
+                        } else {
+                            val result = GeminiImageEditor.editBackground(original, apiKey, prompt)
+                            if (result.success && result.editedBitmap != null) {
+                                java.io.FileOutputStream(task.file).use { out ->
+                                    result.editedBitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
+                                }
+                                appendDebugLog("  → [AI改圖批次] ${task.folder.name}/${task.file.name} 成功")
+                            } else {
+                                appendDebugLog("  → [AI改圖批次] ${task.folder.name}/${task.file.name} 失敗，保留原圖：${result.errorMessage}")
+                            }
+                        }
+
+                        synchronized(progressLock) {
+                            completed++
+                            val doneInFolder = (folderDoneCounts[task.folder] ?: 0) + 1
+                            folderDoneCounts[task.folder] = doneInFolder
+                            if (doneInFolder == folderTaskCounts[task.folder]) {
+                                File(task.folder, ".ai_processed").createNewFile()
+                            }
+                        }
+                        onEvent(AiImageBatchEvent.Progress(completed, allTasks.size))
+                    }
+                }
+            }.awaitAll()
+        }
+
+        appendDebugLog("===== [AI改圖批次] 結束，共處理 ${pendingFolders.size} 個商品、${allTasks.size} 張圖片 =====")
+        onEvent(AiImageBatchEvent.Finished(pendingFolders.size, allTasks.size, "批次完成"))
     }
 
     private suspend fun videoImportLoop(batchSize: Int, onEvent: (VideoImportEvent) -> Unit) {

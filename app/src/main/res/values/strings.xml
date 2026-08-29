@@ -98,6 +98,7 @@
     <string name="btn_upload">上架</string>
     <string name="btn_fb_upload">FB上架</string>
     <string name="btn_video_import">匯入影音</string>
+    <string name="btn_ai_image_batch">AI改圖</string>
 
     <string name="toast_upload_need_accessibility">請先開啟「無障礙服務」權限</string>
     <string name="toast_upload_started">開始上架自動化，本次最多 %1$d 支</string>

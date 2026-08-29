@@ -219,3 +219,15 @@ sealed class VideoImportEvent {
     data class Progress(val newCount: Int, val batchTarget: Int, val totalKnown: Int) : VideoImportEvent()
     data class Finished(val newlyImportedCount: Int, val totalKnownCount: Int, val reason: String) : VideoImportEvent()
 }
+
+/**
+ * AI改圖背景批次（見ShopeeAccessibilityService.startAiImageBatch說明）的過程事件。
+ * 選圖跟AI改圖拆開後，這個批次一次處理所有「已選圖但還沒AI改過」的商品，
+ * 同時平行處理多張圖片加快速度，不用選一個商品等一個。
+ */
+sealed class AiImageBatchEvent {
+    data class Log(val message: String) : AiImageBatchEvent()
+    /** completed：目前已處理完幾張圖片；total：這次批次總共要處理幾張圖片 */
+    data class Progress(val completed: Int, val total: Int) : AiImageBatchEvent()
+    data class Finished(val folderCount: Int, val imageCount: Int, val reason: String) : AiImageBatchEvent()
+}

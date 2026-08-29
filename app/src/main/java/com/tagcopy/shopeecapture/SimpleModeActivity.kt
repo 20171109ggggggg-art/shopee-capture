@@ -331,7 +331,8 @@ private data class GenerateQueueItem(
     val productName: String?,
     val imagePaths: List<File>,
     val hasVideo: Boolean,
-    val selectionDone: Boolean
+    val selectionDone: Boolean,
+    val aiProcessed: Boolean
 )
 
 private fun loadCapturedProducts(root: File): List<GenerateQueueItem> {
@@ -357,7 +358,8 @@ private fun loadCapturedProducts(root: File): List<GenerateQueueItem> {
                 productName = name,
                 imagePaths = images,
                 hasVideo = File(dir, "output.mp4").exists(),
-                selectionDone = File(dir, ".image_selection_done").exists()
+                selectionDone = File(dir, ".image_selection_done").exists(),
+                aiProcessed = File(dir, ".ai_processed").exists()
             )
         }
         ?.sortedByDescending { it.folder.lastModified() }
@@ -402,6 +404,7 @@ private fun ProductSelectRow(
     onCheckedChange: (Boolean) -> Unit,
     onClickImages: () -> Unit
 ) {
+    val context = LocalContext.current
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
@@ -436,6 +439,9 @@ private fun ProductSelectRow(
                 buildString {
                     append("${product.imagePaths.size}張圖")
                     if (product.selectionDone) append(" · 已選圖")
+                    if (product.selectionDone && GeminiApiPrefs.isEnabled(context)) {
+                        append(if (product.aiProcessed) " · 已AI改圖" else " · 待AI改圖")
+                    }
                     if (product.hasVideo) append(" · 已有影片")
                 },
                 fontSize = 11.sp, color = SimpleMuted
@@ -451,10 +457,8 @@ private fun ProductSelectRow(
  */
 @Composable
 private fun ImageSelectionContent(context: Context, product: GenerateQueueItem, onDone: () -> Unit) {
-    val scope = rememberCoroutineScope()
     // 預設全不選：使用者自己挑要保留的幾張，比全選後再取消不要的更符合預期。
     var chosen by remember { mutableStateOf(emptySet<String>()) }
-    var isProcessing by remember { mutableStateOf(false) }
     var errorText by remember { mutableStateOf<String?>(null) }
 
     androidx.activity.compose.BackHandler(enabled = true) { onDone() }
@@ -470,7 +474,7 @@ private fun ImageSelectionContent(context: Context, product: GenerateQueueItem, 
                 lines = listOf(
                     "點選圖片可以打勾／取消，只有打勾的圖片會保留下來，其餘直接刪除（預設全部不勾選）",
                     if (GeminiApiPrefs.isEnabled(context))
-                        "確認後，打勾的圖片會送去AI換背景（AI換背景目前是開啟狀態）"
+                        "確認選圖後不會馬上處理，全部商品選完後到浮球按「AI改圖」，會一次背景批次處理"
                     else
                         "AI換背景目前是關閉狀態，確認後只會保留打勾的圖片，不經過AI改圖"
                 )
@@ -548,31 +552,17 @@ private fun ImageSelectionContent(context: Context, product: GenerateQueueItem, 
                 Spacer(Modifier.height(10.dp))
             }
 
-            if (isProcessing) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = SimpleAccent)
-                    Spacer(Modifier.width(10.dp))
-                    Text("處理中，請稍候…", fontSize = 14.sp, color = SimpleInk, fontWeight = FontWeight.Bold)
-                }
-                Spacer(Modifier.height(16.dp))
-            }
-
             BigActionButton(
                 text = "確認選圖",
                 color = SimpleInk,
-                enabled = !isProcessing && chosen.isNotEmpty(),
+                enabled = chosen.isNotEmpty(),
                 onClick = {
-                    isProcessing = true
                     errorText = null
-                    scope.launch {
-                        try {
-                            applyImageSelection(context, product.folder, product.imagePaths, chosen)
-                            isProcessing = false
-                            onDone()
-                        } catch (e: Exception) {
-                            isProcessing = false
-                            errorText = "處理失敗：${e.message}"
-                        }
+                    try {
+                        applyImageSelection(product.folder, product.imagePaths, chosen)
+                        onDone()
+                    } catch (e: Exception) {
+                        errorText = "處理失敗：${e.message}"
                     }
                 }
             )
@@ -582,46 +572,30 @@ private fun ImageSelectionContent(context: Context, product: GenerateQueueItem, 
 }
 
 /**
- * 實際執行選圖結果：沒打勾的刪除，打勾的視AI換背景開關決定要不要送去改圖，
- * 最後把留下來的圖片重新依序編號成image_1.jpg、image_2.jpg...。
+ * 實際執行選圖結果：沒打勾的刪除，打勾的重新依序編號成image_1.jpg、image_2.jpg...。
  *
- * 【2026-08-29修正】原本只刪除沒打勾的圖，留下來的圖維持原本編號——但make_video.py／
- * batch_generate.py判斷「這是不是一個有效商品資料夾」的依據，是死板地檢查image_1.jpg
- * 存不存在（find_product_folders()），找圖片時也是嚴格從image_1.jpg開始往後找
- * （find_images()）。如果使用者剛好取消勾選第1張（或前幾張），資料夾裡就不會有
- * image_1.jpg，導致整個資料夾被Python那邊當成「不是商品資料夾」直接跳過，
- * 明明選好圖了、生成時卻完全找不到——這正是使用者實測到的問題。改成確認選圖後
- * 立刻重新編號，保證資料夾一定從image_1.jpg開始連續往下，不管使用者勾選的是哪幾張。
+ * 【2026-08-30修正】原本選圖確認後會在這裡直接同步呼叫AI改圖，選一個商品就要等AI跑完
+ * 才能選下一個，幾十個商品要一直卡在等待——改成選圖只負責「決定留哪幾張、重新編號」，
+ * 純本地檔案操作、幾乎不用等；AI改圖拆成獨立的背景批次工作（見ShopeeAccessibilityService.
+ * startAiImageBatch()，浮球新增「AI改圖」按鈕觸發），可以先把所有商品的圖都選完，
+ * 再一次讓AI批次在背景跑、同時處理多張加快速度，不用選一個等一個。
+ *
+ * 【2026-08-29修正，仍然保留】原本刪除後維持原編號，若使用者剛好取消勾選image_1，
+ * 資料夾會沒有image_1.jpg，導致make_video.py／batch_generate.py的find_product_folders()／
+ * find_images()直接判定「找不到商品資料夾」整批被忽略，已修正為選圖確認後強制重新編號。
  */
-private suspend fun applyImageSelection(
-    context: Context,
+private fun applyImageSelection(
     folder: File,
     allImages: List<File>,
     chosenNames: Set<String>
 ) {
-    val aiEnabled = GeminiApiPrefs.isEnabled(context)
-    val apiKey = GeminiApiPrefs.getApiKey(context)
-    val prompt = GeminiApiPrefs.getPrompt(context)
-
     val kept = mutableListOf<File>()
     for (file in allImages) {
         if (file.name !in chosenNames) {
             file.delete()
-            continue
+        } else {
+            kept.add(file)
         }
-        if (aiEnabled && apiKey.isNotBlank()) {
-            val original = android.graphics.BitmapFactory.decodeFile(file.path)
-            if (original != null) {
-                val result = GeminiImageEditor.editBackground(original, apiKey, prompt)
-                if (result.success && result.editedBitmap != null) {
-                    java.io.FileOutputStream(file).use { out ->
-                        result.editedBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, out)
-                    }
-                }
-                // 改圖失敗就保留原圖不動，不中斷整批選圖流程。
-            }
-        }
-        kept.add(file)
     }
 
     // 重新編號：kept是依原本編號由小到大排的，第k個（0-index）的目標編號是k+1，
@@ -637,6 +611,9 @@ private suspend fun applyImageSelection(
     }
 
     File(folder, ".image_selection_done").createNewFile()
+    // 選圖結果變了（不管是第一次選還是重新選過），舊的AI處理標記不再有效，
+    // 讓它重新排進下一次AI改圖批次的待處理清單。
+    File(folder, ".ai_processed").delete()
 }
 
 @Composable

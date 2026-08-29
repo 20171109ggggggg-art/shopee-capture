@@ -224,6 +224,17 @@ class FloatingButtonService : Service() {
             setPadding(36, 24, 36, 24)
         }
 
+        // 【2026-08-30新增】AI改圖背景批次：選圖跟AI改圖拆開後，這顆按鈕觸發第二階段——
+        // 一次處理所有已選圖但還沒AI改過的商品，同時平行處理多張圖片。使用前提：
+        // 已經在「生成影片」畫面把要處理的商品圖都選完（見SimpleModeActivity選圖畫面）。
+        val aiImageBatchButton = TextView(this).apply {
+            text = getString(R.string.btn_ai_image_batch)
+            setBackgroundColor(0xFF7B5EA7.toInt())
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 14f
+            setPadding(36, 24, 36, 24)
+        }
+
         // 關閉按鈕：讓使用者不用特地下拉通知欄找停止動作，直接在懸浮視窗上就能收起整個服務。
         // 跟通知欄的停止按鈕（ACTION_STOP）共用同一套stopSelf()邏輯。
         val closeButton = TextView(this).apply {
@@ -255,10 +266,11 @@ class FloatingButtonService : Service() {
         container.addView(uploadButton)
         container.addView(fbUploadButton)
         container.addView(videoImportButton)
+        container.addView(aiImageBatchButton)
         container.addView(closeButton)
         container.addView(stopAutomationButton)
 
-        regularButtons = listOf(captureButton, autoButton, detectButton, calibrateButton, uploadButton, fbUploadButton, videoImportButton, closeButton)
+        regularButtons = listOf(captureButton, autoButton, detectButton, calibrateButton, uploadButton, fbUploadButton, videoImportButton, aiImageBatchButton, closeButton)
 
         val layoutFlag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -313,6 +325,7 @@ class FloatingButtonService : Service() {
                             uploadButton -> onUploadButtonTapped(uploadButton)
                             fbUploadButton -> onFbUploadButtonTapped(fbUploadButton)
                             videoImportButton -> onVideoImportButtonTapped()
+                            aiImageBatchButton -> onAiImageBatchButtonTapped()
                             closeButton -> stopSelf()
                             stopAutomationButton -> stopAllRunningAutomation()
                         }
@@ -329,6 +342,7 @@ class FloatingButtonService : Service() {
         uploadButton.setOnTouchListener(dragListener)
         fbUploadButton.setOnTouchListener(dragListener)
         videoImportButton.setOnTouchListener(dragListener)
+        aiImageBatchButton.setOnTouchListener(dragListener)
         closeButton.setOnTouchListener(dragListener)
         stopAutomationButton.setOnTouchListener(dragListener)
 
@@ -583,6 +597,44 @@ class FloatingButtonService : Service() {
                     showAlertNotification(
                         "匯入舊短影音結束",
                         "本批次新增 ${event.newlyImportedCount} 筆，資料庫累積共 ${event.totalKnownCount} 筆\n原因：${event.reason}"
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * AI改圖背景批次按鈕：一次處理所有已選圖但還沒AI改過的商品，同時平行處理多張圖片，
+     * 不用選一個商品等一個。使用前提：已經在「生成影片」畫面把要處理的商品圖選完
+     * （見SimpleModeActivity.ImageSelectionContent）。
+     */
+    private fun onAiImageBatchButtonTapped() {
+        val service = ShopeeAccessibilityService.instance
+        if (service == null) {
+            Toast.makeText(this, getString(R.string.toast_need_accessibility), Toast.LENGTH_LONG).show()
+            return
+        }
+
+        if (service.isAiImageBatchRunning()) {
+            service.stopAiImageBatch()
+            Toast.makeText(this, "已送出停止AI改圖批次請求", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        Toast.makeText(this, "開始AI改圖批次", Toast.LENGTH_SHORT).show()
+        service.startAiImageBatch { event ->
+            when (event) {
+                is AiImageBatchEvent.Log -> {
+                    Toast.makeText(this, event.message, Toast.LENGTH_SHORT).show()
+                }
+                is AiImageBatchEvent.Progress -> {
+                    stopAutomationFloatingButton?.text = "${getString(R.string.btn_stop_automation)}\n${event.completed}/${event.total}"
+                }
+                is AiImageBatchEvent.Finished -> {
+                    stopAutomationFloatingButton?.text = getString(R.string.btn_stop_automation)
+                    showAlertNotification(
+                        "AI改圖批次結束",
+                        "共處理 ${event.folderCount} 個商品、${event.imageCount} 張圖片\n原因：${event.reason}"
                     )
                 }
             }
