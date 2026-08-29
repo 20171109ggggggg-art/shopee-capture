@@ -91,8 +91,10 @@ def load_ai_config():
 
 
 def build_prompt(product_info: str, num_sentences: int, region: str) -> str:
-    """組出給AI的提示詞，中英文各一版。跟規則模板不同，這裡明確要求帶入品牌名稱跟具體特徵，
-    不像規則模板只講類別——AI生成的品牌+特徵敘述夠自然，不會像規則模板那樣生硬，值得善用"""
+    """組出給AI的提示詞，中英文各一版。
+    【2026-08-29修改】原本要求AI帶入品牌名稱，現在改成明確禁止提及品牌/型號——
+    因為圖片那邊已經改用AI去除商品上的品牌logo，文案這邊也要跟著避開，
+    不然畫面已經去了品牌，旁白卻還在講品牌名稱，會兜不起來。"""
     if region == "PH":
         return (
             f"You are a professional voice-over scriptwriter for short product videos targeting "
@@ -102,9 +104,13 @@ def build_prompt(product_info: str, num_sentences: int, region: str) -> str:
             f"formal/textbook Tagalog).\n\n"
             f"Product info:\n{product_info}\n\n"
             f"Rules:\n"
-            f"- Naturally weave in the brand name and 1 concrete, distinguishing selling point per "
-            f"sentence (a specific feature from the product info, not a vague adjective); only add a "
-            f"second feature if it fits without making the sentence longer\n"
+            f"- Do NOT mention the brand name, model number, or product code anywhere in the "
+            f"sentences, even if they appear in the product info above — describe the product "
+            f"generically instead\n"
+            f"- Naturally weave in 1 concrete, distinguishing selling point per "
+            f"sentence (a specific feature from the product info, excluding brand/model, not a "
+            f"vague adjective); only add a second feature if it fits without making the sentence "
+            f"longer\n"
             f"- Natural spoken Taglish tone, like a friend recommending something (e.g. mixing words "
             f'like "sobrang", "grabe", "talaga", "kasi", "na", "pa" naturally with English product '
             f'terms), no hype openers like "Hey check this out"\n'
@@ -114,22 +120,24 @@ def build_prompt(product_info: str, num_sentences: int, region: str) -> str:
             f"- Output exactly {num_sentences} sentences, one per line, no numbering, no quotes, "
             f"no extra explanation\n"
             f"- After the sentences, add one final line starting with \"HASHTAGS:\" followed by exactly "
-            f"5 short English hashtag words relevant to this product category (no # symbol, "
-            f"space-separated, e.g. \"HASHTAGS: ShopeeFinds MustHave HomeEssentials TechGadget "
-            f"AffiliateFind\")"
+            f"5 short English hashtag words relevant to this product category (no brand/model names, "
+            f"no # symbol, space-separated, e.g. \"HASHTAGS: ShopeeFinds MustHave HomeEssentials "
+            f"TechGadget AffiliateFind\")"
         )
     return (
         f"你是短影音商品旁白文案的專業寫手。請根據以下商品資訊，寫出 {num_sentences} 句口語化的旁白文案。\n\n"
         f"商品資訊：\n{product_info}\n\n"
         f"規則：\n"
-        f"- 自然帶入品牌名稱，每句提到1個具體、有辨識度的賣點特徵（從商品資訊裡挑），"
+        f"- 絕對不要提到品牌名稱、型號、產品編號，就算商品資訊裡有寫也不要唸出來，"
+        f"改用一般性的方式描述這個商品\n"
+        f"- 每句提到1個具體、有辨識度的賣點特徵（從商品資訊裡挑，但不包含品牌/型號），"
         f"避免空泛的形容詞（如「品質優良」「CP值高」）；只有在不會拉長句子的情況下才加第二個賣點\n"
         f"- 語氣自然口語，像朋友介紹商品，不要有「嗨！快來看看」這種業配開場白\n"
         f"- 每句嚴格控制在8~12個中文字（這是硬性上限——旁白要念出來，必須配合較短的影片長度），"
         f"句子之間不要重複相同的賣點\n"
         f"- 直接輸出{num_sentences}句話，每句一行，不要加編號、不要加引號、不要有其他說明文字\n"
         f"- 句子輸出完後，最後加一行以「HASHTAGS:」開頭，接5個跟這個商品類別相關的中文標籤詞"
-        f"（不含#符號、用空格分隔，例如「HASHTAGS: 居家好物 分潤推薦 開箱心得 生活選物 蝦皮好物」）"
+        f"（不含品牌/型號名稱、不含#符號、用空格分隔，例如「HASHTAGS: 居家好物 分潤推薦 開箱心得 生活選物 蝦皮好物」）"
     )
 
 
