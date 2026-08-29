@@ -88,9 +88,25 @@ def check_stop_requested(root: str) -> bool:
 
 
 def find_product_folders(root: str) -> list:
-    """找出根目錄底下所有商品資料夾（有 image_1.jpg 的才算，避免掃到雜項資料夾）"""
+    """找出根目錄底下所有商品資料夾（有 image_1.jpg 的才算，避免掃到雜項資料夾）。
+    如果 <root>/.selected_ids.txt 存在（App「生成影片」畫面勾選商品後開始生成時會寫入這個檔案，
+    一行一個資料夾名稱），只回傳清單裡列出的資料夾——對應「人工選圖後只生成勾選商品」的需求。
+    這個檔案不存在時維持原本行為（處理全部），向後相容舊的呼叫方式（例如手動下指令跑整批）。"""
+    selected_path = os.path.join(root, ".selected_ids.txt")
+    selected_names = None
+    if os.path.isfile(selected_path):
+        try:
+            with open(selected_path, "r", encoding="utf-8") as f:
+                selected_names = {line.strip() for line in f if line.strip()}
+            os.remove(selected_path)  # 用完即丟，避免下次沒帶清單時被舊檔案誤篩選
+        except Exception as e:
+            print(f"⚠ 讀取 .selected_ids.txt 失敗（{e}），改為處理全部資料夾")
+            selected_names = None
+
     folders = []
     for name in sorted(os.listdir(root)):
+        if selected_names is not None and name not in selected_names:
+            continue
         path = os.path.join(root, name)
         if not os.path.isdir(path):
             continue

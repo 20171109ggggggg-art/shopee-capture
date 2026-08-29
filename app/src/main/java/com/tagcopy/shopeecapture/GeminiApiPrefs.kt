@@ -56,21 +56,4 @@ object GeminiApiPrefs {
             .putString(KEY_PROMPT, prompt)
             .apply()
     }
-
-    // 【2026-08-29新增，2026-08-29修正行為】擷取一件商品通常會抓到10幾張圖，AI換背景只會處理
-    // 「前幾張」（這裡設定的數字），而且只有這幾張會被留下來——其餘的直接捨棄不存檔，確保後製
-    // 影片（會把資料夾裡所有圖片都用進去）只會用到AI改過的乾淨圖，不會混到帶logo的原圖。
-    private const val KEY_EDIT_COUNT = "edit_count"
-    const val DEFAULT_EDIT_COUNT = 3
-
-    fun getEditCount(context: Context): Int {
-        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getInt(KEY_EDIT_COUNT, DEFAULT_EDIT_COUNT)
-    }
-
-    fun setEditCount(context: Context, count: Int) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
-            .putInt(KEY_EDIT_COUNT, count.coerceAtLeast(0))
-            .apply()
-    }
 }

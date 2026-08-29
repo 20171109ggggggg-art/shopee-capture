@@ -7,12 +7,15 @@ import android.os.Bundle
 import android.os.Environment
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -22,6 +25,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -59,6 +64,14 @@ class SimpleModeActivity : ComponentActivity() {
 private fun SimpleModeRoot() {
     val context = LocalContext.current
     var screen by remember { mutableStateOf(SimpleScreen.HOME) }
+
+    // 【2026-08-28新增】原本子畫面（擷取／生成影片／檢視影片／上架）沒有攔截手機實體返回鍵，
+    // 導致在子畫面按返回鍵會直接整個App跳出（Activity被finish），不是使用者預期的「先回首頁」。
+    // 只在非首頁時攔截返回鍵、把screen切回HOME；已經在首頁時放行給系統預設行為
+    // （enabled=false時BackHandler形同不存在），此時按返回鍵才是真的離開App，這才是正常預期。
+    androidx.activity.compose.BackHandler(enabled = screen != SimpleScreen.HOME) {
+        screen = SimpleScreen.HOME
+    }
 
     Surface(color = SimpleBg, modifier = Modifier.fillMaxSize()) {
         when (screen) {
@@ -308,6 +321,259 @@ private fun buildDetailedResultText(context: Context, headerText: String, p: Ter
     return sb.toString()
 }
 
+/**
+ * 【2026-08-29新增】「生成影片」畫面的商品清單資料：讀取CaptionQueue底下每個商品資料夾的
+ * 基本資訊（名稱、圖片清單、是否已經選過圖、是否已經有影片），給下面的勾選清單跟人工選圖畫面用。
+ */
+private data class CapturedProduct(
+    val folder: File,
+    val productName: String?,
+    val imagePaths: List<File>,
+    val hasVideo: Boolean,
+    val selectionDone: Boolean
+)
+
+private fun loadCapturedProducts(root: File): List<CapturedProduct> {
+    if (!root.exists()) return emptyList()
+    return root.listFiles()
+        ?.filter { it.isDirectory }
+        ?.mapNotNull { dir ->
+            val metaFile = File(dir, "meta.json")
+            if (!metaFile.exists()) return@mapNotNull null
+            val name = try {
+                JSONObject(metaFile.readText()).optString("productName", null)
+            } catch (e: Exception) {
+                null
+            }
+            val images = (1..20).mapNotNull { i ->
+                listOf("jpg", "jpeg", "png")
+                    .map { ext -> File(dir, "image_$i.$ext") }
+                    .firstOrNull { it.exists() }
+            }
+            if (images.isEmpty()) return@mapNotNull null
+            CapturedProduct(
+                folder = dir,
+                productName = name,
+                imagePaths = images,
+                hasVideo = File(dir, "output.mp4").exists(),
+                selectionDone = File(dir, ".image_selection_done").exists()
+            )
+        }
+        ?.sortedByDescending { it.folder.lastModified() }
+        ?: emptyList()
+}
+
+/** 清單裡單一商品的一列：打勾決定要不要納入這次生成批次，點整列（打勾框以外的地方）進去選圖。 */
+@Composable
+private fun ProductSelectRow(
+    product: CapturedProduct,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    onClickImages: () -> Unit
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White)
+            .clickable { onClickImages() }
+            .padding(10.dp)
+    ) {
+        Checkbox(checked = checked, onCheckedChange = onCheckedChange)
+        Spacer(Modifier.width(4.dp))
+        val thumb = product.imagePaths.firstOrNull()
+        val bitmap = remember(thumb?.path) {
+            thumb?.let {
+                val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = 6 }
+                android.graphics.BitmapFactory.decodeFile(it.path, opts)
+            }
+        }
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = null,
+                modifier = Modifier.size(48.dp),
+                contentScale = ContentScale.Crop
+            )
+            Spacer(Modifier.width(10.dp))
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                product.productName ?: product.folder.name,
+                fontSize = 13.sp, color = SimpleInk, fontWeight = FontWeight.Bold,
+                maxLines = 2
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                buildString {
+                    append("${product.imagePaths.size}張圖")
+                    if (product.selectionDone) append(" · 已選圖")
+                    if (product.hasVideo) append(" · 已有影片")
+                },
+                fontSize = 11.sp, color = SimpleMuted
+            )
+        }
+    }
+}
+
+/**
+ * 人工選圖畫面：列出這個商品擷取到的所有圖片，點擊圖片切換打勾／取消。確認後：
+ * 打勾的圖片如果AI換背景是開啟狀態就送去改圖（改圖失敗保留原圖，不中斷整批），
+ * 沒打勾的圖片直接刪除——只有這裡選定的圖片會留下來，之後生成影片只會用到這幾張。
+ */
+@Composable
+private fun ImageSelectionContent(context: Context, product: CapturedProduct, onDone: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    // 預設全選：使用者從裡面取消勾選不要的圖，比從零開始一張一張勾快。
+    var chosen by remember { mutableStateOf(product.imagePaths.map { it.name }.toSet()) }
+    var isProcessing by remember { mutableStateOf(false) }
+    var errorText by remember { mutableStateOf<String?>(null) }
+
+    androidx.activity.compose.BackHandler(enabled = true) { onDone() }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        SimpleTopBar(product.productName ?: "選擇圖片", onDone)
+        Column(
+            modifier = Modifier
+                .padding(horizontal = 20.dp)
+                .verticalScroll(rememberScrollState())
+        ) {
+            InstructionCard(
+                lines = listOf(
+                    "點選圖片可以取消／恢復勾選，只有打勾的圖片會保留下來，其餘直接刪除",
+                    if (GeminiApiPrefs.isEnabled(context))
+                        "確認後，打勾的圖片會送去AI換背景（AI換背景目前是開啟狀態）"
+                    else
+                        "AI換背景目前是關閉狀態，確認後只會保留打勾的圖片，不經過AI改圖"
+                )
+            )
+            Spacer(Modifier.height(16.dp))
+
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(3),
+                modifier = Modifier.height((((product.imagePaths.size + 2) / 3) * 130).dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(product.imagePaths) { file ->
+                    val isChosen = chosen.contains(file.name)
+                    val bitmap = remember(file.path) {
+                        val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = 4 }
+                        android.graphics.BitmapFactory.decodeFile(file.path, opts)
+                    }
+                    Box(
+                        modifier = Modifier
+                            .size(120.dp)
+                            .clickable {
+                                chosen = if (isChosen) chosen - file.name else chosen + file.name
+                            }
+                    ) {
+                        if (bitmap != null) {
+                            Image(
+                                bitmap = bitmap.asImageBitmap(),
+                                contentDescription = null,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop
+                            )
+                        }
+                        if (!isChosen) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(Color.Black.copy(alpha = 0.55f))
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(4.dp)
+                                .size(22.dp)
+                                .background(
+                                    if (isChosen) SimpleAccent else Color.White,
+                                    RoundedCornerShape(11.dp)
+                                )
+                        ) {
+                            if (isChosen) {
+                                Text(
+                                    "✓", color = Color.White, fontSize = 14.sp,
+                                    modifier = Modifier.align(Alignment.Center)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(20.dp))
+
+            errorText?.let {
+                Text(it, color = SimpleDanger, fontSize = 13.sp)
+                Spacer(Modifier.height(10.dp))
+            }
+
+            if (isProcessing) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = SimpleAccent)
+                    Spacer(Modifier.width(10.dp))
+                    Text("處理中，請稍候…", fontSize = 14.sp, color = SimpleInk, fontWeight = FontWeight.Bold)
+                }
+                Spacer(Modifier.height(16.dp))
+            }
+
+            BigActionButton(
+                text = "確認選圖",
+                color = SimpleInk,
+                enabled = !isProcessing && chosen.isNotEmpty(),
+                onClick = {
+                    isProcessing = true
+                    errorText = null
+                    scope.launch {
+                        try {
+                            applyImageSelection(context, product.folder, product.imagePaths, chosen)
+                            isProcessing = false
+                            onDone()
+                        } catch (e: Exception) {
+                            isProcessing = false
+                            errorText = "處理失敗：${e.message}"
+                        }
+                    }
+                }
+            )
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+/** 實際執行選圖結果：沒打勾的刪除，打勾的視AI換背景開關決定要不要送去改圖。 */
+private suspend fun applyImageSelection(
+    context: Context,
+    folder: File,
+    allImages: List<File>,
+    chosenNames: Set<String>
+) {
+    val aiEnabled = GeminiApiPrefs.isEnabled(context)
+    val apiKey = GeminiApiPrefs.getApiKey(context)
+    val prompt = GeminiApiPrefs.getPrompt(context)
+
+    for (file in allImages) {
+        if (file.name !in chosenNames) {
+            file.delete()
+            continue
+        }
+        if (aiEnabled && apiKey.isNotBlank()) {
+            val original = android.graphics.BitmapFactory.decodeFile(file.path) ?: continue
+            val result = GeminiImageEditor.editBackground(original, apiKey, prompt)
+            if (result.success && result.editedBitmap != null) {
+                java.io.FileOutputStream(file).use { out ->
+                    result.editedBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, out)
+                }
+            }
+            // 改圖失敗就保留原圖不動，不中斷整批選圖流程。
+        }
+    }
+    File(folder, ".image_selection_done").createNewFile()
+}
+
 @Composable
 private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
     var termuxGranted by remember {
@@ -325,6 +591,18 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
         Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
         "CaptionQueue"
     )
+
+    // 【2026-08-29新增】商品清單＋人工選圖：imagePickerFolder不是null時，整個畫面換成
+    // 該商品的選圖畫面（見ImageSelectionContent），選完或按返回會回到這個清單畫面。
+    // 注意：這裡刻意不用「return」提早結束函式——Compose規則要求remember/LaunchedEffect
+    // 這類hook在同一個Composable裡每次重組都要以同樣順序被呼叫，如果依條件提早return，
+    // 會導致下面那些hook在切換畫面時時而被呼叫、時而被跳過，破壞Compose內部的slot對應，
+    // 可能導致狀態錯亂。改成所有hook照樣無條件宣告，只在畫面最終要「畫什麼」的地方分支。
+    var products by remember { mutableStateOf(loadCapturedProducts(captionQueueDir)) }
+    var selectedIds by remember { mutableStateOf(setOf<String>()) }
+    var imagePickerFolder by remember { mutableStateOf<File?>(null) }
+    val pickedProduct = imagePickerFolder?.let { picked -> products.find { it.folder.path == picked.path } }
+
     // 進畫面當下先讀一次目前實際的進度檔案，用它來決定畫面初始狀態——
     // Termux背景執行不受App畫面切換影響，之前的版本每次重進畫面isRunning都從false
     // 重新開始，導致使用者切到別的畫面再回來時，明明背景還在生成，畫面卻顯示
@@ -414,6 +692,18 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
         }
     }
 
+    if (pickedProduct != null) {
+        ImageSelectionContent(
+            context = context,
+            product = pickedProduct,
+            onDone = {
+                imagePickerFolder = null
+                products = loadCapturedProducts(captionQueueDir)
+            }
+        )
+        return
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
         SimpleTopBar(stringResource(R.string.simple_step2_title), onBack)
         Column(
@@ -428,6 +718,31 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                 )
             )
             Spacer(Modifier.height(24.dp))
+
+            // 【2026-08-29新增】商品清單：勾選要生成影片的商品，點整列（打勾框以外）進去選圖。
+            Text("已擷取商品", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = SimpleInk)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "點商品進去選擇要保留的圖片，打勾要生成影片的商品後按下面的按鈕開始生成",
+                fontSize = 12.sp, color = SimpleMuted
+            )
+            Spacer(Modifier.height(12.dp))
+            if (products.isEmpty()) {
+                Text("目前沒有已擷取的商品", fontSize = 13.sp, color = SimpleMuted)
+            } else {
+                products.forEach { product ->
+                    ProductSelectRow(
+                        product = product,
+                        checked = selectedIds.contains(product.folder.name),
+                        onCheckedChange = { checked ->
+                            selectedIds = if (checked) selectedIds + product.folder.name else selectedIds - product.folder.name
+                        },
+                        onClickImages = { imagePickerFolder = product.folder }
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
+            }
+            Spacer(Modifier.height(20.dp))
 
             if (!termuxGranted) {
                 WarningBanner(stringResource(R.string.simple_need_termux_permission))
@@ -448,11 +763,17 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
             BigActionButton(
                 text = if (isRunning) stringResource(R.string.simple_generating) else stringResource(R.string.simple_start_generate),
                 color = SimpleInk,
-                enabled = termuxGranted && !isRunning && TermuxRunner.isTermuxInstalled(context),
+                enabled = termuxGranted && !isRunning && TermuxRunner.isTermuxInstalled(context) && selectedIds.isNotEmpty(),
                 onClick = {
                     resultText = null
                     progress = null
                     stopRequested = false
+                    // 【2026-08-29新增】把這次勾選要生成的商品資料夾名稱寫進清單檔案，
+                    // batch_generate.py讀到這個檔案就只會處理清單裡列出的商品（見該檔案
+                    // find_product_folders()的說明），對應「商品列表勾選要生成的商品」需求。
+                    try {
+                        File(captionQueueDir, ".selected_ids.txt").writeText(selectedIds.joinToString("\n"))
+                    } catch (e: Exception) { /* 寫入失敗就照舊由batch_generate.py處理全部資料夾 */ }
                     // 開始新一批之前，先清掉可能殘留的舊訊號檔案／舊進度檔案：
                     // .stop_signal是上一批若是被停止結束留下的；.progress.json如果不清掉，
                     // 新的Python腳本要花一點時間（啟動bash、cd、python直譯器初始化、掃描

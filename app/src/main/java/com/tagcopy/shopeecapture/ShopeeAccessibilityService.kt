@@ -4301,29 +4301,9 @@ class ShopeeAccessibilityService : AccessibilityService() {
         bitmaps: List<Bitmap>,
         metrics: ProductMetrics? = null
     ): CaptureResult {
-        // 【2026-08-29修正】原本是「只處理前N張、其餘仍照舊存原圖」，但後製影片
-        // （make_video.py的MAX_IMAGES_IN_VIDEO=10）預設會把資料夾裡所有image_N.jpg都用進去，
-        // 等於3張改過的乾淨圖混著7張帶logo的原圖一起出現在影片裡，沒有達到「影片只出現改過的圖」
-        // 的效果。改成：只取前N張送AI改圖，其餘的直接捨棄、不存檔——資料夾裡最後只會有N張圖
-        // （而且全部都是AI改過的），影片生成端不用改，自然就只會用到這幾張。
-        val processedBitmaps: List<Bitmap> = if (GeminiApiPrefs.isEnabled(this) && bitmaps.isNotEmpty()) {
-            val apiKey = GeminiApiPrefs.getApiKey(this)
-            val prompt = GeminiApiPrefs.getPrompt(this)
-            val editCount = GeminiApiPrefs.getEditCount(this).coerceAtMost(bitmaps.size)
-            appendDebugLog("  → [AI換背景] 已啟用，共 ${bitmaps.size} 張圖片，只取前 $editCount 張送去改圖，其餘不存檔")
-            bitmaps.take(editCount).mapIndexed { index, original ->
-                val result = GeminiImageEditor.editBackground(original, apiKey, prompt)
-                if (result.success && result.editedBitmap != null) {
-                    appendDebugLog("  → [AI換背景] 第${index + 1}張成功")
-                    result.editedBitmap
-                } else {
-                    appendDebugLog("  → [AI換背景] 第${index + 1}張失敗，改用原圖：${result.errorMessage}")
-                    original
-                }
-            }
-        } else {
-            bitmaps
-        }
+        // 【2026-08-29修正】AI換背景改成在「生成影片」畫面裡人工選圖觸發（見SimpleModeActivity
+        // 的ImageSelectionContent），擷取階段不再自動處理，單純存原圖。
+        val processedBitmaps: List<Bitmap> = bitmaps
 
         val id = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val baseDir = File(

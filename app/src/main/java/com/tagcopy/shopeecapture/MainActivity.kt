@@ -626,7 +626,6 @@ fun AiBackgroundCard(context: android.content.Context) {
     var apiKey by remember { mutableStateOf(GeminiApiPrefs.getApiKey(context)) }
     var enabled by remember { mutableStateOf(GeminiApiPrefs.isEnabled(context)) }
     var prompt by remember { mutableStateOf(GeminiApiPrefs.getPrompt(context)) }
-    var editCountText by remember { mutableStateOf(GeminiApiPrefs.getEditCount(context).toString()) }
     var apiKeyVisible by remember { mutableStateOf(false) }
 
     Column(
@@ -651,9 +650,9 @@ fun AiBackgroundCard(context: android.content.Context) {
         }
         Spacer(Modifier.height(6.dp))
         Text(
-            "保留商品本體不變，只把背景換掉（用Google Nano Banana 2 Lite）。開啟後每次擷取商品，" +
-                "圖片存檔前會先送去AI改圖；改圖失敗（沒網路、Key錯誤、額度用完）會自動改用原圖，" +
-                "不影響原本的擷取結果。",
+            "保留商品本體不變，只把背景換掉（用Google Nano Banana 2 Lite）。改成「生成影片」畫面裡" +
+                "人工選圖時觸發——點進某個商品挑選要保留的圖片後，打勾的圖片會送去AI改圖；改圖失敗" +
+                "（沒網路、Key錯誤、額度用完）會自動改用原圖，不影響選圖結果。",
             fontSize = 12.sp, color = MutedColor, lineHeight = 17.sp
         )
         Spacer(Modifier.height(10.dp))
@@ -691,18 +690,6 @@ fun AiBackgroundCard(context: android.content.Context) {
             },
             label = { Text("換背景提示詞（可自行調整）", fontSize = 12.sp) },
             minLines = 3,
-            modifier = Modifier.fillMaxWidth()
-        )
-        Spacer(Modifier.height(10.dp))
-
-        OutlinedTextField(
-            value = editCountText,
-            onValueChange = {
-                editCountText = it.filter { c -> c.isDigit() }
-                editCountText.toIntOrNull()?.let { n -> GeminiApiPrefs.setEditCount(context, n) }
-            },
-            label = { Text("每件商品只保留並處理前幾張（其餘直接捨棄不存檔）", fontSize = 12.sp) },
-            singleLine = true,
             modifier = Modifier.fillMaxWidth()
         )
     }
