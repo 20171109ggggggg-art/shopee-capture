@@ -545,45 +545,56 @@ def process_folder(folder: str, force: bool = False) -> dict:
                 print(f"→ 語音總時長：{total_audio_duration:.1f} 秒（{len(audio_segments)}句，正常語速）")
 
                 # 語音長度不在目標範圍內時，語速永遠維持正常，改回頭重新呼叫文案產生器
-                # 要求多寫/少寫一句，只重試一次（不無限循環湊時間，重試後不管有沒有真的
-                # 落在範圍內都直接採用，避免無限追求完美拖慢批次速度、AI版還會一直燒額度）。
-                if not (TARGET_MIN_DURATION_SEC <= total_audio_duration <= TARGET_MAX_DURATION_SEC):
+                # 要求多寫/少寫一句。
+                # 【2026-08-29修正】原本只重試一次，這在圖片張數多（8~10張、起始就有3~4句）
+                # 時通常夠用，但改成人工選圖後，使用者常常只留3張以內，規則模板
+                # determine_sentence_count()對這種張數只給1句（約8秒），跟15秒目標差了
+                #將近一半，重試一次（+1句）補不回這麼大的落差。改成迴圈重試最多3次，
+                # 每次都往目標範圍的方向調整，直到落在範圍內、或碰到句數上下限、或連續
+                # 拿不到新句數的文案、或已經重試滿3次為止——3次是避免無限循環拖慢批次
+                # 速度、AI版一直燒API額度的安全上限，不是「保證一定湊得到」的保證。
+                retry_attempt = 0
+                while retry_attempt < 3 and not (TARGET_MIN_DURATION_SEC <= total_audio_duration <= TARGET_MAX_DURATION_SEC):
+                    retry_attempt += 1
                     direction = "太短" if total_audio_duration < TARGET_MIN_DURATION_SEC else "太長"
                     delta = 1 if total_audio_duration < TARGET_MIN_DURATION_SEC else -1
                     new_count = max(MIN_SENTENCE_COUNT, min(MAX_SENTENCE_COUNT, len(sentences) + delta))
-                    if new_count != len(sentences):
-                        print(f"→ 語音總長度{direction}（目標{TARGET_MIN_DURATION_SEC:.0f}~{TARGET_MAX_DURATION_SEC:.0f}秒，"
-                              f"實際{total_audio_duration:.1f}秒），改為{new_count}句重新產生文案…")
-                        retry_sentences = None
-                        retry_hashtags = None
-                        if used_ai and generate_ai_sentences:
-                            try:
-                                retry_sentences, retry_hashtags = generate_ai_sentences(
-                                    folder, sentence_count_override=new_count
-                                )
-                            except Exception as e:
-                                print(f"⚠ 重新呼叫AI文案發生未預期錯誤（{e.__class__.__name__}），維持原本文案")
-                        elif not used_ai:
-                            retry_sentences = build_narration_sentences(folder, sentence_count_override=new_count)
-
-                        if retry_sentences and len(retry_sentences) != len(sentences):
-                            print(f"→ 重新產生文案成功（{len(retry_sentences)}句）：")
-                            for s in retry_sentences:
-                                print(f"    {s}")
-                            retry_audio = synthesize_sentences(retry_sentences, region, tmp_dir)
-                            if retry_audio:
-                                sentences = retry_sentences
-                                if retry_hashtags:
-                                    hashtags = retry_hashtags
-                                audio_segments = retry_audio
-                                total_audio_duration = sum(seg["duration"] for seg in audio_segments)
-                                print(f"→ 重新合成後語音總時長：{total_audio_duration:.1f} 秒")
-                            else:
-                                print("⚠ 重新合成語音失敗，維持原本文案與語音")
-                        else:
-                            print("→ 沒能拿到不同句數的文案（可能是賣點詞不夠或已達句數上限/下限），維持原本文案與語音")
-                    else:
+                    if new_count == len(sentences):
                         print(f"→ 語音總長度{direction}，但句數已經在{MIN_SENTENCE_COUNT}~{MAX_SENTENCE_COUNT}句的邊界，不重試")
+                        break
+
+                    print(f"→ 語音總長度{direction}（目標{TARGET_MIN_DURATION_SEC:.0f}~{TARGET_MAX_DURATION_SEC:.0f}秒，"
+                          f"實際{total_audio_duration:.1f}秒），改為{new_count}句重新產生文案（第{retry_attempt}次調整）…")
+                    retry_sentences = None
+                    retry_hashtags = None
+                    if used_ai and generate_ai_sentences:
+                        try:
+                            retry_sentences, retry_hashtags = generate_ai_sentences(
+                                folder, sentence_count_override=new_count
+                            )
+                        except Exception as e:
+                            print(f"⚠ 重新呼叫AI文案發生未預期錯誤（{e.__class__.__name__}），維持原本文案")
+                    elif not used_ai:
+                        retry_sentences = build_narration_sentences(folder, sentence_count_override=new_count)
+
+                    if retry_sentences and len(retry_sentences) != len(sentences):
+                        print(f"→ 重新產生文案成功（{len(retry_sentences)}句）：")
+                        for s in retry_sentences:
+                            print(f"    {s}")
+                        retry_audio = synthesize_sentences(retry_sentences, region, tmp_dir)
+                        if retry_audio:
+                            sentences = retry_sentences
+                            if retry_hashtags:
+                                hashtags = retry_hashtags
+                            audio_segments = retry_audio
+                            total_audio_duration = sum(seg["duration"] for seg in audio_segments)
+                            print(f"→ 重新合成後語音總時長：{total_audio_duration:.1f} 秒")
+                        else:
+                            print("⚠ 重新合成語音失敗，維持原本文案與語音")
+                            break
+                    else:
+                        print("→ 沒能拿到不同句數的文案（可能是賣點詞不夠或已達句數上限/下限），維持原本文案與語音")
+                        break
 
                 subtitle_segments = []
                 t = 0.0
