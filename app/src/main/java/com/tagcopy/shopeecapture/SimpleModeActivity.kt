@@ -367,14 +367,19 @@ private fun loadCapturedProducts(root: File): List<GenerateQueueItem> {
 /** 清單裡單一商品的一列：打勾決定要不要納入這次生成批次，點整列（打勾框以外的地方）進去選圖。 */
 /**
  * 正確做法的縮圖解碼：先用inJustDecodeBounds讀出圖片實際尺寸，算出剛好夠用的縮小倍率
- * 再正式解碼一次——不能像原本那樣直接套一個寫死的inSampleSize去解，圖片實際尺寸跟這個
- * 倍率兜不起來時，某些手機的BitmapFactory會直接解碼失敗回傳null（看起來就是縮圖整個
- * 消失、只剩打勾圖示這個症狀）。targetSize是想要的縮圖邊長（像素）。
+ * 再正式解碼一次。回傳(Bitmap?, 失敗原因字串?)——原本直接吞掉例外訊息，這次改成把
+ * 實際失敗原因也回傳出去，直接顯示在畫面上，不用另外抓debug log才能排查。
  */
-private fun decodeSampledBitmap(path: String, targetSize: Int): android.graphics.Bitmap? {
+private fun decodeSampledBitmap(path: String, targetSize: Int): Pair<android.graphics.Bitmap?, String?> {
+    val file = java.io.File(path)
+    if (!file.exists()) return null to "檔案不存在"
+    if (file.length() == 0L) return null to "檔案大小0byte"
     return try {
         val boundsOpts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
         android.graphics.BitmapFactory.decodeFile(path, boundsOpts)
+        if (boundsOpts.outWidth <= 0 || boundsOpts.outHeight <= 0) {
+            return null to "讀不到圖片尺寸(${file.length()}bytes)"
+        }
         var sampleSize = 1
         var halfWidth = boundsOpts.outWidth / 2
         var halfHeight = boundsOpts.outHeight / 2
@@ -382,9 +387,11 @@ private fun decodeSampledBitmap(path: String, targetSize: Int): android.graphics
             sampleSize *= 2
         }
         val decodeOpts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sampleSize }
-        android.graphics.BitmapFactory.decodeFile(path, decodeOpts)
+        val bitmap = android.graphics.BitmapFactory.decodeFile(path, decodeOpts)
+        if (bitmap == null) bitmap to "decodeFile回傳null(${boundsOpts.outWidth}x${boundsOpts.outHeight})"
+        else bitmap to null
     } catch (e: Exception) {
-        null
+        null to "${e.javaClass.simpleName}:${e.message}"
     }
 }
 
@@ -407,7 +414,7 @@ private fun ProductSelectRow(
         Spacer(Modifier.width(4.dp))
         val thumb = product.imagePaths.firstOrNull()
         val bitmap = remember(thumb?.path) {
-            thumb?.let { decodeSampledBitmap(it.path, 48) }
+            thumb?.let { decodeSampledBitmap(it.path, 48).first }
         }
         if (bitmap != null) {
             Image(
@@ -478,7 +485,9 @@ private fun ImageSelectionContent(context: Context, product: GenerateQueueItem, 
             ) {
                 items(product.imagePaths) { file ->
                     val isChosen = chosen.contains(file.name)
-                    val bitmap = remember(file.path) { decodeSampledBitmap(file.path, 120) }
+                    val decodeResult = remember(file.path) { decodeSampledBitmap(file.path, 120) }
+                    val bitmap = decodeResult.first
+                    val errorReason = decodeResult.second
                     Box(
                         modifier = Modifier
                             .size(120.dp)
@@ -495,12 +504,12 @@ private fun ImageSelectionContent(context: Context, product: GenerateQueueItem, 
                                 contentScale = ContentScale.Crop
                             )
                         } else {
-                            // 解碼失敗時明確顯示檔名，方便排查是哪張圖有問題，
-                            // 而不是留一片看不出所以然的空白。
+                            // 解碼失敗時把檔名跟實際失敗原因都顯示出來，直接從畫面截圖
+                            // 就能排查，不用另外抓debug log。
                             Text(
-                                file.name,
-                                fontSize = 10.sp,
-                                color = SimpleMuted,
+                                "${file.name}\n${errorReason ?: "未知原因"}",
+                                fontSize = 9.sp,
+                                color = SimpleDanger,
                                 modifier = Modifier.align(Alignment.Center).padding(4.dp)
                             )
                         }
