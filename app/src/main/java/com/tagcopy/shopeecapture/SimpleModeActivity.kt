@@ -616,6 +616,83 @@ private fun applyImageSelection(
     File(folder, ".ai_processed").delete()
 }
 
+/**
+ * 【2026-08-30新增】自動選圖＋AI改圖的整合流程，取代原本「手動九宮格選圖」+
+ * 「浮球AI改圖批次按鈕」兩個分開的手動步驟。在「生成影片」畫面按下「開始生成影片」時，
+ * 對每個勾選但還沒處理完的商品依序做：
+ * 1. 還沒選圖的商品：把候選圖片（最多10張）都讀進來，呼叫GeminiImageSelector自動挑出
+ *    最完整的一張。成功就只留這張（其餘刪除、重新命名成image_1），標記選圖完成；
+ *    失敗（沒網路/API錯誤/AI回應解析不到）就跳過這個商品、記錄失敗原因，不會用猜的
+ *    隨便選一張——使用者之後可以自己點進「人工選圖」畫面手動處理。
+ * 2. 選圖完成但還沒AI改圖、且AI換背景功能有開啟的商品：呼叫GeminiImageEditor對這張
+ *    代表圖做改圖，標記AI改圖完成。改圖失敗保留原圖，不影響這個商品能不能繼續生成影片
+ *    （只是背景沒換成功而已，不像辨識失敗那樣會整個跳過）。
+ * 3. 已經選圖+AI改圖都完成的商品：不用重新處理，直接算成功。
+ *
+ * onStatus：即時回報目前處理到哪個商品、哪個步驟，給UI顯示簡短文字用。
+ * 回傳(成功可以送去生成影片的資料夾名稱清單, 失敗清單(資料夾名稱, 原因))。
+ */
+private suspend fun runAutoSelectAndEditPipeline(
+    context: Context,
+    products: List<GenerateQueueItem>,
+    onStatus: (String) -> Unit
+): Pair<List<String>, List<Pair<String, String>>> {
+    val succeeded = mutableListOf<String>()
+    val failed = mutableListOf<Pair<String, String>>()
+    val aiEnabled = GeminiApiPrefs.isEnabled(context)
+    val apiKey = GeminiApiPrefs.getApiKey(context)
+    val editPrompt = GeminiApiPrefs.getPrompt(context)
+
+    products.forEachIndexed { idx, product ->
+        val label = product.productName ?: product.folder.name
+        val progressPrefix = "(${idx + 1}/${products.size}) $label"
+        var currentImages = product.imagePaths
+
+        if (!product.selectionDone) {
+            onStatus("$progressPrefix：辨識圖片中")
+            val bitmaps = currentImages.map { decodeSampledBitmap(it.path, 1024).first }
+            if (bitmaps.any { it == null } || apiKey.isBlank()) {
+                val reason = if (apiKey.isBlank()) "尚未設定Gemini API Key" else "有圖片讀取失敗"
+                failed.add(product.folder.name to "辨識圖片失敗：$reason")
+                return@forEachIndexed
+            }
+            val nonNullBitmaps: List<android.graphics.Bitmap> = bitmaps.filterNotNull()
+            val result = GeminiImageSelector.selectBestImage(nonNullBitmaps, apiKey)
+            if (!result.success || result.selectedIndex == null) {
+                failed.add(product.folder.name to "辨識圖片失敗：${result.errorMessage ?: "未知錯誤"}")
+                return@forEachIndexed
+            }
+            val chosenFile = currentImages[result.selectedIndex]
+            applyImageSelection(product.folder, currentImages, setOf(chosenFile.name))
+            currentImages = listOf(File(product.folder, "image_1.${chosenFile.extension.ifBlank { "jpg" }}"))
+        }
+
+        val aiProcessedNow = File(product.folder, ".ai_processed").exists()
+        if (aiEnabled && !aiProcessedNow) {
+            onStatus("$progressPrefix：AI改圖中")
+            val targetFile = currentImages.firstOrNull() ?: File(product.folder, "image_1.jpg")
+            if (targetFile.exists()) {
+                val original = android.graphics.BitmapFactory.decodeFile(targetFile.path)
+                if (original != null) {
+                    val editResult = GeminiImageEditor.editBackground(original, apiKey, editPrompt)
+                    if (editResult.success && editResult.editedBitmap != null) {
+                        java.io.FileOutputStream(targetFile).use { out ->
+                            editResult.editedBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, out)
+                        }
+                    }
+                    // 改圖失敗（result.success=false）就保留原圖繼續走，不算這個商品失敗，
+                    // 跟原本浮球批次按鈕的行為一致。
+                }
+            }
+            File(product.folder, ".ai_processed").createNewFile()
+        }
+
+        succeeded.add(product.folder.name)
+    }
+
+    return succeeded to failed
+}
+
 @Composable
 private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
     var termuxGranted by remember {
@@ -642,6 +719,15 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
     // 可能導致狀態錯亂。改成所有hook照樣無條件宣告，只在畫面最終要「畫什麼」的地方分支。
     var products by remember { mutableStateOf(loadCapturedProducts(captionQueueDir)) }
     var selectedIds by remember { mutableStateOf(setOf<String>()) }
+    // 【2026-08-30新增】自動辨識選圖＋AI改圖流程的進行中狀態：isPreparing為true時
+    // 按鈕顯示這個逐步文字（辨識圖片中/AI改圖中，見runAutoSelectAndEditPipeline），
+    // 這個階段完全在App內（Kotlin）跑，還沒交給Termux，跟isRunning（Termux跑批次
+    // 生成）是先後接續的兩段不同狀態。prepareErrors記錄辨識失敗被跳過的商品，
+    // 跑完這階段後顯示給使用者，引導去人工選圖畫面處理。
+    var isPreparing by remember { mutableStateOf(false) }
+    var preparingStatus by remember { mutableStateOf("") }
+    var prepareErrors by remember { mutableStateOf(emptyList<Pair<String, String>>()) }
+    val coroutineScope = rememberCoroutineScope()
     var imagePickerFolder by remember { mutableStateOf<File?>(null) }
     val pickedProduct = imagePickerFolder?.let { picked -> products.find { it.folder.path == picked.path } }
 
@@ -803,52 +889,88 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
             }
 
             BigActionButton(
-                text = if (isRunning) stringResource(R.string.simple_generating) else stringResource(R.string.simple_start_generate),
+                text = when {
+                    isPreparing -> preparingStatus.ifBlank { "處理中" }
+                    isRunning -> stringResource(R.string.simple_generating)
+                    else -> stringResource(R.string.simple_start_generate)
+                },
                 color = SimpleInk,
-                enabled = termuxGranted && !isRunning && TermuxRunner.isTermuxInstalled(context) && selectedIds.isNotEmpty(),
+                enabled = termuxGranted && !isRunning && !isPreparing && TermuxRunner.isTermuxInstalled(context) && selectedIds.isNotEmpty(),
                 onClick = {
                     resultText = null
                     progress = null
+                    prepareErrors = emptyList()
                     stopRequested = false
-                    // 【2026-08-29新增】把這次勾選要生成的商品資料夾名稱寫進清單檔案，
-                    // batch_generate.py讀到這個檔案就只會處理清單裡列出的商品（見該檔案
-                    // find_product_folders()的說明），對應「商品列表勾選要生成的商品」需求。
-                    try {
-                        File(captionQueueDir, ".selected_ids.txt").writeText(selectedIds.joinToString("\n"))
-                    } catch (e: Exception) { /* 寫入失敗就照舊由batch_generate.py處理全部資料夾 */ }
-                    // 開始新一批之前，先清掉可能殘留的舊訊號檔案／舊進度檔案：
-                    // .stop_signal是上一批若是被停止結束留下的；.progress.json如果不清掉，
-                    // 新的Python腳本要花一點時間（啟動bash、cd、python直譯器初始化、掃描
-                    // 資料夾）才會真正蓋過去，這段空窗期內App第一次輪詢仍會讀到「舊的、
-                    // 真的過期的」進度檔——如果那份舊檔案剛好是卡住偵測抓到的異常中斷，
-                    // isRunning會被誤判成false打回黑色按鈕，使用者要連按好幾次才會踩到
-                    // 「新腳本已經蓋過舊檔案」的時機點。清掉舊檔案後，第一次輪詢會讀到null
-                    // （檔案不存在），不會觸發卡住偵測，正常等到新腳本真正開始寫入。
-                    try {
-                        File(captionQueueDir, ".stop_signal").delete()
-                        File(captionQueueDir, ".progress.json").delete()
-                    } catch (e: Exception) { /* 檔案本來就不存在時刪除會失敗，忽略即可 */ }
-                    // 使用者實測發現：批次生成有時會在中途整個沒有留下任何痕跡地停止
-                    // （不是正常的done/stopped，也不是crash訊息），完全無法判斷是python
-                    // 本身出錯、還是被系統（省電策略／記憶體不足OOM）強制砍掉行程。過去
-                    // 腳本的stdout/stderr沒有被導向任何持久化的檔案，一旦行程被砍就什麼
-                    // 證據都沒留下，只能憑猜的。這裡改成把輸出導向一個log檔案（每次執行
-                    // 覆蓋前一份，避免累積佔空間），下次再發生類似狀況時，直接看這份log
-                    // 最後幾行——如果最後一行剛好停在某支影片處理到一半、後面就完全沒有
-                    // 任何輸出，那就是被系統砍掉的鐵證（正常結束/正常錯誤都會印出對應
-                    // 訊息，不會憑空消失）。
-                    val sent = TermuxRunner.runCommand(
-                        context,
-                        "cd ~/shopee-capture && python -u batch_generate.py ~/storage/downloads/CaptionQueue " +
-                            "> ~/storage/downloads/batch_generate_last_run.log 2>&1"
-                    )
-                    if (sent) {
-                        isRunning = true
-                    } else {
-                        resultText = context.getString(R.string.simple_generate_start_failed)
+                    coroutineScope.launch {
+                        isPreparing = true
+                        // 【2026-08-30新增】先對勾選的商品跑「自動辨識選圖＋AI改圖」，
+                        // 完全在App內完成（不用Termux），跑完才把成功的商品名單交給
+                        // Termux做文案生成＋影片編碼。辨識失敗的商品不會出現在最終清單裡，
+                        // 使用者可以事後點進「人工選圖」畫面自己處理再重新勾選生成。
+                        val selectedProducts = products.filter { it.folder.name in selectedIds }
+                        val (readyIds, errors) = runAutoSelectAndEditPipeline(context, selectedProducts) { status ->
+                            preparingStatus = status
+                        }
+                        prepareErrors = errors
+                        products = loadCapturedProducts(captionQueueDir)
+                        isPreparing = false
+
+                        if (readyIds.isEmpty()) {
+                            resultText = "所有勾選的商品都辨識失敗，沒有商品可以生成，請改用人工選圖"
+                            return@launch
+                        }
+
+                        // 【2026-08-29新增】把這次勾選要生成的商品資料夾名稱寫進清單檔案，
+                        // batch_generate.py讀到這個檔案就只會處理清單裡列出的商品（見該檔案
+                        // find_product_folders()的說明），對應「商品列表勾選要生成的商品」需求。
+                        try {
+                            File(captionQueueDir, ".selected_ids.txt").writeText(readyIds.joinToString("\n"))
+                        } catch (e: Exception) { /* 寫入失敗就照舊由batch_generate.py處理全部資料夾 */ }
+                        // 開始新一批之前，先清掉可能殘留的舊訊號檔案／舊進度檔案：
+                        // .stop_signal是上一批若是被停止結束留下的；.progress.json如果不清掉，
+                        // 新的Python腳本要花一點時間（啟動bash、cd、python直譯器初始化、掃描
+                        // 資料夾）才會真正蓋過去，這段空窗期內App第一次輪詢仍會讀到「舊的、
+                        // 真的過期的」進度檔——如果那份舊檔案剛好是卡住偵測抓到的異常中斷，
+                        // isRunning會被誤判成false打回黑色按鈕，使用者要連按好幾次才會踩到
+                        // 「新腳本已經蓋過舊檔案」的時機點。清掉舊檔案後，第一次輪詢會讀到null
+                        // （檔案不存在），不會觸發卡住偵測，正常等到新腳本真正開始寫入。
+                        try {
+                            File(captionQueueDir, ".stop_signal").delete()
+                            File(captionQueueDir, ".progress.json").delete()
+                        } catch (e: Exception) { /* 檔案本來就不存在時刪除會失敗，忽略即可 */ }
+                        // 使用者實測發現：批次生成有時會在中途整個沒有留下任何痕跡地停止
+                        // （不是正常的done/stopped，也不是crash訊息），完全無法判斷是python
+                        // 本身出錯、還是被系統（省電策略／記憶體不足OOM）強制砍掉行程。過去
+                        // 腳本的stdout/stderr沒有被導向任何持久化的檔案，一旦行程被砍就什麼
+                        // 證據都沒留下，只能憑猜的。這裡改成把輸出導向一個log檔案（每次執行
+                        // 覆蓋前一份，避免累積佔空間），下次再發生類似狀況時，直接看這份log
+                        // 最後幾行——如果最後一行剛好停在某支影片處理到一半、後面就完全沒有
+                        // 任何輸出，那就是被系統砍掉的鐵證（正常結束/正常錯誤都會印出對應
+                        // 訊息，不會憑空消失）。
+                        val sent = TermuxRunner.runCommand(
+                            context,
+                            "cd ~/shopee-capture && python -u batch_generate.py ~/storage/downloads/CaptionQueue " +
+                                "> ~/storage/downloads/batch_generate_last_run.log 2>&1"
+                        )
+                        if (sent) {
+                            isRunning = true
+                        } else {
+                            resultText = context.getString(R.string.simple_generate_start_failed)
+                        }
                     }
                 }
             )
+
+            if (prepareErrors.isNotEmpty()) {
+                Spacer(Modifier.height(12.dp))
+                WarningBanner(
+                    "以下商品辨識失敗已跳過，請改用人工選圖：\n" +
+                        prepareErrors.joinToString("\n") { (folderName, reason) ->
+                            val name = products.find { it.folder.name == folderName }?.productName ?: folderName
+                            "・$name（$reason）"
+                        }
+                )
+            }
 
             if (isRunning) {
                 Spacer(Modifier.height(12.dp))
@@ -907,7 +1029,14 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                     )
                     if (p.current.isNotBlank() && p.status == "running") {
                         Spacer(Modifier.height(6.dp))
-                        Text(stringResource(R.string.simple_processing_now), fontSize = 13.sp, color = SimpleMuted)
+                        Text(
+                            if (p.step.isNotBlank()) "${p.current}：${p.step}" else p.current,
+                            fontSize = 13.sp, color = SimpleMuted
+                        )
+                    }
+                    if (p.errorCount > 0 && p.status == "running") {
+                        Spacer(Modifier.height(4.dp))
+                        Text("已有 ${p.errorCount} 支失敗，詳情待完成後顯示", fontSize = 12.sp, color = SimpleDanger)
                     }
                 }
             }

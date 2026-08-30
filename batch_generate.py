@@ -91,7 +91,8 @@ def release_batch_lock(lock_path: str) -> None:
 def write_progress(root: str, total: int, completed: int, current_name: str,
                     status: str, ok_count: int, skipped_count: int, error_count: int,
                     ok_names: list = None, skipped_names: list = None,
-                    error_items: list = None, elapsed_seconds: float = None) -> None:
+                    error_items: list = None, elapsed_seconds: float = None,
+                    step: str = "") -> None:
     """
     把目前批次進度寫進 <root>/.progress.json，供App簡易模式那邊輪詢顯示進度用
     （App不用等整批跑完，也不用解析stdout，直接讀這個結構化檔案）。
@@ -104,6 +105,11 @@ def write_progress(root: str, total: int, completed: int, current_name: str,
     呼叫不傳這幾個參數（維持None），避免每支影片都重複寫入整份清單造成不必要的I/O。
     error_items內每筆是[name, 錯誤訊息第一行]，訊息本身可能很長（例如ffmpeg完整輸出），
     只存第一行避免.progress.json檔案過度肥大。
+
+    【2026-08-30新增】step：目前這支影片處理到哪個子步驟（例如「文案生成中」
+    「影片運鏡生成中」），由make_video.py透過callback即時回報，讓App畫面不再只顯示
+    「生成中」，能看到實際卡在哪一步——尤其方便判斷是卡在需要網路的AI文案/語音合成，
+    還是本機運算的影片編碼。
     """
     progress_path = os.path.join(root, ".progress.json")
     payload = {
@@ -114,6 +120,7 @@ def write_progress(root: str, total: int, completed: int, current_name: str,
         "okCount": ok_count,
         "skippedCount": skipped_count,
         "errorCount": error_count,
+        "step": step,
         "updatedAt": time.time()
     }
     if ok_names is not None:
@@ -254,8 +261,17 @@ def run_batch(root: str, folders: list, force: bool) -> None:
         print("-" * 60)
         write_progress(root, total, idx - 1, name, "running",
                         len(ok_list), len(skipped_list), len(error_list))
+
+        # 【2026-08-30新增】即時回報子步驟：process_folder內部在關鍵階段（文案生成、
+        # 影片編碼）會呼叫這個callback，這裡收到就立刻重寫一次進度檔案，讓App畫面
+        # 顯示的不只是「第幾支/共幾支」，還能看到目前這支卡在哪個步驟。
+        def report_step(step_text: str, _name=name, _idx=idx) -> None:
+            write_progress(root, total, _idx - 1, _name, "running",
+                            len(ok_list), len(skipped_list), len(error_list),
+                            step=step_text)
+
         try:
-            result = process_folder(folder, force=force)
+            result = process_folder(folder, force=force, step_callback=report_step)
         except Exception as e:
             print(f"✗ 發生未預期的錯誤：{e}")
             error_list.append((name, str(e)))

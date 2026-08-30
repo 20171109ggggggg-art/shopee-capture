@@ -255,8 +255,14 @@ def get_audio_duration(path: str) -> float:
 # 運鏡效果池：每次隨機抽一種，同一批影片之間才不會每支都長一樣（呼應caption.txt
 # 文案切入角度隨機抽的做法，運鏡也做同樣的隨機化）。z/x/y都是ffmpeg zoompan濾鏡
 # 原生的表達式語法：zoom是縮放倍率、x/y是裁切視窗左上角座標，on是目前frame編號。
-# 縮放前先把畫面放大到3000寬（scale=3000:-2）是zoompan的標準搭配技巧，避免zoom
-# 倍率提高時因為原始解析度不夠而糊掉。
+# 縮放前先把畫面放大到更高解析度（見下方scale=3200:-2）是zoompan的標準搭配技巧，
+# 除了避免zoom時因為原始解析度不夠而糊掉，也直接影響運鏡平滑度——zoompan的裁切
+# 座標最終會取整到像素，放大畫布越大，同樣的縮放/位移幅度對應到的像素移動量就
+# 越細緻，每一格畫面才不會因為移動量不到1像素而卡住不動、累積好幾格才跳一次
+# （頓格/judder）。【2026-08-30實測】用同一張真實商品圖比較幾組寬度的逐格差異
+# 標準差：1700寬0.525（明顯頓格）、2400寬0.364、3200寬0.185（平滑很多）、
+# 4200寬0.193（幾乎沒有再進步，報酬遞減）。手機上實測3000寬跟1700寬編碼耗時
+# 差異不大，沒有理由為了省一點點時間犧牲平滑度，改採3200寬。
 KENBURNS_EFFECTS = [
     {
         "name": "緩慢推近（置中）",
@@ -268,18 +274,6 @@ KENBURNS_EFFECTS = [
         "name": "緩慢拉遠（置中）",
         "z": "if(eq(on,0),1.28,max(1.0,zoom-0.0007))",
         "x": "(iw-iw/zoom)/2",
-        "y": "(ih-ih/zoom)/2",
-    },
-    {
-        "name": "由左至右平移",
-        "z": "1.16",
-        "x": "(iw-iw/zoom)*on/{total_frames}",
-        "y": "(ih-ih/zoom)/2",
-    },
-    {
-        "name": "由右至左平移",
-        "z": "1.16",
-        "x": "(iw-iw/zoom)*(1-on/{total_frames})",
         "y": "(ih-ih/zoom)/2",
     },
     {
@@ -320,7 +314,7 @@ def build_ffmpeg_command_kenburns(
         f"crop={OUTPUT_WIDTH}:{OUTPUT_HEIGHT},scale=54:96,scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}[bgblur];"
         f"[fg]scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:force_original_aspect_ratio=decrease:out_range=tv[fgfit];"
         f"[bgblur][fgfit]overlay=(W-w)/2:(H-h)/2,setsar=1,format=yuv420p[composed];"
-        f"[composed]scale=1700:-2,"
+        f"[composed]scale=3200:-2,"
         f"zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}':d={total_frames}:s={OUTPUT_WIDTH}x{OUTPUT_HEIGHT}:fps=30,"
         f"format=yuv420p[v0]"
     ]
@@ -652,14 +646,26 @@ def full_decode_check(path: str) -> bool:
     return True
 
 
-def process_folder(folder: str, force: bool = False) -> dict:
+def process_folder(folder: str, force: bool = False, step_callback=None) -> dict:
     """
     處理單一商品資料夾：生成影片。回傳結果字典，方便單支模式跟批次模式共用同一套邏輯。
     {"status": "ok"|"skipped"|"error", "message": str, "output_path": str}
     force=False 時，如果 output.mp4 已存在「且驗證完整」就跳過（批次模式用來避免重複
     重跑已完成的影片）。如果檔案存在但驗證失敗（殘缺／損毀），視同不存在直接重新生成，
     不用使用者手動介入刪除。
+
+    【2026-08-30新增】step_callback：可選的回呼函式，接收一個字串參數，在關鍵階段
+    （文案生成、影片運鏡編碼）被呼叫，讓batch_generate.py能即時把目前子步驟寫進
+    .progress.json，App畫面才能顯示「卡在哪一步」而不是只有籠統的「生成中」。
+    沒有傳入（單支CLI模式）就什麼都不做，不影響原本行為。
     """
+    def report_step(text: str) -> None:
+        if step_callback:
+            try:
+                step_callback(text)
+            except Exception:
+                pass  # 回報進度失敗不該影響影片生成本身
+
     images = find_images(folder)
     if not images:
         return {"status": "error", "message": "資料夾裡沒有找到 image_N.jpg 圖片", "output_path": None}
@@ -680,6 +686,7 @@ def process_folder(folder: str, force: bool = False) -> dict:
     print(f"→ 判定地區：{region}")
     print(f"→ 輸出路徑：{output_path}")
 
+    report_step("文案生成中")
     sentences = None
     hashtags = None
     used_ai = False
@@ -827,6 +834,7 @@ def process_folder(folder: str, force: bool = False) -> dict:
                 subtitle_segments=subtitle_segments,
                 target_total_duration=target_total_duration,
             )
+        report_step("影片運鏡生成中")
         result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:

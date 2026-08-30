@@ -148,6 +148,10 @@ object TermuxRunner {
         val okCount: Int,
         val skippedCount: Int,
         val errorCount: Int,
+        // 【2026-08-30新增】目前這支影片處理到哪個子步驟（例如「產生文案中」「語音合成中」
+        // 「影片運鏡生成中」），由make_video.py透過callback回報、batch_generate.py寫進
+        // 進度檔案。跑到一半（status="running"）才有意義，done/stopped時是空字串。
+        val step: String = "",
         // batch_generate.py用time.time()寫入的Unix時間戳（秒），每次write_progress都會更新。
         // 用來判斷這份進度資料是不是「卡住的舊資料」——例如行程被系統砍掉、沒能正常寫入
         // done/stopped狀態，畫面會不然會一直顯示status="running"卻永遠不會前進。
@@ -193,6 +197,7 @@ object TermuxRunner {
                 okCount = json.optInt("okCount", 0),
                 skippedCount = json.optInt("skippedCount", 0),
                 errorCount = json.optInt("errorCount", 0),
+                step = json.optString("step", ""),
                 updatedAt = json.optDouble("updatedAt", 0.0),
                 okNames = okNames,
                 skippedNames = skippedNames,
