@@ -22,6 +22,7 @@ generate_narration.py 必須跟本檔放在同一個資料夾。
 import asyncio
 import json
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -77,12 +78,25 @@ VOICE_MAP = {
 # 改回頭重新呼叫文案產生器（AI或規則模板）要求多寫/少寫一句，用文案長度而不是
 # 語速去配合影片長度目標，只重試一次（避免無限迴圈、AI版還會多花一次API成本）。
 TARGET_MIN_DURATION_SEC = 15.0
-TARGET_MAX_DURATION_SEC = 18.0
+TARGET_MAX_DURATION_SEC = 20.0
+# 【2026-08-30修改】原本重試機制是「語音長度不在範圍內就調整句數重來」，但句數固定
+# 不代表總字數固定（每句字數本來就有10~16字的浮動空間），常常句數對了、字數還是差
+# 一大截，要重試好幾次才湊得到。改成直接用「目標總字數」控制AI文案長度——用中文
+# 正常語速估算的字數/秒（CHARS_PER_SECOND）反推目標秒數對應的總字數範圍，
+# 從一開始的提示詞就明確要求AI把「全部句子加起來的字數」寫在這個範圍內，
+# 不再強制句數，一次到位的機率比調句數高很多，重試次數應該會明顯減少。
+CHARS_PER_SECOND = 4.5  # 中文正常語速粗估值，只用來換算目標字數範圍，不是精確值
+TARGET_CHAR_MIN = round(TARGET_MIN_DURATION_SEC * CHARS_PER_SECOND)
+TARGET_CHAR_MAX = round(TARGET_MAX_DURATION_SEC * CHARS_PER_SECOND)
+# 重試時字數範圍可以被縮放調整的邊界，避免無限往極端跑（例如一直太長，字數範圍
+# 一直往下縮，縮到只剩幾個字反而不成文案）
+MIN_CHAR_COUNT = 20
+MAX_CHAR_COUNT = 130
 # 【2026-08-29修改】句數上限原本寫死4，改成跟ai_narration.py共用同一份設定檔
 # （~/.shopee_ai_config.json 的 "max_sentences" 欄位）——沒設定檔或讀取失敗時
-# 退回預設值4，行為不變。retry邏輯（語音長度不在目標範圍內時調整句數重來）用的
-# 上限如果跟AI文案產生時用的上限對不上，會出現「retry想加到5句，但AI那邊上限
-# 是4句拿不到」的矛盾，所以這裡要跟ai_narration.py讀同一個值。
+# 退回預設值4，行為不變。這組常數現在只給AI文案「大約幾句」的自然語氣提示用，
+# 不再是retry時的硬性調整目標（改用字數範圍調整，見上方TARGET_CHAR_MIN/MAX），
+# 也仍然是規則模板（AI失敗時的退回路徑）唯一的句數依據，該路徑沒有字數概念維持原邏輯。
 MAX_SENTENCE_COUNT = (load_ai_config() or {}).get("max_sentences", 4) if load_ai_config else 4
 MIN_SENTENCE_COUNT = 1
 
@@ -232,6 +246,165 @@ def get_audio_duration(path: str) -> float:
         return float(result.stdout.strip())
     except (ValueError, TypeError):
         return 0.0
+
+
+# 【2026-08-30新增】單張圖片運鏡模式：整支影片只用一張代表圖（選圖清單裡的第一張），
+# 用ffmpeg的zoompan濾鏡做「緩慢推拉/平移」效果（Ken Burns效果），取代原本多張圖片
+# 輪播+淡入淡出轉場的做法。畫面持續運鏡到旁白唸完為止，不用再依圖片張數／單張停留
+# 秒數上下限去湊影片總長度，總長度就是旁白實際時長，邏輯更單純。
+# 運鏡效果池：每次隨機抽一種，同一批影片之間才不會每支都長一樣（呼應caption.txt
+# 文案切入角度隨機抽的做法，運鏡也做同樣的隨機化）。z/x/y都是ffmpeg zoompan濾鏡
+# 原生的表達式語法：zoom是縮放倍率、x/y是裁切視窗左上角座標，on是目前frame編號。
+# 縮放前先把畫面放大到3000寬（scale=3000:-2）是zoompan的標準搭配技巧，避免zoom
+# 倍率提高時因為原始解析度不夠而糊掉。
+KENBURNS_EFFECTS = [
+    {
+        "name": "緩慢推近（置中）",
+        "z": "min(zoom+0.0007,1.28)",
+        "x": "(iw-iw/zoom)/2",
+        "y": "(ih-ih/zoom)/2",
+    },
+    {
+        "name": "緩慢拉遠（置中）",
+        "z": "if(eq(on,0),1.28,max(1.0,zoom-0.0007))",
+        "x": "(iw-iw/zoom)/2",
+        "y": "(ih-ih/zoom)/2",
+    },
+    {
+        "name": "由左至右平移",
+        "z": "1.16",
+        "x": "(iw-iw/zoom)*on/{total_frames}",
+        "y": "(ih-ih/zoom)/2",
+    },
+    {
+        "name": "由右至左平移",
+        "z": "1.16",
+        "x": "(iw-iw/zoom)*(1-on/{total_frames})",
+        "y": "(ih-ih/zoom)/2",
+    },
+    {
+        "name": "推近＋由上至下平移",
+        "z": "min(zoom+0.0006,1.22)",
+        "x": "(iw-iw/zoom)/2",
+        "y": "(ih-ih/zoom)*on/{total_frames}",
+    },
+]
+
+
+def build_ffmpeg_command_kenburns(
+    image: str,
+    output_path: str,
+    audio_segments: list = None,
+    subtitle_segments: list = None,
+    target_total_duration: float = None,
+) -> list[str]:
+    """
+    單張圖片運鏡模式的ffmpeg指令組成。只吃一張圖片，套用KENBURNS_EFFECTS隨機抽到的
+    一種運鏡效果，持續播到target_total_duration為止（通常等於旁白總時長）。
+    構圖前置處理（模糊背景鋪底+原圖完整置中不裁切、色域校正）跟原本多圖版本共用
+    同一套邏輯，避免橫式banner圖被裁掉內容、避免yuvj420p相容性問題，這裡不重複解釋。
+    audio_segments/subtitle_segments格式跟build_ffmpeg_command()一致。
+    """
+    total_duration = target_total_duration if target_total_duration else IMAGE_DURATION
+    total_frames = max(1, round(total_duration * 30))
+
+    effect = random.choice(KENBURNS_EFFECTS)
+    x_expr = effect["x"].format(total_frames=total_frames)
+    y_expr = effect["y"].format(total_frames=total_frames)
+    z_expr = effect["z"].format(total_frames=total_frames)
+    print(f"→ 運鏡效果：{effect['name']}")
+
+    filter_parts = [
+        f"[0:v]split=2[bg][fg];"
+        f"[bg]scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:force_original_aspect_ratio=increase:out_range=tv,"
+        f"crop={OUTPUT_WIDTH}:{OUTPUT_HEIGHT},scale=54:96,scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}[bgblur];"
+        f"[fg]scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:force_original_aspect_ratio=decrease:out_range=tv[fgfit];"
+        f"[bgblur][fgfit]overlay=(W-w)/2:(H-h)/2,setsar=1,format=yuv420p[composed];"
+        f"[composed]scale=1700:-2,"
+        f"zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}':d={total_frames}:s={OUTPUT_WIDTH}x{OUTPUT_HEIGHT}:fps=30,"
+        f"format=yuv420p[v0]"
+    ]
+    final_label = "v0"
+
+    if subtitle_segments:
+        if not os.path.isfile(FONT_PATH):
+            print(f"⚠ 找不到中文字型檔（{FONT_PATH}），字幕會顯示成方框，請先下載字型檔（見腳本開頭註解的下載指令）")
+        fontfile_escaped = FONT_PATH.replace(":", "\\:")
+        for idx, (start, end, text) in enumerate(subtitle_segments):
+            safe_text = escape_drawtext(wrap_subtitle(text))
+            out_label = f"sub{idx}"
+            filter_parts.append(
+                f"[{final_label}]drawtext=fontfile='{fontfile_escaped}':text='{safe_text}':"
+                f"enable='between(t,{start:.3f},{end:.3f})':fontsize={FONT_SIZE}:fontcolor=white:"
+                f"borderw=3:bordercolor=black:x=(w-text_w)/2:y=h-th-80:line_spacing=6[{out_label}]"
+            )
+            final_label = out_label
+
+    filter_complex_video_parts = list(filter_parts)
+
+    cmd = ["ffmpeg", "-y", "-loop", "1", "-t", str(total_duration), "-i", image]
+
+    if audio_segments:
+        for seg in audio_segments:
+            cmd += ["-i", seg["path"]]
+        audio_start_index = 1
+        concat_inputs = "".join(f"[{audio_start_index + idx}:a]" for idx in range(len(audio_segments)))
+        filter_complex_video_parts.append(
+            f"{concat_inputs}concat=n={len(audio_segments)}:v=0:a=1[acat]"
+        )
+        filter_complex_video_parts.append(f"[acat]apad=whole_dur={total_duration}[aout]")
+        audio_map = "[aout]"
+    else:
+        cmd += ["-f", "lavfi", "-t", str(total_duration), "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
+        audio_map = "1:a"
+
+    filter_complex = ";".join(filter_complex_video_parts)
+
+    cmd += [
+        "-filter_complex", filter_complex,
+        "-map", f"[{final_label}]",
+        "-map", audio_map,
+        "-t", str(total_duration),
+        "-r", "30",
+        "-threads", "1",
+        "-avoid_negative_ts", "make_zero",
+        "-c:v", "libx264",
+        "-profile:v", "baseline",
+        "-level", "3.1",
+        "-bf", "0",
+        "-pix_fmt", "yuv420p",
+        "-color_range", "tv",
+        "-color_primaries", "bt709",
+        "-color_trc", "bt709",
+        "-colorspace", "bt709",
+        "-map_metadata", "-1",
+        "-c:a", "aac",
+        "-movflags", "+faststart",
+        output_path,
+    ]
+    return cmd
+
+
+def load_video_style_config() -> str:
+    """
+    讀取~/.shopee_ai_config.json的video_style欄位，決定影片視覺呈現方式：
+    "single_image_kenburns"（預設，2026-08-30起）：只取選圖清單第一張圖，套用運鏡
+      效果持續播到旁白結束，取代舊版多張圖片輪播。
+    "slideshow"：舊版行為，多張圖片依序淡入淡出轉場。
+    設定檔不存在、欄位缺漏、或值不是這兩者之一，一律退回預設值"single_image_kenburns"，
+    跟ai_narration.py的load_ai_config()分開讀（不要求一定要有provider/api_key），
+    這樣就算沒設定AI文案供應商、只用規則模板，也能單獨控制影片視覺呈現方式。
+    """
+    config_path = os.path.expanduser("~/.shopee_ai_config.json")
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        style = raw.get("video_style", "single_image_kenburns")
+        if style not in ("single_image_kenburns", "slideshow"):
+            style = "single_image_kenburns"
+        return style
+    except Exception:
+        return "single_image_kenburns"
 
 
 def build_ffmpeg_command(
@@ -512,7 +685,7 @@ def process_folder(folder: str, force: bool = False) -> dict:
     used_ai = False
     if generate_ai_sentences:
         try:
-            sentences, hashtags = generate_ai_sentences(folder)
+            sentences, hashtags = generate_ai_sentences(folder, char_count_range=(TARGET_CHAR_MIN, TARGET_CHAR_MAX))
             if sentences:
                 used_ai = True
                 print(f"→ AI文案生成成功（{len(sentences)}句）：")
@@ -545,39 +718,51 @@ def process_folder(folder: str, force: bool = False) -> dict:
                 print(f"→ 語音總時長：{total_audio_duration:.1f} 秒（{len(audio_segments)}句，正常語速）")
 
                 # 語音長度不在目標範圍內時，語速永遠維持正常，改回頭重新呼叫文案產生器
-                # 要求多寫/少寫一句。
-                # 【2026-08-29修正】原本只重試一次，這在圖片張數多（8~10張、起始就有3~4句）
-                # 時通常夠用，但改成人工選圖後，使用者常常只留3張以內，規則模板
-                # determine_sentence_count()對這種張數只給1句（約8秒），跟15秒目標差了
-                #將近一半，重試一次（+1句）補不回這麼大的落差。改成迴圈重試最多3次，
-                # 每次都往目標範圍的方向調整，直到落在範圍內、或碰到句數上下限、或連續
-                # 拿不到新句數的文案、或已經重試滿3次為止——3次是避免無限循環拖慢批次
-                # 速度、AI版一直燒API額度的安全上限，不是「保證一定湊得到」的保證。
+                # 調整文案長度。
+                # 【2026-08-30修正】AI文案路徑改成調整「目標總字數範圍」而不是調句數——
+                # 句數固定、每句字數卻有10~16字的浮動空間，過去常常句數對了字數還是差
+                # 一截，要重試好幾次。現在retry時直接依「目標時長中點 ÷ 實際時長」算出
+                # 縮放比例，把字數範圍整個往目標方向縮放，一次到位的機率高很多。
+                # 規則模板路徑（AI失敗時的退回路徑）沒有字數概念，維持原本調句數的邏輯。
+                # 迴圈上限維持3次，避免無限循環拖慢批次速度、AI版還一直燒API額度。
                 retry_attempt = 0
+                char_min, char_max = TARGET_CHAR_MIN, TARGET_CHAR_MAX
                 while retry_attempt < 3 and not (TARGET_MIN_DURATION_SEC <= total_audio_duration <= TARGET_MAX_DURATION_SEC):
                     retry_attempt += 1
                     direction = "太短" if total_audio_duration < TARGET_MIN_DURATION_SEC else "太長"
-                    delta = 1 if total_audio_duration < TARGET_MIN_DURATION_SEC else -1
-                    new_count = max(MIN_SENTENCE_COUNT, min(MAX_SENTENCE_COUNT, len(sentences) + delta))
-                    if new_count == len(sentences):
-                        print(f"→ 語音總長度{direction}，但句數已經在{MIN_SENTENCE_COUNT}~{MAX_SENTENCE_COUNT}句的邊界，不重試")
-                        break
 
-                    print(f"→ 語音總長度{direction}（目標{TARGET_MIN_DURATION_SEC:.0f}~{TARGET_MAX_DURATION_SEC:.0f}秒，"
-                          f"實際{total_audio_duration:.1f}秒），改為{new_count}句重新產生文案（第{retry_attempt}次調整）…")
                     retry_sentences = None
                     retry_hashtags = None
                     if used_ai and generate_ai_sentences:
+                        target_mid = (TARGET_MIN_DURATION_SEC + TARGET_MAX_DURATION_SEC) / 2
+                        scale = target_mid / total_audio_duration if total_audio_duration > 0 else 1.0
+                        new_min = max(MIN_CHAR_COUNT, min(MAX_CHAR_COUNT, round(char_min * scale)))
+                        new_max = max(MIN_CHAR_COUNT, min(MAX_CHAR_COUNT, round(char_max * scale)))
+                        if new_min >= new_max:
+                            new_max = new_min + 10
+                        if (new_min, new_max) == (char_min, char_max):
+                            print(f"→ 語音總長度{direction}，但目標字數範圍已經在{MIN_CHAR_COUNT}~{MAX_CHAR_COUNT}字的邊界，不重試")
+                            break
+                        char_min, char_max = new_min, new_max
+                        print(f"→ 語音總長度{direction}（目標{TARGET_MIN_DURATION_SEC:.0f}~{TARGET_MAX_DURATION_SEC:.0f}秒，"
+                              f"實際{total_audio_duration:.1f}秒），改為目標{char_min}~{char_max}字重新產生文案（第{retry_attempt}次調整）…")
                         try:
                             retry_sentences, retry_hashtags = generate_ai_sentences(
-                                folder, sentence_count_override=new_count
+                                folder, char_count_range=(char_min, char_max)
                             )
                         except Exception as e:
                             print(f"⚠ 重新呼叫AI文案發生未預期錯誤（{e.__class__.__name__}），維持原本文案")
                     elif not used_ai:
+                        delta = 1 if total_audio_duration < TARGET_MIN_DURATION_SEC else -1
+                        new_count = max(MIN_SENTENCE_COUNT, min(MAX_SENTENCE_COUNT, len(sentences) + delta))
+                        if new_count == len(sentences):
+                            print(f"→ 語音總長度{direction}，但句數已經在{MIN_SENTENCE_COUNT}~{MAX_SENTENCE_COUNT}句的邊界，不重試")
+                            break
+                        print(f"→ 語音總長度{direction}（目標{TARGET_MIN_DURATION_SEC:.0f}~{TARGET_MAX_DURATION_SEC:.0f}秒，"
+                              f"實際{total_audio_duration:.1f}秒），改為{new_count}句重新產生文案（第{retry_attempt}次調整）…")
                         retry_sentences = build_narration_sentences(folder, sentence_count_override=new_count)
 
-                    if retry_sentences and len(retry_sentences) != len(sentences):
+                    if retry_sentences and retry_sentences != sentences:
                         print(f"→ 重新產生文案成功（{len(retry_sentences)}句）：")
                         for s in retry_sentences:
                             print(f"    {s}")
@@ -593,7 +778,7 @@ def process_folder(folder: str, force: bool = False) -> dict:
                             print("⚠ 重新合成語音失敗，維持原本文案與語音")
                             break
                     else:
-                        print("→ 沒能拿到不同句數的文案（可能是賣點詞不夠或已達句數上限/下限），維持原本文案與語音")
+                        print("→ 沒能拿到不同內容的文案（可能是賣點詞不夠或已達字數/句數上限/下限），維持原本文案與語音")
                         break
 
                 subtitle_segments = []
@@ -603,26 +788,45 @@ def process_folder(folder: str, force: bool = False) -> dict:
                     t += seg["duration"]
 
         n = len(images)
-        if audio_segments:
-            ideal = (total_audio_duration - TRANSITION_DURATION) / n
-            image_duration = min(MAX_IMAGE_DURATION, max(MIN_IMAGE_DURATION, ideal))
-            video_natural_duration = image_duration * n + TRANSITION_DURATION
-            target_total_duration = max(video_natural_duration, total_audio_duration)
-            print(f"→ 依語音長度調整每張圖片停留時間為 {image_duration:.2f} 秒")
+        video_style = load_video_style_config()
+
+        if video_style == "single_image_kenburns":
+            # 單張圖片運鏡模式：影片總長度直接等於旁白總時長，不用像多圖版本那樣
+            # 依MIN/MAX_IMAGE_DURATION回推、也不需要tpad定格延長（zoompan本身
+            # 就是持續播滿target_total_duration，沒有多圖轉場銜接的問題）。
+            target_total_duration = total_audio_duration if audio_segments else IMAGE_DURATION * 3
+            print(f"→ 影片呈現方式：單張圖片運鏡（只用第一張圖，總長度{target_total_duration:.1f}秒）")
+
+            print("→ 剝離圖片 ICC 描述檔（避免部分手機播放器相容性問題）…")
+            clean_images = strip_icc_profiles(images[:1], tmp_dir)
+
+            cmd = build_ffmpeg_command_kenburns(
+                clean_images[0], output_path,
+                audio_segments=audio_segments,
+                subtitle_segments=subtitle_segments,
+                target_total_duration=target_total_duration,
+            )
         else:
-            image_duration = IMAGE_DURATION
-            target_total_duration = image_duration * n + TRANSITION_DURATION
+            if audio_segments:
+                ideal = (total_audio_duration - TRANSITION_DURATION) / n
+                image_duration = min(MAX_IMAGE_DURATION, max(MIN_IMAGE_DURATION, ideal))
+                video_natural_duration = image_duration * n + TRANSITION_DURATION
+                target_total_duration = max(video_natural_duration, total_audio_duration)
+                print(f"→ 依語音長度調整每張圖片停留時間為 {image_duration:.2f} 秒")
+            else:
+                image_duration = IMAGE_DURATION
+                target_total_duration = image_duration * n + TRANSITION_DURATION
 
-        print("→ 剝離圖片 ICC 描述檔（避免部分手機播放器相容性問題）…")
-        clean_images = strip_icc_profiles(images, tmp_dir)
+            print("→ 剝離圖片 ICC 描述檔（避免部分手機播放器相容性問題）…")
+            clean_images = strip_icc_profiles(images, tmp_dir)
 
-        cmd = build_ffmpeg_command(
-            clean_images, output_path,
-            image_duration=image_duration,
-            audio_segments=audio_segments,
-            subtitle_segments=subtitle_segments,
-            target_total_duration=target_total_duration,
-        )
+            cmd = build_ffmpeg_command(
+                clean_images, output_path,
+                image_duration=image_duration,
+                audio_segments=audio_segments,
+                subtitle_segments=subtitle_segments,
+                target_total_duration=target_total_duration,
+            )
         result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:

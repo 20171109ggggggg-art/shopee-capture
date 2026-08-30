@@ -28,6 +28,65 @@ from make_video import process_folder
 
 import json
 
+LOCK_FILE_NAME = ".batch_running.lock"
+
+
+def _pid_is_alive(pid: int) -> bool:
+    """檢查指定PID的行程是不是還活著。用os.kill(pid, 0)不會真的送訊號，只是問系統
+    這個PID還在不在，行程不存在會丟ProcessLookupError；PermissionError代表PID存在
+    但不是我們能操作的行程（例如系統行程剛好重用了這個PID），一樣視為「還活著」，
+    保守起見不要誤判成已死掉而讓兩批同時跑。"""
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:
+        return True
+
+
+def acquire_batch_lock(root: str) -> str:
+    """
+    防止同一個CaptionQueue根目錄被兩個batch_generate.py行程同時處理，導致兩邊
+    的ffmpeg搶著寫同一個output.mp4路徑、互相覆蓋讓檔案整個消失的問題。
+    做法：在root底下放一個記錄PID的鎖檔案，啟動時檢查：
+      - 沒有鎖檔案 → 直接建立，正常啟動
+      - 有鎖檔案但裡面的PID已經不存在（上次可能異常中斷、沒清乾淨）→ 視為過期鎖，
+        清掉重建，不會因為殘留的鎖檔案卡死之後所有批次
+      - 有鎖檔案且PID還活著 → 代表真的有另一批在跑，直接印錯誤訊息並結束，
+        不繼續往下執行
+    回傳鎖檔案完整路徑，供main()結束時release_batch_lock()釋放用。
+    """
+    lock_path = os.path.join(root, LOCK_FILE_NAME)
+    if os.path.isfile(lock_path):
+        try:
+            existing_pid = int(open(lock_path, "r").read().strip())
+        except (ValueError, OSError):
+            existing_pid = None
+
+        if existing_pid is not None and _pid_is_alive(existing_pid):
+            print(f"錯誤：偵測到另一個批次生成行程正在執行中（PID {existing_pid}）。")
+            print("同一批商品資料夾不能同時被兩個批次處理，否則會互相搶著寫同一支")
+            print("output.mp4，導致影片檔案損毀或消失。請等目前那個批次跑完，")
+            print("或確認它已經不在執行後再重新啟動。")
+            sys.exit(1)
+        else:
+            print(f"→ 偵測到過期的批次鎖檔案（PID {existing_pid} 已不存在），清除後繼續")
+
+    with open(lock_path, "w") as f:
+        f.write(str(os.getpid()))
+    return lock_path
+
+
+def release_batch_lock(lock_path: str) -> None:
+    try:
+        if os.path.isfile(lock_path):
+            os.remove(lock_path)
+    except OSError as e:
+        print(f"⚠ 清除批次鎖檔案失敗（不影響本次結果，下次啟動會自動判定為過期鎖清除）：{e}")
+
 
 def write_progress(root: str, total: int, completed: int, current_name: str,
                     status: str, ok_count: int, skipped_count: int, error_count: int,
@@ -170,11 +229,13 @@ def main():
     print(f"共找到 {len(folders)} 個商品資料夾{'（強制重跑已存在的影片）' if force else ''}")
     print("=" * 60)
 
+    lock_path = acquire_batch_lock(root)
     acquire_wake_lock()
     try:
         run_batch(root, folders, force)
     finally:
         release_wake_lock()
+        release_batch_lock(lock_path)
 
 
 def run_batch(root: str, folders: list, force: bool) -> None:

@@ -108,7 +108,7 @@ def load_ai_config():
         return None
 
 
-def build_prompt(product_info: str, num_sentences: int, region: str) -> str:
+def build_prompt(product_info: str, approx_sentences: int, region: str, char_min: int = None, char_max: int = None) -> str:
     """組出給AI的提示詞，中英文各一版。
     【2026-08-29修改】原本要求AI帶入品牌名稱，現在改成明確禁止提及品牌/型號——
     因為圖片那邊已經改用AI去除商品上的品牌logo，文案這邊也要跟著避開，
@@ -118,7 +118,15 @@ def build_prompt(product_info: str, num_sentences: int, region: str) -> str:
     規則寫得很細的短文案提示詞，模型還是很容易收斂到差不多的答案（同一個商品重新生成
     常常逐字相同）。改成每次呼叫都從一組切入角度裡隨機抽一個明確塞進提示詞，強迫AI
     這次要用「這個角度」去寫，跟temperature的隨機性疊加，同一個商品重新生成才會真的
-    有感的不一樣，不只是碰運氣。"""
+    有感的不一樣，不只是碰運氣。
+
+    【2026-08-30修改】原本用「固定句數」當硬性要求，但句數固定不代表總字數固定
+    （每句字數本來就有10~16字的浮動空間），常常句數對了、總長度還是差一截，要
+    重試好幾次。改成把「總字數範圍」當成主要的硬性要求，句數只當作自然語氣的
+    參考建議，讓AI自己決定要分成幾句才能讓總字數落在範圍內、內容又通順。
+    char_min/char_max為None時（理論上不應該發生，make_video.py一定會帶入目標字數）
+    退回舊版「大約N句」的提示語氣，不設字數硬性要求，避免程式出錯。
+    """
     angle_pool_zh = [
         "這次的切入角度：從「使用前 vs 使用後的差別」下手，強調用了這個商品之後生活哪裡變輕鬆",
         "這次的切入角度：從「一個具體的生活場景」下手（例如某個時間點、某個空間），把商品放進那個畫面裡描述",
@@ -139,10 +147,21 @@ def build_prompt(product_info: str, num_sentences: int, region: str) -> str:
     angle_hint_en = random.choice(angle_pool_en)
 
     if region == "PH":
+        length_rule_en = (
+            f"- The TOTAL character count across ALL sentences combined must fall between "
+            f"{char_min} and {char_max} characters (count letters only, not spaces/punctuation) — "
+            f"this is a hard requirement, more important than sentence count. Split the content into "
+            f"however many sentences feels natural (roughly {approx_sentences}, but adjust freely) to "
+            f"hit this total length; don't pad with filler just to reach the count, and don't cut useful "
+            f"content just to save characters — instead write each selling point with a bit more or less "
+            f"detail to land in range"
+            if char_min is not None and char_max is not None else
+            f"- Output roughly {approx_sentences} sentences"
+        )
         return (
             f"You are a professional voice-over scriptwriter for short product videos targeting "
-            f"Filipino Shopee shoppers. Based on the product info below, write {num_sentences} "
-            f"conversational narration sentences in natural Taglish (the everyday mix of Tagalog "
+            f"Filipino Shopee shoppers. Based on the product info below, write conversational narration "
+            f"in natural Taglish (the everyday mix of Tagalog "
             f"and English that Filipinos actually speak/type online — not pure English, and not "
             f"formal/textbook Tagalog).\n\n"
             f"Product info:\n{product_info}\n\n"
@@ -158,19 +177,25 @@ def build_prompt(product_info: str, num_sentences: int, region: str) -> str:
             f"- Natural spoken Taglish tone, like a friend recommending something (e.g. mixing words "
             f'like "sobrang", "grabe", "talaga", "kasi", "na", "pa" naturally with English product '
             f'terms), no hype openers like "Hey check this out"\n'
-            f"- Keep each sentence to 8-14 words (not a strict hard cap like before — a slightly "
-            f"longer, more descriptive sentence is fine and preferred over a clipped one; the "
-            f"narration will be read aloud), avoid repeating the same selling "
+            f"{length_rule_en}, avoid repeating the same selling "
             f"point across sentences\n"
-            f"- Output exactly {num_sentences} sentences, one per line, no numbering, no quotes, "
-            f"no extra explanation\n"
+            f"- One sentence per line, no numbering, no quotes, no extra explanation\n"
             f"- After the sentences, add one final line starting with \"HASHTAGS:\" followed by exactly "
             f"5 short English hashtag words relevant to this product category (no brand/model names, "
             f"no # symbol, space-separated, e.g. \"HASHTAGS: ShopeeFinds MustHave HomeEssentials "
             f"TechGadget AffiliateFind\")"
         )
+
+    length_rule_zh = (
+        f"- 全部句子加起來的「總字數」請控制在{char_min}~{char_max}個中文字之間（不含標點符號）——"
+        f"這是硬性要求，比句數重要。要分成幾句自然分（大約{approx_sentences}句左右，但可以自由調整"
+        f"句數），不要為了湊字數硬塞填充詞，也不要為了省字數砍掉有用的內容——同一個賣點寫得更詳細"
+        f"或更精簡來調整長度，而不是增減句子裡的實質內容"
+        if char_min is not None and char_max is not None else
+        f"- 直接輸出大約{approx_sentences}句話"
+    )
     return (
-        f"你是短影音商品旁白文案的專業寫手。請根據以下商品資訊，寫出 {num_sentences} 句口語化的旁白文案。\n\n"
+        f"你是短影音商品旁白文案的專業寫手。請根據以下商品資訊，寫出口語化的旁白文案。\n\n"
         f"商品資訊：\n{product_info}\n\n"
         f"{angle_hint_zh}\n\n"
         f"規則：\n"
@@ -178,13 +203,10 @@ def build_prompt(product_info: str, num_sentences: int, region: str) -> str:
         f"改用一般性的方式描述這個商品\n"
         f"- 每句提到1個具體、有辨識度的賣點特徵（從商品資訊裡挑，但不包含品牌/型號），"
         f"避免空泛的形容詞（如「品質優良」「CP值高」）；如果商品本身賣點不多、想不出新的不重複"
-        f"賣點，可以針對同一個賣點寫得更完整、更有畫面感（例如加上使用情境、感受），"
-        f"不要為了湊句數硬擠出空洞的短句\n"
+        f"賣點，可以針對同一個賣點寫得更完整、更有畫面感（例如加上使用情境、感受）\n"
         f"- 語氣自然口語，像朋友介紹商品，不要有「嗨！快來看看」這種業配開場白\n"
-        f"- 每句字數放寬到10~16個中文字（不是原本8~12那種硬性上限——句子寫得完整、"
-        f"有畫面感比湊字數更重要，太短的句子反而讓總長度湊不到目標時長），"
-        f"句子之間不要重複相同的賣點\n"
-        f"- 直接輸出{num_sentences}句話，每句一行，不要加編號、不要加引號、不要有其他說明文字\n"
+        f"{length_rule_zh}，句子之間不要重複相同的賣點\n"
+        f"- 每句一行，不要加編號、不要加引號、不要有其他說明文字\n"
         f"- 句子輸出完後，最後加一行以「HASHTAGS:」開頭，接5個跟這個商品類別相關的中文標籤詞"
         f"（不含品牌/型號名稱、不含#符號、用空格分隔，例如「HASHTAGS: 居家好物 分潤推薦 開箱心得 生活選物 蝦皮好物」）"
     )
@@ -281,6 +303,13 @@ def parse_sentences(raw_text: str, expected_count: int) -> tuple:
     編號/引號/多餘空白。以「HASHTAGS:」開頭的那一行單獨抽出來當hashtag清單
     （用空白切開、去掉可能誤加的#符號），其餘行才是旁白句子。
     抓不到HASHTAGS那行時，hashtag清單回傳空list，呼叫端會退回規則模板的預設標籤池。
+
+    【2026-08-30修改】原本會用cleaned[:expected_count]把句子清單截斷到指定句數，
+    但現在改成用「目標總字數」控制文案長度、句數只是自然語氣的參考建議，AI實際
+    分成幾句可能跟expected_count不一樣（例如字數範圍需要5句才裝得下，AI給了5句），
+    截斷會把後面的句子內容整個砍掉、讓總字數對不上目標，違背改用字數控制的本意。
+    改成不截斷，回傳全部解析到的句子。expected_count參數保留給呼叫端記錄／除錯用，
+    不再影響回傳結果。
     """
     lines = [line.strip() for line in raw_text.strip().split("\n") if line.strip()]
     hashtags = []
@@ -303,11 +332,10 @@ def parse_sentences(raw_text: str, expected_count: int) -> tuple:
         line = line.strip("「」『』\"'")
         if line:
             cleaned.append(line)
-    sentences = cleaned[:expected_count] if cleaned else []
-    return sentences, hashtags[:5]
+    return cleaned, hashtags[:5]
 
 
-def generate_ai_sentences(folder: str, sentence_count_override: int = None):
+def generate_ai_sentences(folder: str, sentence_count_override: int = None, char_count_range: tuple = None):
     """
     主要對外函式：讀AI設定檔＋商品資料，呼叫對應供應商API生成旁白句子清單與5個hashtag。
     任何一步失敗（沒設定檔/沒套件/連線失敗/回應格式不對/句子數量不足）都回傳 (None, None)，
@@ -315,10 +343,12 @@ def generate_ai_sentences(folder: str, sentence_count_override: int = None):
     回傳格式：(sentences: list, hashtags: list)，hashtags 若AI沒給或解析失敗會是空list
     （不是None——句子生成成功但hashtag缺漏時，呼叫端仍可採用AI句子＋退回預設hashtag池）。
 
-    sentence_count_override：指定句數而不是用determine_ai_sentence_count()依圖片張數
-    自動判斷。給make_video.py在語音長度不在目標範圍內時，重新要求AI多寫/少寫一句用，
-    取代舊版靠調整TTS語速硬湊時間的做法——語速永遠維持正常，改用調整文案長度來配合
-    影片長度目標區間。
+    【2026-08-30修改】主要控制參數改成char_count_range（目標總字數範圍的tuple，
+    例如(68, 90)）——make_video.py的retry迴圈現在改用調整目標字數而不是調句數，
+    因為句數固定不代表總字數固定，字數才是真正決定語音長度的因素。
+    sentence_count_override保留但只用來在字數提示旁邊給AI一個「大約幾句」的自然
+    語氣參考（不再是句數上限的硬性截斷依據），沒給的話用determine_ai_sentence_count()
+    依圖片張數自動判斷。
     """
     config = load_ai_config()
     if not config:
@@ -336,9 +366,10 @@ def generate_ai_sentences(folder: str, sentence_count_override: int = None):
     region = load_region(folder)
     product_info = extract_product_info(caption, region)
     num_images = count_images(folder)
-    num_sentences = sentence_count_override if sentence_count_override is not None else determine_ai_sentence_count(num_images, config["max_sentences"])
+    approx_sentences = sentence_count_override if sentence_count_override is not None else determine_ai_sentence_count(num_images, config["max_sentences"])
 
-    prompt = build_prompt(product_info, num_sentences, region)
+    char_min, char_max = char_count_range if char_count_range else (None, None)
+    prompt = build_prompt(product_info, approx_sentences, region, char_min, char_max)
     provider = config["provider"]
     call_func = PROVIDER_FUNCS.get(provider)
     if call_func is None:
@@ -351,10 +382,14 @@ def generate_ai_sentences(folder: str, sentence_count_override: int = None):
         print(f"⚠ AI文案生成失敗（{provider}：{e.__class__.__name__} {e}），改用規則模板")
         return None, None
 
-    sentences, hashtags = parse_sentences(raw_text, num_sentences)
+    sentences, hashtags = parse_sentences(raw_text, approx_sentences)
     if not sentences:
         print(f"⚠ AI回應解析不到有效句子，改用規則模板")
         return None, None
+
+    if char_min is not None:
+        actual_chars = sum(len(s) for s in sentences)
+        print(f"→ AI文案總字數：{actual_chars}字（目標{char_min}~{char_max}字，{len(sentences)}句）")
 
     return sentences, hashtags
 
