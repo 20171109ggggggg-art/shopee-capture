@@ -17,16 +17,190 @@
 下次啟動時誤判。
 
 generate_narration.py、make_video.py 必須跟本檔放在同一個資料夾。
+
+【2026-09-02新增】遠端生成模式：
+如果 ~/.shopee_video_server_config.json 存在且 "enabled": true，改成把每個商品
+資料夾打包成zip丟給筆電端的FastAPI服務（main.py）生成，取代本機Termux呼叫
+process_folder()。這樣可以用筆電的運算資源，不用佔用手機。
+設定檔格式：
+    {
+      "enabled": true,
+      "server_url": "http://100.98.87.55:8000"
+    }
+沒有這個設定檔、或 "enabled" 不是 true，維持原本行為（本機Termux生成），
+不用特別做什麼設定就能沿用舊的使用方式。
+
+帳號分類：不是靠這個設定檔指定帳號（因為同一支手機會切換用多個蝦皮帳號），
+而是每個商品資料夾自己的 meta.json 裡的 "account" 欄位（App v1.023起擷取時
+會寫入這個欄位）——本腳本處理每個資料夾時直接讀那個資料夾自己的account，
+筆電端收到後依帳號分開備份。
+
+筆電斷線/沒開機時的行為：跟「單一商品生成失敗」是不同等級的問題——連不上
+筆電代表接下來全部商品都會失敗，不該一支一支各自失敗、浪費時間跑完全部
+才發現整批都沒用。偵測到連線失敗（逾時/連不上）會立刻中止整批，在
+.progress.json寫入status="error_laptop_unreachable"，讓App讀到後跳出提示，
+不會誤判成一般的「本批完成但全部失敗」。
+
+批次跑完（不管成功/中止）後，會額外把手機的防重複資料庫
+（captured_names/captured_history.jsonl）同步備份一份到筆電（跟哪個帳號無關，
+這份資料庫本身是跨帳號共用的一份紀錄），失敗只印警告不影響本次批次結果。
 """
 import os
 import sys
 import time
 import subprocess
+import zipfile
+import io
 
-from make_video import process_folder
+try:
+    import requests
+except ImportError:
+    requests = None
+
+from make_video import process_folder, is_valid_video
 
 
 import json
+
+REMOTE_CONFIG_PATH = os.path.expanduser("~/.shopee_video_server_config.json")
+DEDUP_HISTORY_PATH = os.path.expanduser("~/shopee-capture/captured_history.jsonl")
+
+
+class ServerUnreachableError(Exception):
+    """筆電服務連不上（斷線/沒開機/逾時），要中止整批，不能像單支失敗那樣繼續下一支。"""
+    pass
+
+
+def load_remote_config():
+    """讀取遠端生成設定檔，沒有這個檔案、格式不對、或enabled不是true，都回傳None
+    （代表維持原本Termux本機生成），確保這個功能是選配的、不會影響既有使用方式。"""
+    if not os.path.isfile(REMOTE_CONFIG_PATH):
+        return None
+    try:
+        with open(REMOTE_CONFIG_PATH, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        if not config.get("enabled"):
+            return None
+        server_url = str(config.get("server_url", "")).rstrip("/")
+        if not server_url:
+            print("⚠ 遠端生成設定檔缺少server_url，改用本機生成")
+            return None
+        return {"server_url": server_url}
+    except Exception as e:
+        print(f"⚠ 讀取遠端生成設定檔失敗（{e}），改用本機生成")
+        return None
+
+
+def _read_account_from_meta(folder: str) -> str:
+    """讀該商品資料夾meta.json裡的account欄位（App v1.023起擷取時會寫入），供傳給
+    筆電服務做備份分類用。舊資料/讀取失敗都歸類成「未分類帳號」，不會讓程式出錯中斷。"""
+    meta_path = os.path.join(folder, "meta.json")
+    try:
+        with open(meta_path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+        account = meta.get("account")
+        if isinstance(account, str) and account.strip():
+            return account.strip()
+    except Exception:
+        pass
+    return "未分類帳號"
+
+
+def _zip_folder(folder: str) -> bytes:
+    """把商品資料夾整包壓成zip（在記憶體中組，不落地暫存檔案），直接沿用資料夾
+    原本的內容（image_*.jpg、caption.txt、link.txt、meta.json等），對應筆電端
+    main.py本來就設計成「整個資料夾zip起來丟過去」的介面，不用另外拆表單欄位。"""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for root, _dirs, files in os.walk(folder):
+            for name in files:
+                full_path = os.path.join(root, name)
+                arcname = os.path.relpath(full_path, folder)
+                zf.write(full_path, arcname)
+    buf.seek(0)
+    return buf.read()
+
+
+def process_folder_remote(folder: str, server_url: str, force: bool = False, timeout: int = 300) -> dict:
+    """
+    透過筆電端FastAPI服務生成影片，取代本機process_folder()。回傳格式刻意跟
+    process_folder()一致：{"status": "ok"/"error", "message":..., "output_path":...}，
+    讓run_batch()不用分辨這支是本機還是遠端生成的結果，呼叫端邏輯不用重寫。
+
+    連線失敗（逾時/連不上/DNS解析失敗等網路層級問題）會丟出ServerUnreachableError，
+    由run_batch()決定整批中止；跟「筆電有回應、但這支商品處理過程本身失敗」
+    （伺服器回應非200）是不同情況，後者視同一般單支失敗，回傳status=error，
+    批次繼續處理下一支——只有真的連不上才需要整批中止，不是每個失敗都要中止。
+    """
+    if requests is None:
+        raise ServerUnreachableError("找不到 requests 套件，無法連線筆電服務（pip install requests）")
+
+    name = os.path.basename(folder)
+
+    # 跳過判斷比照process_folder()本機邏輯：不是只看output.mp4存不存在，還要驗證
+    # 它是不是一支完整可播放的影片（容器結構＋內容解碼都正常），避免因為上次生成
+    # 到一半被中斷留下的殘缺檔案被誤判成「已完成」而永遠不會重新生成。
+    output_path = os.path.join(folder, "output.mp4")
+    if os.path.isfile(output_path) and not force:
+        if is_valid_video(output_path):
+            return {"status": "skipped", "message": "output.mp4 已存在", "output_path": output_path}
+        print(f"→ [{name}] 偵測到既有output.mp4無法通過驗證，視為未生成、重新透過筆電生成")
+
+    account = _read_account_from_meta(folder)
+
+    try:
+        zip_bytes = _zip_folder(folder)
+    except Exception as e:
+        return {"status": "error", "message": f"打包資料夾失敗：{e.__class__.__name__} {e}", "output_path": None}
+
+    try:
+        resp = requests.post(
+            f"{server_url}/generate-video",
+            files={"product_zip": ("product.zip", zip_bytes, "application/zip")},
+            data={"account": account, "folder_name": name},
+            timeout=timeout,
+        )
+    except requests.exceptions.RequestException as e:
+        raise ServerUnreachableError(f"連線筆電服務失敗（{server_url}）：{e.__class__.__name__} {e}")
+
+    if resp.status_code != 200:
+        try:
+            detail = resp.json().get("message", resp.text[:200])
+        except Exception:
+            detail = resp.text[:200]
+        return {"status": "error", "message": f"筆電服務回報生成失敗：{detail}", "output_path": None}
+
+    output_path = os.path.join(folder, "output.mp4")
+    try:
+        with open(output_path, "wb") as f:
+            f.write(resp.content)
+    except Exception as e:
+        return {"status": "error", "message": f"寫入影片檔案失敗：{e.__class__.__name__} {e}", "output_path": None}
+
+    print(f"→ [{name}] 遠端生成成功（帳號：{account}）")
+    return {"status": "ok", "message": "遠端生成成功", "output_path": output_path}
+
+
+def backup_dedup_history(server_url: str) -> None:
+    """批次結束後，把手機防重複資料庫同步備份一份到筆電。這份資料庫是跨帳號共用的
+    單一檔案，不屬於某個特定帳號，所以不像商品資料那樣依帳號分類——備份失敗只印
+    警告，不影響本次批次已經完成的結果（避免因為這個附加動作失敗就讓使用者誤以為
+    整批都失敗了）。"""
+    if requests is None or not os.path.isfile(DEDUP_HISTORY_PATH):
+        return
+    try:
+        with open(DEDUP_HISTORY_PATH, "rb") as f:
+            resp = requests.post(
+                f"{server_url}/backup-dedup",
+                files={"history_file": ("captured_history.jsonl", f, "application/octet-stream")},
+                timeout=60,
+            )
+        if resp.status_code == 200:
+            print("→ 防重複資料庫已同步備份到筆電")
+        else:
+            print(f"⚠ 防重複資料庫備份失敗（筆電回應狀態碼{resp.status_code}），不影響本次批次結果")
+    except Exception as e:
+        print(f"⚠ 防重複資料庫備份失敗（{e.__class__.__name__} {e}），不影響本次批次結果")
 
 LOCK_FILE_NAME = ".batch_running.lock"
 
@@ -252,6 +426,11 @@ def run_batch(root: str, folders: list, force: bool) -> None:
     start_time = time.time()
     total = len(folders)
     stopped = False
+    laptop_unreachable = False
+
+    remote_config = load_remote_config()
+    if remote_config:
+        print(f"→ 遠端生成模式已啟用（{remote_config['server_url']}）")
 
     write_progress(root, total, 0, "", "running", 0, 0, 0)
 
@@ -271,7 +450,22 @@ def run_batch(root: str, folders: list, force: bool) -> None:
                             step=step_text)
 
         try:
-            result = process_folder(folder, force=force, step_callback=report_step)
+            if remote_config:
+                report_step("上傳給筆電生成中")
+                result = process_folder_remote(folder, remote_config["server_url"], force=force)
+            else:
+                result = process_folder(folder, force=force, step_callback=report_step)
+        except ServerUnreachableError as e:
+            # 連不上筆電代表接下來全部商品都會失敗，不是單一商品的問題，
+            # 立刻中止整批，不繼續浪費時間跑完剩下的商品。
+            print(f"✗ 連不上筆電服務，中止整批：{e}")
+            write_progress(root, total, idx - 1, name, "error_laptop_unreachable",
+                            len(ok_list), len(skipped_list), len(error_list),
+                            ok_names=ok_list, skipped_names=skipped_list,
+                            error_items=[[n, m.strip().splitlines()[-1] if m.strip() else "（無錯誤訊息）"] for n, m in error_list],
+                            elapsed_seconds=time.time() - start_time)
+            laptop_unreachable = True
+            break
         except Exception as e:
             print(f"✗ 發生未預期的錯誤：{e}")
             error_list.append((name, str(e)))
@@ -299,16 +493,24 @@ def run_batch(root: str, folders: list, force: bool) -> None:
             stopped = True
             break
 
-    if not stopped:
+    if not stopped and not laptop_unreachable:
         write_progress(root, total, total, "", "done",
                         len(ok_list), len(skipped_list), len(error_list),
                         ok_names=ok_list, skipped_names=skipped_list,
                         error_items=[[n, m.strip().splitlines()[-1] if m.strip() else "（無錯誤訊息）"] for n, m in error_list],
                         elapsed_seconds=time.time() - start_time)
 
+    # 批次結束（不管成功/停止/筆電斷線中止）都嘗試同步備份防重複資料庫，這個動作
+    # 跟本批次的商品生成結果無關，即使本批次失敗大半，已經處理成功的擷取紀錄
+    # 還是值得備份，失敗只印警告不影響上面已經寫好的批次結果。
+    if remote_config:
+        backup_dedup_history(remote_config["server_url"])
+
     elapsed = time.time() - start_time
     print("\n" + "=" * 60)
-    if stopped:
+    if laptop_unreachable:
+        print(f"批次因連不上筆電服務而中止，共花費 {elapsed / 60:.1f} 分鐘")
+    elif stopped:
         print(f"批次已停止（使用者主動中止），共花費 {elapsed / 60:.1f} 分鐘")
     else:
         print(f"批次完成，共花費 {elapsed / 60:.1f} 分鐘")

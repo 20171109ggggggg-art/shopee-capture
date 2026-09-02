@@ -150,11 +150,13 @@ def build_prompt(product_info: str, approx_sentences: int, region: str, char_min
         length_rule_en = (
             f"- The TOTAL character count across ALL sentences combined must fall between "
             f"{char_min} and {char_max} characters (count letters only, not spaces/punctuation) — "
-            f"this is a hard requirement, more important than sentence count. Split the content into "
+            f"this is a HARD CEILING, not a suggestion — going even slightly over {char_max} is a failure, "
+            f"more important than sentence count. Split the content into "
             f"however many sentences feels natural (roughly {approx_sentences}, but adjust freely) to "
             f"hit this total length; don't pad with filler just to reach the count, and don't cut useful "
             f"content just to save characters — instead write each selling point with a bit more or less "
-            f"detail to land in range"
+            f"detail to land in range. If you're unsure whether you're within range, err on the shorter "
+            f"side rather than risk going over {char_max}"
             if char_min is not None and char_max is not None else
             f"- Output roughly {approx_sentences} sentences"
         )
@@ -188,9 +190,10 @@ def build_prompt(product_info: str, approx_sentences: int, region: str, char_min
 
     length_rule_zh = (
         f"- 全部句子加起來的「總字數」請控制在{char_min}~{char_max}個中文字之間（不含標點符號）——"
-        f"這是硬性要求，比句數重要。要分成幾句自然分（大約{approx_sentences}句左右，但可以自由調整"
-        f"句數），不要為了湊字數硬塞填充詞，也不要為了省字數砍掉有用的內容——同一個賣點寫得更詳細"
-        f"或更精簡來調整長度，而不是增減句子裡的實質內容"
+        f"{char_max}字是絕對上限，寧可少也不要超過，比句數重要。要分成幾句自然分（大約{approx_sentences}"
+        f"句左右，但可以自由調整句數），不要為了湊字數硬塞填充詞，也不要為了省字數砍掉有用的內容——"
+        f"同一個賣點寫得更詳細或更精簡來調整長度，而不是增減句子裡的實質內容。如果不確定字數有沒有超過，"
+        f"請寧可寫少一點，也不要冒著超過{char_max}字上限的風險"
         if char_min is not None and char_max is not None else
         f"- 直接輸出大約{approx_sentences}句話"
     )
@@ -333,6 +336,67 @@ def parse_sentences(raw_text: str, expected_count: int) -> tuple:
         if line:
             cleaned.append(line)
     return cleaned, hashtags[:5]
+
+
+def build_compress_prompt(sentences: list, char_min: int, char_max: int, region: str) -> str:
+    """
+    跟build_prompt()不同：這個不是從商品資訊重新生成一份全新文案，而是把AI
+    已經寫好、但太長的sentences原文丟回去，明確要求「保留內容跟切入角度不變、
+    單純把字數壓縮到目標範圍」。用在retry收斂階段，是精確的編輯任務，比
+    「憑空預測自己這次會寫多長」容易遵守得多。
+    """
+    joined = "\n".join(sentences)
+    if region == "PH":
+        return (
+            f"Here is an existing product narration script:\n\n{joined}\n\n"
+            f"It's currently too long. Rewrite it to be more concise, keeping the same selling "
+            f"points, tone, and Taglish language style, but reduce the TOTAL character count "
+            f"across all lines combined to between {char_min} and {char_max} characters "
+            f"(count letters only, not spaces/punctuation). You may reduce the number of "
+            f"sentences if needed, but do not add new content or switch to a different angle — "
+            f"just tighten and shorten the existing wording.\n"
+            f"Output one sentence per line, no numbering, no quotes, no extra explanation, and "
+            f"do not include a HASHTAGS line (the hashtags from before stay unchanged)."
+        )
+    return (
+        f"以下是目前的商品旁白文案：\n\n{joined}\n\n"
+        f"這段文案目前字數太多。請保留原本的賣點內容、語氣跟切入角度不變，把「全部句子加起來"
+        f"的總字數」精簡壓縮到{char_min}~{char_max}個中文字之間（不含標點符號）——可以視情況"
+        f"減少句數，但不要新增沒出現過的內容、不要換成新的切入角度，單純把現有的話講得更精簡。\n"
+        f"每句一行，不要加編號、不要加引號、不要有其他說明文字，這次不用輸出HASHTAGS那行"
+        f"（標籤沿用前一版不變）。"
+    )
+
+
+def compress_ai_sentences(folder: str, sentences: list, char_min: int, char_max: int):
+    """
+    把sentences（AI剛寫的、但太長的文案）連同目標字數範圍丟回AI做壓縮改寫，
+    不是重新呼叫generate_ai_sentences()生成全新的一份。任何一步失敗都回傳
+    None，呼叫端會視同壓縮失敗、維持原本文案跟語音。
+    回傳格式：sentences: list（不含hashtags——這次呼叫刻意不重新生成hashtags，
+    沿用壓縮前的那份，避免文案改短了、標籤卻對不上）。
+    """
+    config = load_ai_config()
+    if not config:
+        return None
+    if requests is None:
+        return None
+
+    region = load_region(folder)
+    prompt = build_compress_prompt(sentences, char_min, char_max, region)
+    provider = config["provider"]
+    call_func = PROVIDER_FUNCS.get(provider)
+    if call_func is None:
+        return None
+
+    try:
+        raw_text = call_func(prompt, config["api_key"], config["model"])
+    except Exception as e:
+        print(f"⚠ 壓縮文案呼叫AI發生未預期錯誤（{e.__class__.__name__}）")
+        return None
+
+    new_sentences, _ = parse_sentences(raw_text, len(sentences))
+    return new_sentences if new_sentences else None
 
 
 def generate_ai_sentences(folder: str, sentence_count_override: int = None, char_count_range: tuple = None):
