@@ -394,6 +394,14 @@ fun RegionSettingsCard(context: android.content.Context) {
 @Composable
 fun AccountSettingsCard(context: android.content.Context) {
     var accountText by remember { mutableStateOf(AccountPrefs.getAccount(context)) }
+    var history by remember { mutableStateOf(AccountPrefs.getAccountHistory(context)) }
+
+    fun saveAccount(value: String) {
+        AccountPrefs.setAccount(context, value)
+        accountText = AccountPrefs.getAccount(context)
+        history = AccountPrefs.getAccountHistory(context)
+        Toast.makeText(context, context.getString(R.string.toast_account_saved), Toast.LENGTH_SHORT).show()
+    }
 
     Column(
         modifier = Modifier
@@ -418,16 +426,26 @@ fun AccountSettingsCard(context: android.content.Context) {
         )
         Spacer(Modifier.height(12.dp))
         Button(
-            onClick = {
-                AccountPrefs.setAccount(context, accountText)
-                accountText = AccountPrefs.getAccount(context)
-                Toast.makeText(context, context.getString(R.string.toast_account_saved), Toast.LENGTH_SHORT).show()
-            },
+            onClick = { saveAccount(accountText) },
             colors = ButtonDefaults.buttonColors(containerColor = InkColor),
             shape = RoundedCornerShape(0.dp),
             modifier = Modifier.fillMaxWidth().height(48.dp)
         ) {
             Text(stringResource(R.string.btn_save_account), fontSize = 15.sp, fontWeight = FontWeight.Bold)
+        }
+
+        if (history.isNotEmpty()) {
+            Spacer(Modifier.height(14.dp))
+            Text(
+                stringResource(R.string.account_history_label),
+                fontSize = 12.sp, color = MutedColor, fontWeight = FontWeight.SemiBold
+            )
+            Spacer(Modifier.height(8.dp))
+            FlowRowChips(
+                options = history,
+                selected = accountText,
+                onSelect = { picked -> saveAccount(picked) }
+            )
         }
     }
 }

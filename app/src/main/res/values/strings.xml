@@ -48,6 +48,7 @@
     <string name="account_title">目前使用帳號</string>
     <string name="account_desc">擷取商品時會把這個帳號名稱一併記錄下來，之後影片生成與電腦端備份會依照這個帳號分類。切換蝦皮帳號時記得回來這裡更新</string>
     <string name="account_hint">輸入帳號名稱</string>
+    <string name="account_history_label">之前用過的帳號（點選快速切換）</string>
     <string name="btn_save_account">儲存帳號</string>
     <string name="toast_account_saved">已儲存 ✓</string>
 
