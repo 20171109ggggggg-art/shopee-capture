@@ -43,9 +43,10 @@ except ImportError:
 from generate_narration import build_narration_sentences, build_hashtags, load_region
 
 try:
-    from ai_narration import generate_ai_sentences, load_ai_config
+    from ai_narration import generate_ai_sentences, compress_ai_sentences, load_ai_config
 except ImportError:
     generate_ai_sentences = None
+    compress_ai_sentences = None
     load_ai_config = None
 
 # ===== 可調參數 =====
@@ -272,7 +273,16 @@ KENBURNS_EFFECTS = [
     },
     {
         "name": "緩慢拉遠（置中）",
-        "z": "if(eq(on,0),1.28,max(1.0,zoom-0.0007))",
+        # 【2026-09-01修正】原本用"if(eq(on,0),1.28,max(1.0,zoom-0.0007))"——
+        # 這種寫法會遞迴引用「zoom」這個變數本身代表的是上一格算出來的縮放值，
+        # 需要用if(eq(on,0),...)特別處理第0格（這時候還沒有「上一格」可以參考）。
+        # Windows筆電端實測發現，這個運鏡效果選到時ffmpeg會直接崩潰
+        # （exit code 0xC0000005記憶體存取違規），手機Termux上完全正常，
+        # 懷疑是這個跨平台編譯的Windows build處理這種「自我遞迴+條件判斷」
+        # 的表達式語法時有相容性問題。改成不遞迴、純粹用當前格數on直接算出
+        # 縮放值（線性遞減、下限夾在1.0），數學上效果完全一樣，只是換一種
+        # 不會踩到那個地雷的寫法。
+        "z": "max(1.0,1.28-0.0007*on)",
         "x": "(iw-iw/zoom)/2",
         "y": "(ih-ih/zoom)/2",
     },
@@ -323,7 +333,7 @@ def build_ffmpeg_command_kenburns(
     if subtitle_segments:
         if not os.path.isfile(FONT_PATH):
             print(f"⚠ 找不到中文字型檔（{FONT_PATH}），字幕會顯示成方框，請先下載字型檔（見腳本開頭註解的下載指令）")
-        fontfile_escaped = FONT_PATH.replace(":", "\\:")
+        fontfile_escaped = FONT_PATH.replace("\\", "/").replace(":", "\\:")
         for idx, (start, end, text) in enumerate(subtitle_segments):
             safe_text = escape_drawtext(wrap_subtitle(text))
             out_label = f"sub{idx}"
@@ -336,7 +346,17 @@ def build_ffmpeg_command_kenburns(
 
     filter_complex_video_parts = list(filter_parts)
 
-    cmd = ["ffmpeg", "-y", "-loop", "1", "-t", str(total_duration), "-i", image]
+    # 【2026-09-01新增】-nostats -loglevel warning：Windows筆電端實測發現，透過
+    # Python subprocess呼叫ffmpeg（stdout/stderr被導向管線、不是真正的終端機）
+    # 時，同樣的指令在互動式PowerShell裡手動執行完全正常，但透過程式呼叫卻會
+    # 在沒有任何錯誤訊息的情況下直接崩潰（stderr只印出版本橫幅就整個中斷）。
+    # ffmpeg預設的即時進度顯示（frame= XX fps=...）需要查詢終端機寬度，懷疑
+    # 這個查詢在輸出被導向非終端機管線時，在這個Windows build上有相容性問題。
+    # 手機Termux上跑`> ... 2>&1`重導向到檔案，情況類似（也不是真正終端機），
+    # 但沒出現過這個問題，所以不確定是不是同一根因，加上這兩個旗標純粹是
+    # 跳過可疑的路徑、不用真的查清楚原因——反正批次生成本來就不需要即時進度條，
+    # -loglevel warning只保留警告以上等級的訊息，出錯時stderr仍然看得到原因。
+    cmd = ["ffmpeg", "-y", "-nostats", "-loglevel", "warning", "-loop", "1", "-t", str(total_duration), "-i", image]
 
     if audio_segments:
         for seg in audio_segments:
@@ -474,7 +494,7 @@ def build_ffmpeg_command(
     if subtitle_segments:
         if not os.path.isfile(FONT_PATH):
             print(f"⚠ 找不到中文字型檔（{FONT_PATH}），字幕會顯示成方框，請先下載字型檔（見腳本開頭註解的下載指令）")
-        fontfile_escaped = FONT_PATH.replace(":", "\\:")
+        fontfile_escaped = FONT_PATH.replace("\\", "/").replace(":", "\\:")
         for idx, (start, end, text) in enumerate(subtitle_segments):
             safe_text = escape_drawtext(wrap_subtitle(text))
             out_label = f"sub{idx}"
@@ -487,7 +507,7 @@ def build_ffmpeg_command(
 
     filter_complex_video_parts = list(filter_parts)
 
-    cmd = ["ffmpeg", "-y"] + inputs
+    cmd = ["ffmpeg", "-y", "-nostats", "-loglevel", "warning"] + inputs
 
     if audio_segments:
         # 真人語音旁白：每句分開合成的音檔依序 -i 進來，用 concat 濾鏡串接成一軌，
@@ -726,31 +746,50 @@ def process_folder(folder: str, force: bool = False, step_callback=None) -> dict
 
                 # 語音長度不在目標範圍內時，語速永遠維持正常，改回頭重新呼叫文案產生器
                 # 調整文案長度。
-                # 【2026-08-30修正】AI文案路徑改成調整「目標總字數範圍」而不是調句數——
-                # 句數固定、每句字數卻有10~16字的浮動空間，過去常常句數對了字數還是差
-                # 一截，要重試好幾次。現在retry時直接依「目標時長中點 ÷ 實際時長」算出
-                # 縮放比例，把字數範圍整個往目標方向縮放，一次到位的機率高很多。
+                # 【2026-08-30修正】AI文案路徑原本改成調整「目標總字數範圍」重新生成，但
+                # 每次retry都是重新呼叫build_prompt()整段重寫、還會重抽切入角度，等於
+                # AI每次都是「憑空預測自己這次會寫多長」，實測發現AI幾乎每次都大幅超出
+                # 要求的字數上限（例如要求68~90字，寫出128字；再收緊到41~54字，還是寫了
+                # 88字），調降目標範圍完全沒用，因為AI本來就沒有確實遵守字數指令。
+                # 【2026-09-01修正】改成不重新生成，而是把AI剛寫的那段文案原文丟回去，
+                # 明確要求「保留內容跟角度不變、把這段話壓縮到目標字數」——對AI來說這是
+                # 精確的編輯任務（縮短既有文字），比預測自己會寫多長容易遵守很多。目標
+                # 字數也改成用「AI實際寫出的字數」（不是原本要求的目標）乘上縮放比例反推，
+                # 這樣才是真正對應到需要砍掉的量，而不是繼續用一個AI從來沒達到過的目標。
+                # 語音太短（需要擴寫，不是壓縮）的情況維持原本重新生成的邏輯，因為擴寫
+                # 不是「精簡既有文字」這種編輯任務，用compress_ai_sentences不適用。
                 # 規則模板路徑（AI失敗時的退回路徑）沒有字數概念，維持原本調句數的邏輯。
                 # 迴圈上限維持3次，避免無限循環拖慢批次速度、AI版還一直燒API額度。
                 retry_attempt = 0
-                char_min, char_max = TARGET_CHAR_MIN, TARGET_CHAR_MAX
                 while retry_attempt < 3 and not (TARGET_MIN_DURATION_SEC <= total_audio_duration <= TARGET_MAX_DURATION_SEC):
                     retry_attempt += 1
-                    direction = "太短" if total_audio_duration < TARGET_MIN_DURATION_SEC else "太長"
+                    too_long = total_audio_duration > TARGET_MAX_DURATION_SEC
+                    direction = "太長" if too_long else "太短"
 
                     retry_sentences = None
                     retry_hashtags = None
-                    if used_ai and generate_ai_sentences:
+                    if used_ai and too_long and compress_ai_sentences:
                         target_mid = (TARGET_MIN_DURATION_SEC + TARGET_MAX_DURATION_SEC) / 2
                         scale = target_mid / total_audio_duration if total_audio_duration > 0 else 1.0
-                        new_min = max(MIN_CHAR_COUNT, min(MAX_CHAR_COUNT, round(char_min * scale)))
-                        new_max = max(MIN_CHAR_COUNT, min(MAX_CHAR_COUNT, round(char_max * scale)))
-                        if new_min >= new_max:
-                            new_max = new_min + 10
-                        if (new_min, new_max) == (char_min, char_max):
-                            print(f"→ 語音總長度{direction}，但目標字數範圍已經在{MIN_CHAR_COUNT}~{MAX_CHAR_COUNT}字的邊界，不重試")
-                            break
-                        char_min, char_max = new_min, new_max
+                        actual_chars = sum(len(s) for s in sentences)
+                        target_chars = round(actual_chars * scale)
+                        char_min = max(MIN_CHAR_COUNT, min(MAX_CHAR_COUNT, target_chars - 5))
+                        char_max = max(MIN_CHAR_COUNT, min(MAX_CHAR_COUNT, target_chars + 5))
+                        if char_min >= char_max:
+                            char_max = char_min + 10
+                        print(f"→ 語音總長度{direction}（目標{TARGET_MIN_DURATION_SEC:.0f}~{TARGET_MAX_DURATION_SEC:.0f}秒，"
+                              f"實際{total_audio_duration:.1f}秒，目前文案{actual_chars}字），"
+                              f"改為壓縮到{char_min}~{char_max}字（第{retry_attempt}次調整）…")
+                        retry_sentences = compress_ai_sentences(folder, sentences, char_min, char_max)
+                        retry_hashtags = hashtags  # 壓縮不重新生成標籤，沿用壓縮前那份
+                    elif used_ai and not too_long and generate_ai_sentences:
+                        target_mid = (TARGET_MIN_DURATION_SEC + TARGET_MAX_DURATION_SEC) / 2
+                        scale = target_mid / total_audio_duration if total_audio_duration > 0 else 1.0
+                        actual_chars = sum(len(s) for s in sentences)
+                        char_min = max(MIN_CHAR_COUNT, min(MAX_CHAR_COUNT, round(actual_chars * scale) - 5))
+                        char_max = max(MIN_CHAR_COUNT, min(MAX_CHAR_COUNT, round(actual_chars * scale) + 5))
+                        if char_min >= char_max:
+                            char_max = char_min + 10
                         print(f"→ 語音總長度{direction}（目標{TARGET_MIN_DURATION_SEC:.0f}~{TARGET_MAX_DURATION_SEC:.0f}秒，"
                               f"實際{total_audio_duration:.1f}秒），改為目標{char_min}~{char_max}字重新產生文案（第{retry_attempt}次調整）…")
                         try:
@@ -760,7 +799,7 @@ def process_folder(folder: str, force: bool = False, step_callback=None) -> dict
                         except Exception as e:
                             print(f"⚠ 重新呼叫AI文案發生未預期錯誤（{e.__class__.__name__}），維持原本文案")
                     elif not used_ai:
-                        delta = 1 if total_audio_duration < TARGET_MIN_DURATION_SEC else -1
+                        delta = 1 if not too_long else -1
                         new_count = max(MIN_SENTENCE_COUNT, min(MAX_SENTENCE_COUNT, len(sentences) + delta))
                         if new_count == len(sentences):
                             print(f"→ 語音總長度{direction}，但句數已經在{MIN_SENTENCE_COUNT}~{MAX_SENTENCE_COUNT}句的邊界，不重試")
@@ -835,10 +874,47 @@ def process_folder(folder: str, force: bool = False, step_callback=None) -> dict
                 target_total_duration=target_total_duration,
             )
         report_step("影片運鏡生成中")
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        print(f"→ 實際解析到的ffmpeg路徑：{shutil.which('ffmpeg')}")
+        try:
+            version_check = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True, timeout=10)
+            print(f"→ 該ffmpeg版本資訊第一行：{version_check.stdout.splitlines()[0] if version_check.stdout else '(無輸出)'}")
+        except Exception as e:
+            print(f"→ 版本檢查本身也失敗：{e.__class__.__name__}: {e}")
+        print(f"→ 實際執行的ffmpeg指令：\n{' '.join(cmd)}")
+        # 【2026-09-01修正】原本用capture_output=True（stdout/stderr導向管線pipe）
+        # 呼叫ffmpeg，筆電（Windows）端實測發現：同樣的指令手動在終端機（console）
+        # 執行完全正常，但透過Python subprocess（輸出被導向pipe、不是console）
+        # 呼叫卻會無聲無息地崩潰——exit code 3221225477（0xC0000005，Windows的
+        # 記憶體存取違規代碼，等同Linux的segfault），stderr完全沒有任何內容，
+        # 連版本橫幅都沒印出來，代表崩潰發生在非常早期。手機Termux上完全沒有
+        # 這個問題（pipe在Linux上運作正常），研判是這個Windows ffmpeg build在
+        # 輸出目標是pipe時有相容性問題。改成讓ffmpeg的輸出直接寫進暫存檔案
+        # （不是pipe、也不是console，是第三種I/O型態），完全繞開這個有問題的
+        # 路徑，兩邊平台都適用、不用另外用if os.name判斷分岔處理。
+        stdout_path = os.path.join(tmp_dir, "ffmpeg_stdout.log")
+        stderr_path = os.path.join(tmp_dir, "ffmpeg_stderr.log")
+        with open(stdout_path, "w", encoding="utf-8", errors="replace") as out_f, \
+                open(stderr_path, "w", encoding="utf-8", errors="replace") as err_f:
+            # 【2026-09-01新增】stdin=subprocess.DEVNULL：ffmpeg是互動式主控台
+            # 程式，預設會嘗試監聽鍵盤輸入（畫面上"Press [q] to stop"那行）。
+            # 手動在終端機執行時stdin接的是真正鍵盤，但透過Python subprocess
+            # 從背景服務呼叫時，不明確指定stdin會繼承一個來路不明、可能無效的
+            # 控制代碼——這是Windows上有文件記載的一類問題：主控台程式拿到無效
+            # stdin控制代碼、又試圖偵測鍵盤輸入時可能直接崩潰。明確給它
+            # DEVNULL（一個定義明確的「沒有輸入」狀態），讓它不用猜stdin
+            # 到底連到哪裡。
+            returncode = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=out_f, stderr=err_f).returncode
+        with open(stderr_path, "r", encoding="utf-8", errors="replace") as f:
+            stderr_content = f.read()
+
+        class _FfmpegResult:
+            pass
+        result = _FfmpegResult()
+        result.returncode = returncode
+        result.stderr = stderr_content
 
     if result.returncode != 0:
-        return {"status": "error", "message": result.stderr[-1000:], "output_path": None}
+        return {"status": "error", "message": f"[exit code {result.returncode}] {result.stderr[-1000:]}", "output_path": None}
 
     # 過去這裡完全忽略stderr內容——只要returncode是0（正常結束）就直接視為成功。
     # 但根因排查發現：ffmpeg exit code正常、檔案也寫得完整，不代表內容一定沒問題
