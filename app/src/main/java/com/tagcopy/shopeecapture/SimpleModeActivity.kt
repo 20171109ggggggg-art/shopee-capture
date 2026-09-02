@@ -693,16 +693,7 @@ private suspend fun runAutoSelectAndEditPipeline(
 
 @Composable
 private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
-    var termuxGranted by remember {
-        mutableStateOf(
-            androidx.core.content.ContextCompat.checkSelfPermission(
-                context, "com.termux.permission.RUN_COMMAND"
-            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-        )
-    }
-    val permissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        contract = androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
-    ) { granted -> termuxGranted = granted }
+    var serverConfigured by remember { mutableStateOf(ServerPrefs.isConfigured(context)) }
 
     val captionQueueDir = File(
         Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
@@ -773,6 +764,10 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                     ),
                     initialProgress
                 )
+                initialProgress?.status == "error_laptop_unreachable" -> context.getString(
+                    R.string.simple_generate_laptop_unreachable,
+                    initialProgress.completed, initialProgress.total
+                )
                 else -> null
             }
         )
@@ -809,6 +804,13 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                             R.string.simple_generate_stopped, p.okCount, p.skippedCount, p.errorCount
                         ),
                         p
+                    )
+                    isRunning = false
+                    stopRequested = false
+                }
+                p?.status == "error_laptop_unreachable" -> {
+                    resultText = context.getString(
+                        R.string.simple_generate_laptop_unreachable, p.completed, p.total
                     )
                     isRunning = false
                     stopRequested = false
@@ -870,19 +872,14 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
             }
             Spacer(Modifier.height(20.dp))
 
-            if (!termuxGranted) {
-                WarningBanner(stringResource(R.string.simple_need_termux_permission))
+            if (!serverConfigured) {
+                WarningBanner(stringResource(R.string.simple_no_server))
                 Spacer(Modifier.height(12.dp))
                 BigActionButton(
-                    text = stringResource(R.string.simple_grant_termux_permission),
+                    text = stringResource(R.string.simple_go_to_settings),
                     color = SimpleInk,
-                    onClick = { permissionLauncher.launch("com.termux.permission.RUN_COMMAND") }
+                    onClick = { context.startActivity(Intent(context, MainActivity::class.java)) }
                 )
-                Spacer(Modifier.height(16.dp))
-            }
-
-            if (!TermuxRunner.isTermuxInstalled(context)) {
-                WarningBanner(stringResource(R.string.simple_no_termux))
                 Spacer(Modifier.height(16.dp))
             }
 
@@ -893,7 +890,7 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                     else -> stringResource(R.string.simple_start_generate)
                 },
                 color = SimpleInk,
-                enabled = termuxGranted && !isRunning && !isPreparing && TermuxRunner.isTermuxInstalled(context) && selectedIds.isNotEmpty(),
+                enabled = serverConfigured && !isRunning && !isPreparing && selectedIds.isNotEmpty(),
                 onClick = {
                     resultText = null
                     progress = null
@@ -945,11 +942,12 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                         // 最後幾行——如果最後一行剛好停在某支影片處理到一半、後面就完全沒有
                         // 任何輸出，那就是被系統砍掉的鐵證（正常結束/正常錯誤都會印出對應
                         // 訊息，不會憑空消失）。
-                        val sent = TermuxRunner.runCommand(
-                            context,
-                            "cd ~/shopee-capture && python -u batch_generate.py ~/storage/downloads/CaptionQueue " +
-                                "> ~/storage/downloads/batch_generate_last_run.log 2>&1"
-                        )
+                        val sent = try {
+                            RemoteVideoGenService.start(context, captionQueueDir, readyIds.toSet(), force = false)
+                            true
+                        } catch (e: Exception) {
+                            false
+                        }
                         if (sent) {
                             isRunning = true
                         } else {

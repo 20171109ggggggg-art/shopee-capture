@@ -159,6 +159,10 @@ fun RootScreen() {
 
         Spacer(Modifier.height(20.dp))
 
+        ServerSettingsCard(context)
+
+        Spacer(Modifier.height(20.dp))
+
         RestrictedSettingsStepCard(
             confirmed = restrictedSettingsConfirmed,
             onOpenSettings = {
@@ -424,6 +428,47 @@ fun AccountSettingsCard(context: android.content.Context) {
             modifier = Modifier.fillMaxWidth().height(48.dp)
         ) {
             Text(stringResource(R.string.btn_save_account), fontSize = 15.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@Composable
+fun ServerSettingsCard(context: android.content.Context) {
+    var urlText by remember { mutableStateOf(ServerPrefs.getServerUrl(context)) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White)
+            .padding(16.dp)
+    ) {
+        Text(stringResource(R.string.server_title), fontSize = 15.sp, fontWeight = FontWeight.Bold, color = InkColor)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            stringResource(R.string.server_desc),
+            fontSize = 12.sp, color = MutedColor, lineHeight = 17.sp
+        )
+        Spacer(Modifier.height(12.dp))
+        OutlinedTextField(
+            value = urlText,
+            onValueChange = { urlText = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text(stringResource(R.string.server_hint)) },
+            shape = RoundedCornerShape(0.dp)
+        )
+        Spacer(Modifier.height(12.dp))
+        Button(
+            onClick = {
+                ServerPrefs.setServerUrl(context, urlText)
+                urlText = ServerPrefs.getServerUrl(context)
+                Toast.makeText(context, context.getString(R.string.toast_server_saved), Toast.LENGTH_SHORT).show()
+            },
+            colors = ButtonDefaults.buttonColors(containerColor = InkColor),
+            shape = RoundedCornerShape(0.dp),
+            modifier = Modifier.fillMaxWidth().height(48.dp)
+        ) {
+            Text(stringResource(R.string.btn_save_server), fontSize = 15.sp, fontWeight = FontWeight.Bold)
         }
     }
 }

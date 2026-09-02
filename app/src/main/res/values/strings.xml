@@ -173,6 +173,8 @@
     <string name="simple_need_termux_permission">需要先授權背景執行權限（第一次使用才需要）</string>
     <string name="simple_grant_termux_permission">授權背景執行權限</string>
     <string name="simple_no_termux">找不到背景執行環境，請聯絡協助你設定的人</string>
+    <string name="simple_no_server">尚未設定筆電生成伺服器網址，請到「進階設定」填寫</string>
+    <string name="simple_go_to_settings">前往進階設定</string>
     <string name="simple_generating">生成中…</string>
     <string name="simple_start_generate">開始生成影片</string>
     <string name="simple_generate_start_failed">啟動失敗，請聯絡協助你設定的人</string>
@@ -183,6 +185,17 @@
     <string name="simple_stop_requested">已送出停止指令，將在目前這支影片完成後停止…</string>
     <string name="simple_generate_stopped">已停止。這次共完成 %1$d 支／跳過 %2$d 支／失敗 %3$d 支</string>
     <string name="simple_generate_stale">上次執行似乎異常中斷（進度卡在 %1$d／%2$d，超過 %3$d 分鐘沒更新），請重新按「開始生成影片」</string>
+    <string name="simple_generate_laptop_unreachable">連不上筆電服務，批次已中止（已完成 %1$d／%2$d）。請確認筆電是否開機、筆電端服務(main.py)是否正在執行，或檢查「進階設定」裡的伺服器網址是否正確</string>
+
+    <string name="remote_gen_notification_channel">影片生成</string>
+    <string name="remote_gen_notification_title">正在生成影片</string>
+    <string name="remote_gen_notification_preparing">準備開始生成…</string>
+
+    <string name="server_title">筆電生成伺服器</string>
+    <string name="server_desc">生成影片時會把商品資料打包上傳到這個網址處理，完成後把影片傳回來。請填筆電的Tailscale位址，例如 http://100.98.87.55:8000</string>
+    <string name="server_hint">http://100.98.87.55:8000</string>
+    <string name="btn_save_server">儲存網址</string>
+    <string name="toast_server_saved">已儲存 ✓</string>
     <string name="simple_generate_elapsed">耗時 %1$d 分 %2$d 秒</string>
     <string name="simple_generate_ok_list_header">本次新生成（%1$d 支）：</string>
     <string name="simple_generate_skipped_list_header">跳過（已有影片，未重新生成，%1$d 支）：</string>

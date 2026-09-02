@@ -16,6 +16,7 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
@@ -86,6 +87,15 @@
             android:name=".FloatingButtonService"
             android:exported="false"
             android:foregroundServiceType="specialUse" />
+
+        <!-- 【2026-09-02新增】App直接呼叫筆電端FastAPI服務生成影片用的前景服務，
+             取代舊版透過Termux執行的做法（見RemoteVideoGenerator.kt/RemoteVideoGenService.kt）。
+             foregroundServiceType="dataSync"對應「上傳/下載資料」這類用途，是Android
+             官方建議給這種網路資料同步工作使用的分類。 -->
+        <service
+            android:name=".RemoteVideoGenService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <receiver
             android:name=".TermuxResultReceiver"
