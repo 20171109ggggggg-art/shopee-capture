@@ -4501,6 +4501,10 @@ class ShopeeAccessibilityService : AccessibilityService() {
             // 這裡先做好判斷邏輯，之後真的要支援菲律賓時不用回頭改資料結構。
             // 判斷不出來（例如套件名稱讀不到）就預設TW，跟Python端make_video.py的load_region()預設值一致。
             put("region", currentRegionFromPackage())
+            // 【2026-09-02新增】擷取當下設定畫面裡「目前使用帳號」的值一併記錄，供之後
+            // 影片生成／電腦端備份依帳號分類（見AccountPrefs.kt）。一支手機可能切換使用
+            // 多個蝦皮帳號，帳號因此跟著每一次擷取的商品資料走，不是手機層級的固定值。
+            put("account", AccountPrefs.getAccount(this))
             // 這兩個狀態欄位由擷取器初始化成「尚未完成」，實際完成時間由後續流程回寫：
             // videoGeneratedAt 由 make_video.py 生成影片成功後回寫時間戳記；
             // shopeePosted 由未來的上架自動化流程在成功上架後改成 true。

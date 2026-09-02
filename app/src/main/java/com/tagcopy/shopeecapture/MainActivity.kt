@@ -155,6 +155,10 @@ fun RootScreen() {
 
         Spacer(Modifier.height(20.dp))
 
+        AccountSettingsCard(context)
+
+        Spacer(Modifier.height(20.dp))
+
         RestrictedSettingsStepCard(
             confirmed = restrictedSettingsConfirmed,
             onOpenSettings = {
@@ -380,6 +384,47 @@ fun RegionSettingsCard(context: android.content.Context) {
                 RegionPrefs.setRegion(context, region)
             }
         )
+    }
+}
+
+@Composable
+fun AccountSettingsCard(context: android.content.Context) {
+    var accountText by remember { mutableStateOf(AccountPrefs.getAccount(context)) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White)
+            .padding(16.dp)
+    ) {
+        Text(stringResource(R.string.account_title), fontSize = 15.sp, fontWeight = FontWeight.Bold, color = InkColor)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            stringResource(R.string.account_desc),
+            fontSize = 12.sp, color = MutedColor, lineHeight = 17.sp
+        )
+        Spacer(Modifier.height(12.dp))
+        OutlinedTextField(
+            value = accountText,
+            onValueChange = { accountText = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text(stringResource(R.string.account_hint)) },
+            shape = RoundedCornerShape(0.dp)
+        )
+        Spacer(Modifier.height(12.dp))
+        Button(
+            onClick = {
+                AccountPrefs.setAccount(context, accountText)
+                accountText = AccountPrefs.getAccount(context)
+                Toast.makeText(context, context.getString(R.string.toast_account_saved), Toast.LENGTH_SHORT).show()
+            },
+            colors = ButtonDefaults.buttonColors(containerColor = InkColor),
+            shape = RoundedCornerShape(0.dp),
+            modifier = Modifier.fillMaxWidth().height(48.dp)
+        ) {
+            Text(stringResource(R.string.btn_save_account), fontSize = 15.sp, fontWeight = FontWeight.Bold)
+        }
     }
 }
 
