@@ -134,17 +134,15 @@ private fun SimpleHomeScreen(context: Context, onNavigate: (SimpleScreen) -> Uni
             onClick = { onNavigate(SimpleScreen.UPLOAD) }
         )
 
-        Spacer(Modifier.height(40.dp))
-        Text(
-            stringResource(R.string.simple_advanced_settings),
-            fontSize = 13.sp,
+        Spacer(Modifier.height(14.dp))
+        HomeActionCard(
+            step = "5",
+            title = stringResource(R.string.simple_advanced_settings),
+            desc = stringResource(R.string.simple_step5_desc),
             color = SimpleMuted,
-            modifier = Modifier
-                .align(Alignment.End)
-                .clickable {
-                    context.startActivity(Intent(context, MainActivity::class.java))
-                }
+            onClick = { context.startActivity(Intent(context, MainActivity::class.java)) }
         )
+
         Spacer(Modifier.height(20.dp))
     }
 }

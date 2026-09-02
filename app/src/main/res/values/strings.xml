@@ -157,6 +157,7 @@
     <string name="simple_step4_title">開始上架</string>
     <string name="simple_step4_desc">自動把影片發佈到蝦皮短影音</string>
     <string name="simple_advanced_settings">進階設定</string>
+    <string name="simple_step5_desc">帳號、地區、API金鑰等進階選項</string>
     <string name="simple_back">返回</string>
 
     <string name="simple_capture_instr_1">1. 按下面的按鈕開啟蝦皮App</string>
