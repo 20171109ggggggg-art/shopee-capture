@@ -35,8 +35,15 @@
          allow-external-apps=true（一次性設定），且Termux App本身要是已安裝、允許背景執行的狀態。 -->
     <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
 
+    <!-- 【2026-09-03新增】usesCleartextTraffic="true"：Android 9(API 28)起，App預設
+         禁止發送明文HTTP流量（只能連HTTPS），否則OkHttp對筆電服務（http://）的請求
+         會在系統層級就被擋掉，出現連線失敗但瀏覽器/curl測同一網址卻正常的落差
+         （瀏覽器有自己的例外，不受App自己的網路安全設定檔限制）。這裡明確允許，
+         是因為這個App只會連使用者自己架設的Tailscale私人網路內服務，不會連外部
+         不受信任的網站，不加密HTTP在這個情境下風險可接受。 -->
     <application
         android:allowBackup="true"
+        android:usesCleartextTraffic="true"
         android:label="蝦皮擷取器"
         android:icon="@mipmap/ic_launcher"
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
