@@ -552,7 +552,9 @@ fun RegionSettingsCard(context: android.content.Context) {
 
 @Composable
 fun AccountSettingsCard(context: android.content.Context) {
-    var accountText by remember { mutableStateOf(AccountPrefs.getAccount(context)) }
+    var accountText by remember {
+        mutableStateOf(if (AccountPrefs.isSet(context)) AccountPrefs.getAccount(context) else "")
+    }
     var history by remember { mutableStateOf(AccountPrefs.getAccountHistory(context)) }
     val scope = rememberCoroutineScope()
     var restoring by remember { mutableStateOf(false) }

@@ -459,9 +459,12 @@ object RemoteVideoGenerator {
     }
 
     /**
-     * 【2026-09-03新增】把AI選圖+改圖完成的圖片（最多3張）連同商品名稱同步到筆電的
-     * 共用資料夾，讓之後其他帳號擷取到同一個商品時可以重複利用這幾張圖，不用整套
-     * 辨識/改圖流程重跑一次（省時間也省Gemini API費用）。
+     * 【2026-09-03新增，同日補上依地區分開】把AI選圖+改圖完成的圖片（最多3張）連同
+     * 商品名稱同步到筆電的共用資料夾，讓之後其他帳號擷取到同一個商品時可以重複利用
+     * 這幾張圖，不用整套辨識/改圖流程重跑一次（省時間也省Gemini API費用）。
+     *
+     * 依地區（TW/PH）分開存放——台灣跟菲律賓賣的是完全不同的商品目錄，共用資料夾
+     * 不該把兩邊混在一起比對。
      *
      * 目前用「商品名稱」當作分類依據——還沒有比對「這是不是同一個商品」更可靠的方式
      * （例如連結裡的商品編號，這個方式還沒驗證過準不準），所以這步只負責把圖存到
@@ -474,6 +477,7 @@ object RemoteVideoGenerator {
     suspend fun uploadSharedProductImages(
         context: Context,
         account: String,
+        region: String,
         productName: String,
         images: List<File>
     ): Unit = withContext(Dispatchers.IO) {
@@ -484,6 +488,7 @@ object RemoteVideoGenerator {
         val bodyBuilder = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
             .addFormDataPart("account", account)
+            .addFormDataPart("region", region)
             .addFormDataPart("product_name", productName)
 
         images.forEachIndexed { index, file ->

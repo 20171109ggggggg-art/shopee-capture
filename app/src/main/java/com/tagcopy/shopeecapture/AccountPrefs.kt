@@ -28,6 +28,15 @@ object AccountPrefs {
         return value.ifBlank { DEFAULT_ACCOUNT }
     }
 
+    /** 【2026-09-03新增】使用者是不是「真的手動存過帳號」，跟getAccount()不一樣——
+     * getAccount()一律回傳一個可用的值（沒設定過就回傳DEFAULT_ACCOUNT，供擷取/備份
+     * 等功能性用途使用，不能是空字串）。這個函式純粹給UI判斷「輸入框該不該顯示
+     * 預設文字」用：全新安裝、從來沒按過「儲存帳號」時，輸入框應該顯示空白，
+     * 讓使用者能直接輸入，不用先手動刪掉「未分類帳號」這幾個字。 */
+    fun isSet(context: Context): Boolean {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).contains(KEY_ACCOUNT)
+    }
+
     /** 設定目前使用帳號，同時把這個名稱加進歷史清單最前面（如果已經在清單裡就
      * 先移除舊位置再插到最前面，避免同一個帳號在清單裡重複出現）。歷史清單只留
      * 最近MAX_HISTORY個，超過的自動從尾端捨棄。 */

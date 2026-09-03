@@ -702,9 +702,15 @@ private suspend fun runAutoSelectAndEditPipeline(
         if (justSelected && ServerPrefs.isConfigured(context)) {
             onStatus("$progressPrefix：同步共用資料夾")
             try {
+                val region = try {
+                    JSONObject(File(product.folder, "meta.json").readText()).optString("region", "TW")
+                } catch (e: Exception) {
+                    "TW"
+                }
                 RemoteVideoGenerator.uploadSharedProductImages(
                     context = context,
                     account = AccountPrefs.getAccount(context),
+                    region = region,
                     productName = product.productName ?: product.folder.name,
                     images = currentImages.filter { it.exists() }
                 )
