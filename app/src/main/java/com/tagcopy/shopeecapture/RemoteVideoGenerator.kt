@@ -10,7 +10,6 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
@@ -269,35 +268,116 @@ object RemoteVideoGenerator {
     }
 
     /** 把手機的永久擷取歷史記錄檔案（Download/CaptureHistory/captured_history.jsonl，
-     * 見ShopeeAccessibilityService.getCaptureHistoryFile()）同步備份一份到筆電。這份
-     * 檔案是手機上所有蝦皮帳號共用的單一紀錄，不屬於特定帳號，備份失敗只記錄警告，
-     * 不影響本次批次已經完成的結果。 */
+     * 見ShopeeAccessibilityService.getCaptureHistoryFile()）依每筆紀錄自己的account
+     * 欄位分組，同一帳號的紀錄各自組成一份內容分開呼叫/backup-dedup備份——這樣筆電
+     * 端才能依帳號分開存放，不會混成一份誰也分不清楚內容的檔案。缺account欄位的
+     * 舊資料歸到AccountPrefs.DEFAULT_ACCOUNT。備份失敗只記錄警告，不影響本次批次
+     * 已經完成的結果。 */
     private fun backupDedupHistory(serverUrl: String) {
         val historyFile = File(
             Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
             "CaptureHistory/captured_history.jsonl"
         )
         if (!historyFile.isFile) return
+
+        val byAccount = linkedMapOf<String, StringBuilder>()
         try {
-            val requestBody = MultipartBody.Builder()
-                .setType(MultipartBody.FORM)
-                .addFormDataPart(
-                    "history_file", "captured_history.jsonl",
-                    historyFile.asRequestBody("application/octet-stream".toMediaType())
-                )
-                .build()
-            val request = Request.Builder()
-                .url("$serverUrl/backup-dedup")
-                .post(requestBody)
-                .build()
-            client.newCall(request).execute().use { resp ->
-                if (!resp.isSuccessful) {
-                    Log.w("RemoteVideoGenerator", "防重複資料庫備份失敗：HTTP ${resp.code}")
+            historyFile.forEachLine { line ->
+                if (line.isBlank()) return@forEachLine
+                val account = try {
+                    JSONObject(line).optString("account", "").ifBlank { AccountPrefs.DEFAULT_ACCOUNT }
+                } catch (e: Exception) {
+                    AccountPrefs.DEFAULT_ACCOUNT
                 }
+                byAccount.getOrPut(account) { StringBuilder() }.append(line).append("\n")
             }
         } catch (e: Exception) {
-            Log.w("RemoteVideoGenerator", "防重複資料庫備份失敗：${e.javaClass.simpleName} ${e.message}")
+            Log.w("RemoteVideoGenerator", "讀取防重複資料庫失敗：${e.javaClass.simpleName} ${e.message}")
+            return
         }
+
+        for ((account, content) in byAccount) {
+            try {
+                val requestBody = MultipartBody.Builder()
+                    .setType(MultipartBody.FORM)
+                    .addFormDataPart("account", account)
+                    .addFormDataPart(
+                        "history_file", "captured_history.jsonl",
+                        content.toString().toRequestBody("application/octet-stream".toMediaType())
+                    )
+                    .build()
+                val request = Request.Builder()
+                    .url("$serverUrl/backup-dedup")
+                    .post(requestBody)
+                    .build()
+                client.newCall(request).execute().use { resp ->
+                    if (!resp.isSuccessful) {
+                        Log.w("RemoteVideoGenerator", "防重複資料庫備份失敗（帳號=$account）：HTTP ${resp.code}")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("RemoteVideoGenerator", "防重複資料庫備份失敗（帳號=$account）：${e.javaClass.simpleName} ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * 【2026-09-02新增】把指定帳號在筆電上備份過的防重複資料庫抓回來，合併寫回手機
+     * 本地檔案。用「合併」而不是直接覆蓋，是因為手機本地檔案可能還留著其他帳號的
+     * 紀錄，整份覆蓋會把那些紀錄弄丟；合併時用每行文字本身去重，避免同一批紀錄
+     * 重複寫入。回傳實際還原了幾筆新紀錄，供UI顯示結果。找不到該帳號的備份、或
+     * 連線失敗都會丟例外，由呼叫端（UI層）自行捕捉並顯示訊息。
+     */
+    suspend fun restoreDedupHistory(context: Context, account: String): Int = withContext(Dispatchers.IO) {
+        val serverUrl = ServerPrefs.getServerUrl(context)
+        if (serverUrl.isBlank()) throw IllegalStateException("尚未設定筆電生成伺服器網址")
+
+        val request = Request.Builder()
+            .url("$serverUrl/restore-dedup?account=${java.net.URLEncoder.encode(account, "UTF-8")}")
+            .get()
+            .build()
+
+        val response = try {
+            client.newCall(request).execute()
+        } catch (e: IOException) {
+            throw ServerUnreachableException("連線筆電服務失敗（$serverUrl）：${e.javaClass.simpleName} ${e.message}")
+        }
+
+        val remoteText = response.use { resp ->
+            if (!resp.isSuccessful) {
+                val detail = try {
+                    val text = resp.body?.string()
+                    if (text.isNullOrBlank()) "HTTP ${resp.code}"
+                    else JSONObject(text).optString("message", text.take(200))
+                } catch (e: Exception) {
+                    "HTTP ${resp.code}"
+                }
+                throw IOException(detail)
+            }
+            resp.body?.string() ?: ""
+        }
+
+        val historyFile = File(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+            "CaptureHistory/captured_history.jsonl"
+        )
+        historyFile.parentFile?.mkdirs()
+
+        val existingLines = if (historyFile.isFile) historyFile.readLines().toMutableSet() else mutableSetOf()
+        var addedCount = 0
+        val toAppend = StringBuilder()
+        remoteText.lineSequence().forEach { line ->
+            if (line.isBlank()) return@forEach
+            if (line !in existingLines) {
+                toAppend.append(line).append("\n")
+                existingLines.add(line)
+                addedCount++
+            }
+        }
+        if (toAppend.isNotEmpty()) {
+            historyFile.appendText(toAppend.toString())
+        }
+        addedCount
     }
 
     /** 把進度寫進<CaptionQueue根目錄>/.progress.json，欄位格式跟舊版batch_generate.py

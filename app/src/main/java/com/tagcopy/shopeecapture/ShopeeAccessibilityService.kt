@@ -3774,6 +3774,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
                     val json = org.json.JSONObject(metaFile.readText())
                     val name = json.optString("productName", "").takeIf { it.isNotBlank() && it != "未知" }
                     val link = json.optString("promoLink", "").takeIf { it.isNotBlank() }
+                    val account = json.optString("account", "").takeIf { it.isNotBlank() } ?: AccountPrefs.DEFAULT_ACCOUNT
                     name?.let { existingNames.add(it) }
                     link?.let { existingLinks.add(it) }
 
@@ -3785,6 +3786,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
                             put("link", link ?: "")
                             put("capturedAt", System.currentTimeMillis())
                             put("backfilled", true)
+                            put("account", account)
                         }
                         backfillLines.append(record.toString()).append("\n")
                         name?.let { namesInHistory.add(it) }
@@ -3853,6 +3855,9 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 put("name", name ?: "")
                 put("link", link ?: "")
                 put("capturedAt", System.currentTimeMillis())
+                // 【2026-09-02新增】記錄擷取當下是哪個帳號，讓防重複資料庫備份/還原時
+                // 能依帳號分開處理（不同帳號各自的擷取記憶分開存，互不影響）。
+                put("account", AccountPrefs.getAccount(this@ShopeeAccessibilityService))
             }
             getCaptureHistoryFile().appendText(record.toString() + "\n")
         } catch (e: Exception) {

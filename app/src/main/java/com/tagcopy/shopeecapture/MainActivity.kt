@@ -30,6 +30,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import java.io.File
+import kotlinx.coroutines.launch
 import org.json.JSONObject
 
 private val InkColor = Color(0xFF1C2331)
@@ -136,6 +137,17 @@ fun RootScreen() {
         queueItems = loadQueueItems()
     }
 
+    // 【2026-09-02新增】把所有「必須完成」的權限步驟集中算一次還剩幾個沒做完，
+    // 在畫面最上面用一句話提醒使用者還要往下滑完成幾步，不用自己從頭數卡片、
+    // 也不用每次回來都重新確認哪些已經打勾——每個狀態變數本身已經會在從系統
+    // 設定頁切回來時（見上面的ON_RESUME）自動更新，這裡只是彙整成一個總覽數字。
+    // Termux相關的授權（termuxRunCommandGranted）不算進來，因為v1.026起「生成
+    // 影片」已經改成App直接呼叫筆電服務，不再需要Termux。
+    val remainingStepsCount = listOf(
+        accessibilityEnabled, overlayGranted, mediaPermissionGranted,
+        allFilesAccessGranted, notificationPermissionGranted, restrictedSettingsConfirmed
+    ).count { !it }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -149,7 +161,20 @@ fun RootScreen() {
             stringResource(R.string.app_subtitle),
             fontSize = 13.sp, color = MutedColor, lineHeight = 19.sp
         )
+
+        if (remainingStepsCount > 0) {
+            Spacer(Modifier.height(10.dp))
+            Text(
+                stringResource(R.string.setup_steps_remaining, remainingStepsCount),
+                fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = AccentColor
+            )
+        }
+
         Spacer(Modifier.height(28.dp))
+
+        SettingsExportImportCard(context)
+
+        Spacer(Modifier.height(20.dp))
 
         RegionSettingsCard(context)
 
@@ -364,6 +389,82 @@ fun FlowRowChips(options: List<String>, selected: String, onSelect: (String) -> 
 }
 
 @Composable
+fun SettingsExportImportCard(context: android.content.Context) {
+    val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+        as android.content.ClipboardManager
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White)
+            .padding(16.dp)
+    ) {
+        Text(stringResource(R.string.settings_export_title), fontSize = 15.sp, fontWeight = FontWeight.Bold, color = InkColor)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            stringResource(R.string.settings_export_desc),
+            fontSize = 12.sp, color = MutedColor, lineHeight = 17.sp
+        )
+        Spacer(Modifier.height(12.dp))
+        Row(modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(
+                onClick = {
+                    val json = JSONObject().apply {
+                        put("account", AccountPrefs.getAccount(context))
+                        put("accountHistory", org.json.JSONArray(AccountPrefs.getAccountHistory(context)))
+                        put("region", RegionPrefs.getRegion(context).label)
+                        put("serverUrl", ServerPrefs.getServerUrl(context))
+                        put("geminiApiKey", GeminiApiPrefs.getApiKey(context))
+                        put("geminiEnabled", GeminiApiPrefs.isEnabled(context))
+                    }
+                    clipboard.setPrimaryClip(
+                        android.content.ClipData.newPlainText("shopee_capture_settings", json.toString())
+                    )
+                    Toast.makeText(context, context.getString(R.string.settings_export_done), Toast.LENGTH_SHORT).show()
+                },
+                shape = RoundedCornerShape(0.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(stringResource(R.string.btn_export_settings), fontSize = 13.sp)
+            }
+            Spacer(Modifier.width(10.dp))
+            Button(
+                onClick = {
+                    val clip = clipboard.primaryClip
+                    val text = if (clip != null && clip.itemCount > 0) clip.getItemAt(0).text?.toString() else null
+                    if (text.isNullOrBlank()) {
+                        Toast.makeText(context, context.getString(R.string.settings_import_empty), Toast.LENGTH_SHORT).show()
+                        return@Button
+                    }
+                    try {
+                        val json = JSONObject(text)
+                        json.optString("account", "").takeIf { it.isNotBlank() }
+                            ?.let { AccountPrefs.setAccount(context, it) }
+                        json.optString("region", "").takeIf { it.isNotBlank() }
+                            ?.let { RegionPrefs.setRegion(context, ShopeeRegion.fromLabel(it)) }
+                        json.optString("serverUrl", "").takeIf { it.isNotBlank() }
+                            ?.let { ServerPrefs.setServerUrl(context, it) }
+                        json.optString("geminiApiKey", "").takeIf { it.isNotBlank() }
+                            ?.let { GeminiApiPrefs.setApiKey(context, it) }
+                        if (json.has("geminiEnabled")) {
+                            GeminiApiPrefs.setEnabled(context, json.optBoolean("geminiEnabled", false))
+                        }
+                        Toast.makeText(context, context.getString(R.string.settings_import_done), Toast.LENGTH_LONG).show()
+                    } catch (e: Exception) {
+                        Toast.makeText(context, context.getString(R.string.settings_import_failed), Toast.LENGTH_SHORT).show()
+                    }
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = InkColor),
+                shape = RoundedCornerShape(0.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(stringResource(R.string.btn_import_settings), fontSize = 13.sp)
+            }
+        }
+    }
+}
+
+@Composable
 fun RegionSettingsCard(context: android.content.Context) {
     var region by remember { mutableStateOf(RegionPrefs.getRegion(context)) }
 
@@ -395,6 +496,8 @@ fun RegionSettingsCard(context: android.content.Context) {
 fun AccountSettingsCard(context: android.content.Context) {
     var accountText by remember { mutableStateOf(AccountPrefs.getAccount(context)) }
     var history by remember { mutableStateOf(AccountPrefs.getAccountHistory(context)) }
+    val scope = rememberCoroutineScope()
+    var restoring by remember { mutableStateOf(false) }
 
     fun saveAccount(value: String) {
         AccountPrefs.setAccount(context, value)
@@ -445,6 +548,46 @@ fun AccountSettingsCard(context: android.content.Context) {
                 options = history,
                 selected = accountText,
                 onSelect = { picked -> saveAccount(picked) }
+            )
+        }
+
+        // 【2026-09-02新增】新手機或資料遺失時，把這個帳號之前在筆電上備份過的
+        // 防重複資料庫抓回來合併還原，不用整支手機重新走一次擷取歷史。
+        Spacer(Modifier.height(14.dp))
+        OutlinedButton(
+            onClick = {
+                if (!ServerPrefs.isConfigured(context)) {
+                    Toast.makeText(context, context.getString(R.string.simple_no_server), Toast.LENGTH_SHORT).show()
+                    return@OutlinedButton
+                }
+                restoring = true
+                scope.launch {
+                    try {
+                        val count = RemoteVideoGenerator.restoreDedupHistory(context, accountText)
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.account_restore_done, count),
+                            Toast.LENGTH_LONG
+                        ).show()
+                    } catch (e: Exception) {
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.account_restore_failed, e.message ?: ""),
+                            Toast.LENGTH_LONG
+                        ).show()
+                    } finally {
+                        restoring = false
+                    }
+                }
+            },
+            enabled = !restoring,
+            shape = RoundedCornerShape(0.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                if (restoring) stringResource(R.string.account_restoring)
+                else stringResource(R.string.account_restore_button),
+                fontSize = 14.sp
             )
         }
     }

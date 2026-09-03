@@ -49,6 +49,10 @@
     <string name="account_desc">擷取商品時會把這個帳號名稱一併記錄下來，之後影片生成與電腦端備份會依照這個帳號分類。切換蝦皮帳號時記得回來這裡更新</string>
     <string name="account_hint">輸入帳號名稱</string>
     <string name="account_history_label">之前用過的帳號（點選快速切換）</string>
+    <string name="account_restore_button">從筆電還原此帳號的防重複資料庫</string>
+    <string name="account_restoring">還原中…</string>
+    <string name="account_restore_done">已還原 %1$d 筆新的擷取記錄</string>
+    <string name="account_restore_failed">還原失敗：%1$s</string>
     <string name="btn_save_account">儲存帳號</string>
     <string name="toast_account_saved">已儲存 ✓</string>
 
@@ -197,6 +201,17 @@
     <string name="server_hint">http://100.98.87.55:8000</string>
     <string name="btn_save_server">儲存網址</string>
     <string name="toast_server_saved">已儲存 ✓</string>
+
+    <string name="settings_export_title">匯出／匯入設定</string>
+    <string name="settings_export_desc">把帳號、地區、筆電伺服器網址、Gemini API Key打包複製到剪貼簿；新手機裝好App後貼上即可一次套用所有設定，不用逐項重新輸入</string>
+    <string name="btn_export_settings">匯出到剪貼簿</string>
+    <string name="btn_import_settings">從剪貼簿匯入</string>
+    <string name="settings_export_done">設定已複製到剪貼簿</string>
+    <string name="settings_import_empty">剪貼簿是空的，請先在舊手機按「匯出到剪貼簿」</string>
+    <string name="settings_import_done">設定已套用</string>
+    <string name="settings_import_failed">匯入失敗，剪貼簿內容格式不正確</string>
+
+    <string name="setup_steps_remaining">還有 %1$d 個設定步驟未完成，往下滑完成 ↓</string>
     <string name="simple_generate_elapsed">耗時 %1$d 分 %2$d 秒</string>
     <string name="simple_generate_ok_list_header">本次新生成（%1$d 支）：</string>
     <string name="simple_generate_skipped_list_header">跳過（已有影片，未重新生成，%1$d 支）：</string>
