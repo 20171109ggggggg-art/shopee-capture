@@ -380,6 +380,83 @@ object RemoteVideoGenerator {
         addedCount
     }
 
+    /**
+     * 【2026-09-02新增】把App設定（帳號/地區/伺服器網址/Gemini Key等，由呼叫端
+     * 組好JSON字串傳進來）上傳到筆電依帳號存放，取代舊版剪貼簿匯出方式——不用
+     * 兩支手機同時在手邊複製貼上，新手機只要能連到這個筆電服務就能直接下載回去。
+     */
+    suspend fun uploadSettings(context: Context, account: String, settingsJson: String): Unit =
+        withContext(Dispatchers.IO) {
+            val serverUrl = ServerPrefs.getServerUrl(context)
+            if (serverUrl.isBlank()) throw IllegalStateException("尚未設定筆電生成伺服器網址")
+
+            val requestBody = MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart("account", account)
+                .addFormDataPart(
+                    "settings_file", "settings.json",
+                    settingsJson.toRequestBody("application/json".toMediaType())
+                )
+                .build()
+            val request = Request.Builder()
+                .url("$serverUrl/backup-settings")
+                .post(requestBody)
+                .build()
+
+            val response = try {
+                client.newCall(request).execute()
+            } catch (e: IOException) {
+                throw ServerUnreachableException("連線筆電服務失敗（$serverUrl）：${e.javaClass.simpleName} ${e.message}")
+            }
+            response.use { resp ->
+                if (!resp.isSuccessful) {
+                    val detail = try {
+                        val text = resp.body?.string()
+                        if (text.isNullOrBlank()) "HTTP ${resp.code}"
+                        else JSONObject(text).optString("message", text.take(200))
+                    } catch (e: Exception) {
+                        "HTTP ${resp.code}"
+                    }
+                    throw IOException(detail)
+                }
+            }
+        }
+
+    /**
+     * 【2026-09-02新增】把指定帳號在筆電上備份過的設定抓回來，回傳原始JSON字串，
+     * 由呼叫端（UI層）自行解析並套用到各個Prefs。找不到備份、連線失敗都會丟例外，
+     * 由呼叫端捕捉並顯示訊息。
+     */
+    suspend fun downloadSettings(context: Context, account: String): String = withContext(Dispatchers.IO) {
+        val serverUrl = ServerPrefs.getServerUrl(context)
+        if (serverUrl.isBlank()) throw IllegalStateException("尚未設定筆電生成伺服器網址")
+
+        val request = Request.Builder()
+            .url("$serverUrl/restore-settings?account=${java.net.URLEncoder.encode(account, "UTF-8")}")
+            .get()
+            .build()
+
+        val response = try {
+            client.newCall(request).execute()
+        } catch (e: IOException) {
+            throw ServerUnreachableException("連線筆電服務失敗（$serverUrl）：${e.javaClass.simpleName} ${e.message}")
+        }
+
+        response.use { resp ->
+            if (!resp.isSuccessful) {
+                val detail = try {
+                    val text = resp.body?.string()
+                    if (text.isNullOrBlank()) "HTTP ${resp.code}"
+                    else JSONObject(text).optString("message", text.take(200))
+                } catch (e: Exception) {
+                    "HTTP ${resp.code}"
+                }
+                throw IOException(detail)
+            }
+            resp.body?.string() ?: throw IOException("筆電服務回應內容是空的")
+        }
+    }
+
     /** 把進度寫進<CaptionQueue根目錄>/.progress.json，欄位格式跟舊版batch_generate.py
      * 的write_progress()完全一致，供GenerateVideoScreen既有的輪詢邏輯讀取。 */
     private fun writeProgress(

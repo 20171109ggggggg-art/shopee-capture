@@ -93,19 +93,10 @@ fun RootScreen() {
         mediaPermissionGranted = granted
     }
 
-    // Termux的RUN_COMMAND權限是「dangerous」等級（跟相機/定位同一類），必須跑時動態請求，
-    // 不是裝App時自動授予的一般權限——一開始漏掉這步，導致背景觸發Termux指令一律送出失敗。
-    var termuxRunCommandGranted by remember {
-        mutableStateOf(
-            ContextCompat.checkSelfPermission(context, "com.termux.permission.RUN_COMMAND") ==
-                PackageManager.PERMISSION_GRANTED
-        )
-    }
-    val termuxPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        termuxRunCommandGranted = granted
-    }
+    // 【2026-09-02移除】Termux的RUN_COMMAND權限請求與背景執行測試卡片：v1.026起
+    // 「生成影片」已經改成App直接呼叫筆電服務，不再需要Termux，這組權限狀態與
+    // 對應的TermuxTestCard（開發驗證用）一併移除，只留下readBatchProgress()
+    // 等仍在使用的通用工具（見TermuxRunner.kt）。
 
     // 從系統設定頁（開啟無障礙服務／懸浮視窗權限）切回這個畫面時，
     // 重新檢查一次狀態 —— 否則「前往設定」的完成勾勾不會更新，要重啟 App 才會抓到。
@@ -119,9 +110,6 @@ fun RootScreen() {
                 allFilesAccessGranted = hasAllFilesAccess()
                 notificationPermissionGranted = NotificationManagerCompat.from(context).areNotificationsEnabled()
                 restrictedSettingsConfirmed = RestrictedSettingsPrefs.isConfirmed(context)
-                termuxRunCommandGranted = ContextCompat.checkSelfPermission(
-                    context, "com.termux.permission.RUN_COMMAND"
-                ) == PackageManager.PERMISSION_GRANTED
                 queueItems = loadQueueItems()
             }
         }
@@ -141,8 +129,6 @@ fun RootScreen() {
     // 在畫面最上面用一句話提醒使用者還要往下滑完成幾步，不用自己從頭數卡片、
     // 也不用每次回來都重新確認哪些已經打勾——每個狀態變數本身已經會在從系統
     // 設定頁切回來時（見上面的ON_RESUME）自動更新，這裡只是彙整成一個總覽數字。
-    // Termux相關的授權（termuxRunCommandGranted）不算進來，因為v1.026起「生成
-    // 影片」已經改成App直接呼叫筆電服務，不再需要Termux。
     val remainingStepsCount = listOf(
         accessibilityEnabled, overlayGranted, mediaPermissionGranted,
         allFilesAccessGranted, notificationPermissionGranted, restrictedSettingsConfirmed
@@ -325,10 +311,6 @@ fun RootScreen() {
 
         Spacer(Modifier.height(14.dp))
 
-        TermuxTestCard(context, termuxRunCommandGranted, termuxPermissionLauncher)
-
-        Spacer(Modifier.height(14.dp))
-
         VideoImportCard(context)
 
         Spacer(Modifier.height(14.dp))
@@ -390,8 +372,8 @@ fun FlowRowChips(options: List<String>, selected: String, onSelect: (String) -> 
 
 @Composable
 fun SettingsExportImportCard(context: android.content.Context) {
-    val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
-        as android.content.ClipboardManager
+    val scope = rememberCoroutineScope()
+    var busy by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -409,19 +391,32 @@ fun SettingsExportImportCard(context: android.content.Context) {
         Row(modifier = Modifier.fillMaxWidth()) {
             OutlinedButton(
                 onClick = {
+                    val account = AccountPrefs.getAccount(context)
                     val json = JSONObject().apply {
-                        put("account", AccountPrefs.getAccount(context))
+                        put("account", account)
                         put("accountHistory", org.json.JSONArray(AccountPrefs.getAccountHistory(context)))
                         put("region", RegionPrefs.getRegion(context).label)
                         put("serverUrl", ServerPrefs.getServerUrl(context))
                         put("geminiApiKey", GeminiApiPrefs.getApiKey(context))
                         put("geminiEnabled", GeminiApiPrefs.isEnabled(context))
                     }
-                    clipboard.setPrimaryClip(
-                        android.content.ClipData.newPlainText("shopee_capture_settings", json.toString())
-                    )
-                    Toast.makeText(context, context.getString(R.string.settings_export_done), Toast.LENGTH_SHORT).show()
+                    busy = true
+                    scope.launch {
+                        try {
+                            RemoteVideoGenerator.uploadSettings(context, account, json.toString())
+                            Toast.makeText(context, context.getString(R.string.settings_export_done), Toast.LENGTH_SHORT).show()
+                        } catch (e: Exception) {
+                            Toast.makeText(
+                                context,
+                                context.getString(R.string.settings_sync_failed, e.message ?: ""),
+                                Toast.LENGTH_LONG
+                            ).show()
+                        } finally {
+                            busy = false
+                        }
+                    }
                 },
+                enabled = !busy,
                 shape = RoundedCornerShape(0.dp),
                 modifier = Modifier.weight(1f)
             ) {
@@ -430,30 +425,36 @@ fun SettingsExportImportCard(context: android.content.Context) {
             Spacer(Modifier.width(10.dp))
             Button(
                 onClick = {
-                    val clip = clipboard.primaryClip
-                    val text = if (clip != null && clip.itemCount > 0) clip.getItemAt(0).text?.toString() else null
-                    if (text.isNullOrBlank()) {
-                        Toast.makeText(context, context.getString(R.string.settings_import_empty), Toast.LENGTH_SHORT).show()
-                        return@Button
-                    }
-                    try {
-                        val json = JSONObject(text)
-                        json.optString("account", "").takeIf { it.isNotBlank() }
-                            ?.let { AccountPrefs.setAccount(context, it) }
-                        json.optString("region", "").takeIf { it.isNotBlank() }
-                            ?.let { RegionPrefs.setRegion(context, ShopeeRegion.fromLabel(it)) }
-                        json.optString("serverUrl", "").takeIf { it.isNotBlank() }
-                            ?.let { ServerPrefs.setServerUrl(context, it) }
-                        json.optString("geminiApiKey", "").takeIf { it.isNotBlank() }
-                            ?.let { GeminiApiPrefs.setApiKey(context, it) }
-                        if (json.has("geminiEnabled")) {
-                            GeminiApiPrefs.setEnabled(context, json.optBoolean("geminiEnabled", false))
+                    val account = AccountPrefs.getAccount(context)
+                    busy = true
+                    scope.launch {
+                        try {
+                            val text = RemoteVideoGenerator.downloadSettings(context, account)
+                            val json = JSONObject(text)
+                            json.optString("account", "").takeIf { it.isNotBlank() }
+                                ?.let { AccountPrefs.setAccount(context, it) }
+                            json.optString("region", "").takeIf { it.isNotBlank() }
+                                ?.let { RegionPrefs.setRegion(context, ShopeeRegion.fromLabel(it)) }
+                            json.optString("serverUrl", "").takeIf { it.isNotBlank() }
+                                ?.let { ServerPrefs.setServerUrl(context, it) }
+                            json.optString("geminiApiKey", "").takeIf { it.isNotBlank() }
+                                ?.let { GeminiApiPrefs.setApiKey(context, it) }
+                            if (json.has("geminiEnabled")) {
+                                GeminiApiPrefs.setEnabled(context, json.optBoolean("geminiEnabled", false))
+                            }
+                            Toast.makeText(context, context.getString(R.string.settings_import_done), Toast.LENGTH_LONG).show()
+                        } catch (e: Exception) {
+                            Toast.makeText(
+                                context,
+                                context.getString(R.string.settings_sync_failed, e.message ?: ""),
+                                Toast.LENGTH_LONG
+                            ).show()
+                        } finally {
+                            busy = false
                         }
-                        Toast.makeText(context, context.getString(R.string.settings_import_done), Toast.LENGTH_LONG).show()
-                    } catch (e: Exception) {
-                        Toast.makeText(context, context.getString(R.string.settings_import_failed), Toast.LENGTH_SHORT).show()
                     }
                 },
+                enabled = !busy,
                 colors = ButtonDefaults.buttonColors(containerColor = InkColor),
                 shape = RoundedCornerShape(0.dp),
                 modifier = Modifier.weight(1f)
@@ -943,149 +944,6 @@ fun AiBackgroundCard(context: android.content.Context) {
             minLines = 3,
             modifier = Modifier.fillMaxWidth()
         )
-    }
-}
-
-@Composable
-fun TermuxTestCard(
-    context: android.content.Context,
-    termuxRunCommandGranted: Boolean,
-    termuxPermissionLauncher: androidx.activity.result.ActivityResultLauncher<String>
-) {
-    var testStatus by remember { mutableStateOf("尚未測試") }
-    var isPolling by remember { mutableStateOf(false) }
-    var pollTarget by remember { mutableStateOf("") } // "echo" 或 "batch"
-    var batchProgress by remember { mutableStateOf<TermuxRunner.BatchProgress?>(null) }
-
-    val captionQueueDir = File(
-        android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
-        "CaptionQueue"
-    )
-
-    LaunchedEffect(isPolling, pollTarget) {
-        if (!isPolling) return@LaunchedEffect
-        while (isPolling) {
-            if (pollTarget == "echo") {
-                val result = TermuxRunner.getLastResult(context)
-                if (result != null) {
-                    testStatus = if (result.internalError != null) {
-                        "失敗：${result.internalError}"
-                    } else {
-                        "完成，exitCode=${result.exitCode}\nstdout：${result.stdout}\nstderr：${result.stderr}"
-                    }
-                    isPolling = false
-                }
-            } else if (pollTarget == "batch") {
-                val progress = TermuxRunner.readBatchProgress(captionQueueDir)
-                batchProgress = progress
-                if (progress?.status == "done") {
-                    testStatus = "生成完成：成功${progress.okCount}／跳過${progress.skippedCount}／失敗${progress.errorCount}"
-                    isPolling = false
-                }
-            }
-            kotlinx.coroutines.delay(1500)
-        }
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(Color.White)
-            .padding(16.dp)
-    ) {
-        Text("Termux背景執行測試（開發驗證用）", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = InkColor)
-        Spacer(Modifier.height(6.dp))
-        Text(
-            "驗證App能不能在背景觸發Termux執行指令，不用打開Termux介面。" +
-                "前提：Termux已裝好、~/.termux/termux.properties有allow-external-apps=true。",
-            fontSize = 12.sp, color = MutedColor, lineHeight = 17.sp
-        )
-        Spacer(Modifier.height(10.dp))
-
-        Text(
-            "Termux安裝狀態：${if (TermuxRunner.isTermuxInstalled(context)) "✓ 已安裝" else "✗ 未安裝"}",
-            fontSize = 13.sp, color = InkColor
-        )
-        Spacer(Modifier.height(4.dp))
-        Text(
-            "RUN_COMMAND權限：${if (termuxRunCommandGranted) "✓ 已授權" else "✗ 尚未授權"}",
-            fontSize = 13.sp, color = InkColor
-        )
-        Spacer(Modifier.height(10.dp))
-
-        if (!termuxRunCommandGranted) {
-            Button(
-                onClick = { termuxPermissionLauncher.launch("com.termux.permission.RUN_COMMAND") },
-                colors = ButtonDefaults.buttonColors(containerColor = InkColor),
-                shape = RoundedCornerShape(0.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("0. 先授權RUN_COMMAND權限（必須先做這步）")
-            }
-            Spacer(Modifier.height(10.dp))
-        }
-
-        Button(
-            onClick = {
-                if (!termuxRunCommandGranted) {
-                    testStatus = "請先授權RUN_COMMAND權限"
-                    return@Button
-                }
-                testStatus = "執行中…"
-                pollTarget = "echo"
-                val sent = TermuxRunner.runCommand(context, "echo hello-from-termux && sleep 1 && echo done")
-                if (sent) {
-                    isPolling = true
-                } else {
-                    testStatus = "送出失敗（Termux可能沒安裝，或RUN_COMMAND權限被拒絕）"
-                }
-            },
-            colors = ButtonDefaults.buttonColors(containerColor = AccentColor),
-            shape = RoundedCornerShape(0.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("1. 測試基本連線（echo指令）")
-        }
-
-        Spacer(Modifier.height(8.dp))
-
-        Button(
-            onClick = {
-                if (!termuxRunCommandGranted) {
-                    testStatus = "請先授權RUN_COMMAND權限"
-                    return@Button
-                }
-                testStatus = "生成中…"
-                batchProgress = null
-                pollTarget = "batch"
-                val sent = TermuxRunner.runCommand(
-                    context,
-                    "cd ~/shopee-capture && python batch_generate.py ~/storage/downloads/CaptionQueue"
-                )
-                if (sent) {
-                    isPolling = true
-                } else {
-                    testStatus = "送出失敗（Termux可能沒安裝，或RUN_COMMAND權限被拒絕）"
-                }
-            },
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
-            shape = RoundedCornerShape(0.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("2. 實際觸發生成影片（batch_generate.py）")
-        }
-
-        Spacer(Modifier.height(10.dp))
-
-        batchProgress?.let { p ->
-            Text(
-                "進度：${p.completed}/${p.total}　目前：${p.current}",
-                fontSize = 12.sp, color = MutedColor
-            )
-            Spacer(Modifier.height(4.dp))
-        }
-
-        Text(testStatus, fontSize = 12.sp, color = InkColor, lineHeight = 17.sp)
     }
 }
 

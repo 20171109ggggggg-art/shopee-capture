@@ -203,13 +203,12 @@
     <string name="toast_server_saved">已儲存 ✓</string>
 
     <string name="settings_export_title">匯出／匯入設定</string>
-    <string name="settings_export_desc">把帳號、地區、筆電伺服器網址、Gemini API Key打包複製到剪貼簿；新手機裝好App後貼上即可一次套用所有設定，不用逐項重新輸入</string>
-    <string name="btn_export_settings">匯出到剪貼簿</string>
-    <string name="btn_import_settings">從剪貼簿匯入</string>
-    <string name="settings_export_done">設定已複製到剪貼簿</string>
-    <string name="settings_import_empty">剪貼簿是空的，請先在舊手機按「匯出到剪貼簿」</string>
+    <string name="settings_export_desc">把帳號、地區、筆電伺服器網址、Gemini API Key依帳號存到筆電；新手機裝好App、填好伺服器網址後按「從筆電下載」即可一次套用，不用逐項重新輸入</string>
+    <string name="btn_export_settings">上傳到筆電</string>
+    <string name="btn_import_settings">從筆電下載</string>
+    <string name="settings_export_done">設定已上傳到筆電</string>
     <string name="settings_import_done">設定已套用</string>
-    <string name="settings_import_failed">匯入失敗，剪貼簿內容格式不正確</string>
+    <string name="settings_sync_failed">失敗：%1$s</string>
 
     <string name="setup_steps_remaining">還有 %1$d 個設定步驟未完成，往下滑完成 ↓</string>
     <string name="simple_generate_elapsed">耗時 %1$d 分 %2$d 秒</string>
