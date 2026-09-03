@@ -392,6 +392,23 @@ fun SettingsExportImportCard(context: android.content.Context) {
             OutlinedButton(
                 onClick = {
                     val account = AccountPrefs.getAccount(context)
+                    val autoCaptureCfg = AutoCapturePrefs.load(context)
+                    val autoCaptureJson = JSONObject().apply {
+                        put("targetCount", autoCaptureCfg.targetCount)
+                        put("minDelayMs", autoCaptureCfg.minDelayMs)
+                        put("maxDelayMs", autoCaptureCfg.maxDelayMs)
+                        put("timeLimitMs", autoCaptureCfg.timeLimitMs ?: JSONObject.NULL)
+                        put("maxAttemptsLimitEnabled", autoCaptureCfg.maxAttemptsLimitEnabled)
+                        put("timeLimitEnabled", autoCaptureCfg.timeLimitEnabled)
+                        put("minCommissionPercent", autoCaptureCfg.filter.minCommissionPercent ?: JSONObject.NULL)
+                        put("maxCommissionPercent", autoCaptureCfg.filter.maxCommissionPercent ?: JSONObject.NULL)
+                        put("minPrice", autoCaptureCfg.filter.minPrice ?: JSONObject.NULL)
+                        put("maxPrice", autoCaptureCfg.filter.maxPrice ?: JSONObject.NULL)
+                        put("minSoldCount", autoCaptureCfg.filter.minSoldCount ?: JSONObject.NULL)
+                        put("maxSoldCount", autoCaptureCfg.filter.maxSoldCount ?: JSONObject.NULL)
+                        put("minPromoterCount", autoCaptureCfg.filter.minPromoterCount ?: JSONObject.NULL)
+                        put("maxPromoterCount", autoCaptureCfg.filter.maxPromoterCount ?: JSONObject.NULL)
+                    }
                     val json = JSONObject().apply {
                         put("account", account)
                         put("accountHistory", org.json.JSONArray(AccountPrefs.getAccountHistory(context)))
@@ -399,6 +416,10 @@ fun SettingsExportImportCard(context: android.content.Context) {
                         put("serverUrl", ServerPrefs.getServerUrl(context))
                         put("geminiApiKey", GeminiApiPrefs.getApiKey(context))
                         put("geminiEnabled", GeminiApiPrefs.isEnabled(context))
+                        put("geminiPrompt", GeminiApiPrefs.getPrompt(context))
+                        put("autoCapture", autoCaptureJson)
+                        put("uploadTargetCount", UploadAutomationPrefs.getTargetCount(context))
+                        put("fbUploadEnabled", UploadAutomationPrefs.isFbUploadEnabled(context))
                     }
                     busy = true
                     scope.launch {
@@ -441,6 +462,42 @@ fun SettingsExportImportCard(context: android.content.Context) {
                                 ?.let { GeminiApiPrefs.setApiKey(context, it) }
                             if (json.has("geminiEnabled")) {
                                 GeminiApiPrefs.setEnabled(context, json.optBoolean("geminiEnabled", false))
+                            }
+                            json.optString("geminiPrompt", "").takeIf { it.isNotBlank() }
+                                ?.let { GeminiApiPrefs.setPrompt(context, it) }
+                            if (json.has("autoCapture") && !json.isNull("autoCapture")) {
+                                val ac = json.getJSONObject("autoCapture")
+                                fun dOrNull(key: String): Double? =
+                                    if (ac.isNull(key)) null else ac.optDouble(key).takeIf { !it.isNaN() }
+                                fun iOrNull(key: String): Int? =
+                                    if (ac.isNull(key)) null else ac.optInt(key)
+                                AutoCapturePrefs.save(
+                                    context,
+                                    AutoCaptureConfig(
+                                        targetCount = ac.optInt("targetCount", 10),
+                                        minDelayMs = ac.optLong("minDelayMs", 900L),
+                                        maxDelayMs = ac.optLong("maxDelayMs", 1800L),
+                                        filter = ProductFilterConfig(
+                                            minCommissionPercent = dOrNull("minCommissionPercent"),
+                                            maxCommissionPercent = dOrNull("maxCommissionPercent"),
+                                            minPrice = dOrNull("minPrice"),
+                                            maxPrice = dOrNull("maxPrice"),
+                                            minSoldCount = iOrNull("minSoldCount"),
+                                            maxSoldCount = iOrNull("maxSoldCount"),
+                                            minPromoterCount = iOrNull("minPromoterCount"),
+                                            maxPromoterCount = iOrNull("maxPromoterCount")
+                                        ),
+                                        timeLimitMs = if (ac.isNull("timeLimitMs")) null else ac.optLong("timeLimitMs"),
+                                        maxAttemptsLimitEnabled = ac.optBoolean("maxAttemptsLimitEnabled", true),
+                                        timeLimitEnabled = ac.optBoolean("timeLimitEnabled", true)
+                                    )
+                                )
+                            }
+                            if (json.has("uploadTargetCount")) {
+                                UploadAutomationPrefs.setTargetCount(context, json.optInt("uploadTargetCount", 50))
+                            }
+                            if (json.has("fbUploadEnabled")) {
+                                UploadAutomationPrefs.setFbUploadEnabled(context, json.optBoolean("fbUploadEnabled", true))
                             }
                             Toast.makeText(context, context.getString(R.string.settings_import_done), Toast.LENGTH_LONG).show()
                         } catch (e: Exception) {

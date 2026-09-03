@@ -10,6 +10,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
@@ -454,6 +455,65 @@ object RemoteVideoGenerator {
                 throw IOException(detail)
             }
             resp.body?.string() ?: throw IOException("筆電服務回應內容是空的")
+        }
+    }
+
+    /**
+     * 【2026-09-03新增】把AI選圖+改圖完成的圖片（最多3張）連同商品名稱同步到筆電的
+     * 共用資料夾，讓之後其他帳號擷取到同一個商品時可以重複利用這幾張圖，不用整套
+     * 辨識/改圖流程重跑一次（省時間也省Gemini API費用）。
+     *
+     * 目前用「商品名稱」當作分類依據——還沒有比對「這是不是同一個商品」更可靠的方式
+     * （例如連結裡的商品編號，這個方式還沒驗證過準不準），所以這步只負責把圖存到
+     * 共用資料夾，還沒有自動比對/自動提示「這個商品已經有其他帳號擷取過」的機制，
+     * 那部分要等確認更準的商品識別方式後再做。
+     *
+     * 同步失敗會丟例外，由呼叫端決定要不要提示使用者；不影響本次選圖/改圖/生成流程
+     * 本身是否成功。
+     */
+    suspend fun uploadSharedProductImages(
+        context: Context,
+        account: String,
+        productName: String,
+        images: List<File>
+    ): Unit = withContext(Dispatchers.IO) {
+        if (images.isEmpty()) return@withContext
+        val serverUrl = ServerPrefs.getServerUrl(context)
+        if (serverUrl.isBlank()) throw IllegalStateException("尚未設定筆電生成伺服器網址")
+
+        val bodyBuilder = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart("account", account)
+            .addFormDataPart("product_name", productName)
+
+        images.forEachIndexed { index, file ->
+            bodyBuilder.addFormDataPart(
+                "image_${index + 1}", file.name,
+                file.asRequestBody("image/jpeg".toMediaType())
+            )
+        }
+
+        val request = Request.Builder()
+            .url("$serverUrl/backup-shared-images")
+            .post(bodyBuilder.build())
+            .build()
+
+        val response = try {
+            client.newCall(request).execute()
+        } catch (e: IOException) {
+            throw ServerUnreachableException("連線筆電服務失敗（$serverUrl）：${e.javaClass.simpleName} ${e.message}")
+        }
+        response.use { resp ->
+            if (!resp.isSuccessful) {
+                val detail = try {
+                    val text = resp.body?.string()
+                    if (text.isNullOrBlank()) "HTTP ${resp.code}"
+                    else JSONObject(text).optString("message", text.take(200))
+                } catch (e: Exception) {
+                    "HTTP ${resp.code}"
+                }
+                throw IOException(detail)
+            }
         }
     }
 

@@ -203,7 +203,7 @@
     <string name="toast_server_saved">已儲存 ✓</string>
 
     <string name="settings_export_title">匯出／匯入設定</string>
-    <string name="settings_export_desc">把帳號、地區、筆電伺服器網址、Gemini API Key依帳號存到筆電；新手機裝好App、填好伺服器網址後按「從筆電下載」即可一次套用，不用逐項重新輸入</string>
+    <string name="settings_export_desc">把帳號、地區、筆電伺服器網址、Gemini API Key與換背景提示詞、自動擷取篩選條件、上架支數設定全部依帳號存到筆電；新手機裝好App、填好伺服器網址後按「從筆電下載」即可一次套用，不用逐項重新輸入</string>
     <string name="btn_export_settings">上傳到筆電</string>
     <string name="btn_import_settings">從筆電下載</string>
     <string name="settings_export_done">設定已上傳到筆電</string>

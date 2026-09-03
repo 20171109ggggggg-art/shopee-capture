@@ -615,21 +615,29 @@ private fun applyImageSelection(
 }
 
 /**
- * 【2026-08-30新增】自動選圖＋AI改圖的整合流程，取代原本「手動九宮格選圖」+
- * 「浮球AI改圖批次按鈕」兩個分開的手動步驟。在「生成影片」畫面按下「開始生成影片」時，
- * 對每個勾選但還沒處理完的商品依序做：
+ * 【2026-08-30新增，2026-09-03改成最多3張】自動選圖＋AI改圖的整合流程，取代原本
+ * 「手動九宮格選圖」+「浮球AI改圖批次按鈕」兩個分開的手動步驟。在「生成影片」畫面
+ * 按下「開始生成影片」時，對每個勾選但還沒處理完的商品依序做：
  * 1. 還沒選圖的商品：把候選圖片（最多10張）都讀進來，呼叫GeminiImageSelector自動挑出
- *    最完整的一張。成功就只留這張（其餘刪除、重新命名成image_1），標記選圖完成；
+ *    最多3張最完整的（商品本身候選圖不夠3張、或AI判斷合格的不到3張，就選幾張算幾張）。
+ *    成功就只留這幾張（其餘刪除、依序重新命名成image_1/2/3），標記選圖完成；
  *    失敗（沒網路/API錯誤/AI回應解析不到）就跳過這個商品、記錄失敗原因，不會用猜的
  *    隨便選一張——使用者之後可以自己點進「人工選圖」畫面手動處理。
- * 2. 選圖完成但還沒AI改圖、且AI換背景功能有開啟的商品：呼叫GeminiImageEditor對這張
- *    代表圖做改圖，標記AI改圖完成。改圖失敗保留原圖，不影響這個商品能不能繼續生成影片
- *    （只是背景沒換成功而已，不像辨識失敗那樣會整個跳過）。
+ * 2. 選圖完成但還沒AI改圖、且AI換背景功能有開啟的商品：對這幾張圖各自呼叫
+ *    GeminiImageEditor改背景，標記AI改圖完成。單張改圖失敗保留該張原圖繼續走，
+ *    不影響這個商品能不能繼續生成影片（只是那張背景沒換成功而已）。
+ *    【2026-09-03新增】這幾張改好的圖，連同商品名稱/連結，會額外同步一份到筆電的
+ *    共用資料夾（見RemoteVideoGenerator.uploadSharedProductImages()），方便之後
+ *    其他帳號擷取到同一個商品時能重複利用、不用整套AI流程重跑一次——目前只做到
+ *    「存到共用資料夾」，還沒有自動比對「這是不是同一個商品」的機制，那部分待後續
+ *    確認商品識別方式後再做。同步失敗不影響本次生成，只是這次沒進到共用資料夾而已。
  * 3. 已經選圖+AI改圖都完成的商品：不用重新處理，直接算成功。
  *
  * onStatus：即時回報目前處理到哪個商品、哪個步驟，給UI顯示簡短文字用。
  * 回傳(成功可以送去生成影片的資料夾名稱清單, 失敗清單(資料夾名稱, 原因))。
  */
+private const val SHARED_IMAGE_POOL_SIZE = 3
+
 private suspend fun runAutoSelectAndEditPipeline(
     context: Context,
     products: List<GenerateQueueItem>,
@@ -645,6 +653,7 @@ private suspend fun runAutoSelectAndEditPipeline(
         val label = product.productName ?: product.folder.name
         val progressPrefix = "(${idx + 1}/${products.size}) $label"
         var currentImages = product.imagePaths
+        var justSelected = false
 
         if (!product.selectionDone) {
             onStatus("$progressPrefix：辨識圖片中")
@@ -655,34 +664,53 @@ private suspend fun runAutoSelectAndEditPipeline(
                 return@forEachIndexed
             }
             val nonNullBitmaps: List<android.graphics.Bitmap> = bitmaps.filterNotNull()
-            val result = GeminiImageSelector.selectBestImage(nonNullBitmaps, apiKey)
-            if (!result.success || result.selectedIndex == null) {
+            val result = GeminiImageSelector.selectBestImages(nonNullBitmaps, apiKey, SHARED_IMAGE_POOL_SIZE)
+            if (!result.success || result.selectedIndexes.isEmpty()) {
                 failed.add(product.folder.name to "辨識圖片失敗：${result.errorMessage ?: "未知錯誤"}")
                 return@forEachIndexed
             }
-            val chosenFile = currentImages[result.selectedIndex]
-            applyImageSelection(product.folder, currentImages, setOf(chosenFile.name))
-            currentImages = listOf(File(product.folder, "image_1.${chosenFile.extension.ifBlank { "jpg" }}"))
+            val chosenFiles = result.selectedIndexes.map { currentImages[it] }
+            applyImageSelection(product.folder, currentImages, chosenFiles.map { it.name }.toSet())
+            currentImages = (1..chosenFiles.size).mapNotNull { n ->
+                product.folder.listFiles { f -> f.nameWithoutExtension == "image_$n" }?.firstOrNull()
+            }
+            justSelected = true
         }
 
         val aiProcessedNow = File(product.folder, ".ai_processed").exists()
         if (aiEnabled && !aiProcessedNow) {
             onStatus("$progressPrefix：AI改圖中")
-            val targetFile = currentImages.firstOrNull() ?: File(product.folder, "image_1.jpg")
-            if (targetFile.exists()) {
-                val original = android.graphics.BitmapFactory.decodeFile(targetFile.path)
-                if (original != null) {
-                    val editResult = GeminiImageEditor.editBackground(original, apiKey, editPrompt)
-                    if (editResult.success && editResult.editedBitmap != null) {
-                        java.io.FileOutputStream(targetFile).use { out ->
-                            editResult.editedBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, out)
+            currentImages.forEach { targetFile ->
+                if (targetFile.exists()) {
+                    val original = android.graphics.BitmapFactory.decodeFile(targetFile.path)
+                    if (original != null) {
+                        val editResult = GeminiImageEditor.editBackground(original, apiKey, editPrompt)
+                        if (editResult.success && editResult.editedBitmap != null) {
+                            java.io.FileOutputStream(targetFile).use { out ->
+                                editResult.editedBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, out)
+                            }
                         }
+                        // 改圖失敗（result.success=false）就保留原圖繼續走，不算這個商品失敗，
+                        // 跟原本浮球批次按鈕的行為一致。
                     }
-                    // 改圖失敗（result.success=false）就保留原圖繼續走，不算這個商品失敗，
-                    // 跟原本浮球批次按鈕的行為一致。
                 }
             }
             File(product.folder, ".ai_processed").createNewFile()
+            justSelected = true
+        }
+
+        if (justSelected && ServerPrefs.isConfigured(context)) {
+            onStatus("$progressPrefix：同步共用資料夾")
+            try {
+                RemoteVideoGenerator.uploadSharedProductImages(
+                    context = context,
+                    account = AccountPrefs.getAccount(context),
+                    productName = product.productName ?: product.folder.name,
+                    images = currentImages.filter { it.exists() }
+                )
+            } catch (e: Exception) {
+                // 共用資料夾同步失敗不影響本次生成，只是這批圖沒能提供給其他帳號共用而已。
+            }
         }
 
         succeeded.add(product.folder.name)

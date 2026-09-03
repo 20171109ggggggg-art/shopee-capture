@@ -44,6 +44,94 @@ object GeminiImageSelector {
      */
     data class Result(val success: Boolean, val selectedIndex: Int?, val errorMessage: String?)
 
+    /**
+     * 【2026-09-03新增】多選版本：選出最多maxCount張「完整清楚拍出商品本體」的圖片
+     * （不是只選1張最好的），用於共用資料夾機制——同一個商品之後被別的帳號擷取到時，
+     * 可以從這幾張裡面選一張沒被用過的，不用整套辨識/改圖重跑一次。如果只有1張或2張
+     * 圖片符合條件（例如商品本身候選圖不多、或大部分是banner/規格圖被排除），就只回傳
+     * 這麼多個，不會硬湊到maxCount張。
+     */
+    data class MultiResult(val success: Boolean, val selectedIndexes: List<Int>, val errorMessage: String?)
+
+    private const val MULTI_PROMPT_TEMPLATE =
+        "以下是同一個商品拍到的多張候選圖片，依序編號從0開始。請選出最多%d張「最完整、" +
+            "清楚拍出商品本體」的圖片——排除以下這幾種情況：整張是行銷banner（大量疊加文字/標語/" +
+            "按鈕、商品本體很小或看不清楚）、商品被裁切不完整、規格表或參數截圖、純文字說明圖、" +
+            "模糊失焦、光線太暗看不清楚。如果符合條件的圖片不到%d張，有幾張算幾張，不要硬湊。" +
+            "只回傳用逗號分隔的數字清單（例如：2,0,5），不要有任何其他文字、不要加句號或說明。"
+
+    suspend fun selectBestImages(bitmaps: List<Bitmap>, apiKey: String, maxCount: Int = 3): MultiResult =
+        withContext(Dispatchers.IO) {
+            if (apiKey.isBlank()) {
+                return@withContext MultiResult(false, emptyList(), "尚未設定API Key")
+            }
+            if (bitmaps.isEmpty()) {
+                return@withContext MultiResult(false, emptyList(), "沒有候選圖片")
+            }
+            if (bitmaps.size == 1) {
+                // 只有一張圖不用問AI，直接選它，省一次API呼叫。
+                return@withContext MultiResult(true, listOf(0), null)
+            }
+            try {
+                val parts = JSONArray()
+                bitmaps.forEachIndexed { index, bitmap ->
+                    parts.put(JSONObject().apply { put("text", "圖片編號 $index：") })
+                    parts.put(JSONObject().apply {
+                        put("inline_data", JSONObject().apply {
+                            put("mime_type", "image/jpeg")
+                            put("data", bitmapToBase64(bitmap))
+                        })
+                    })
+                }
+                parts.put(JSONObject().apply { put("text", String.format(MULTI_PROMPT_TEMPLATE, maxCount, maxCount)) })
+
+                val requestJson = JSONObject().apply {
+                    put("contents", JSONArray().put(
+                        JSONObject().apply { put("parts", parts) }
+                    ))
+                }
+
+                val url = String.format(ENDPOINT_TEMPLATE, MODEL, apiKey)
+                val body = requestJson.toString().toRequestBody("application/json".toMediaType())
+                val request = Request.Builder().url(url).post(body).build()
+
+                client.newCall(request).execute().use { resp ->
+                    val responseBody = resp.body?.string()
+                    if (!resp.isSuccessful || responseBody.isNullOrBlank()) {
+                        return@withContext MultiResult(
+                            false, emptyList(),
+                            "HTTP ${resp.code}：${responseBody?.take(300) ?: "無回應內容"}"
+                        )
+                    }
+
+                    val text = extractResponseText(responseBody)
+                        ?: return@withContext MultiResult(false, emptyList(), "回應裡沒有找到文字內容：${responseBody.take(300)}")
+
+                    val indexes = parseIndexList(text, bitmaps.size, maxCount)
+                    if (indexes.isEmpty()) {
+                        return@withContext MultiResult(false, emptyList(), "無法從AI回應解析出有效的圖片編號：「$text」")
+                    }
+
+                    MultiResult(true, indexes, null)
+                }
+            } catch (e: Exception) {
+                MultiResult(false, emptyList(), "${e.javaClass.simpleName}：${e.message}")
+            }
+        }
+
+    /** 從AI回應文字裡抓出逗號分隔的數字清單，過濾掉超出範圍或重複的編號，最多取maxCount個，
+     * 保留AI回傳的原始順序（AI已經依完整度排序，第一個是最推薦的）。 */
+    private fun parseIndexList(text: String, count: Int, maxCount: Int): List<Int> {
+        val seen = linkedSetOf<Int>()
+        Regex("\\d+").findAll(text.trim()).forEach { m ->
+            val index = m.value.toIntOrNull()
+            if (index != null && index in 0 until count) {
+                seen.add(index)
+            }
+        }
+        return seen.take(maxCount)
+    }
+
     private const val PROMPT =
         "以下是同一個商品拍到的多張候選圖片，依序編號從0開始。請選出「最完整、清楚拍出商品本體」" +
             "的那一張——排除以下這幾種情況：整張是行銷banner（大量疊加文字/標語/按鈕、商品本體很小或\n" +
