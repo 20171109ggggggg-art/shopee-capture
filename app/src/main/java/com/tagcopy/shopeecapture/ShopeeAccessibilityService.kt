@@ -1326,6 +1326,15 @@ class ShopeeAccessibilityService : AccessibilityService() {
                     continue
                 }
 
+                // 【2026-09-03新增】之前上架自動化跑到這筆時，判定過是無效/售完商品，
+                // 不會再重試（重試也沒用，商品本身已經不能上架），需要的話使用者可以自己
+                // 到人工選圖或商品資料夾把invalidProduct欄位刪掉，強制重新排進候選清單。
+                val invalidProduct = json.optBoolean("invalidProduct", false)
+                if (invalidProduct) {
+                    appendDebugLog("  → 掃描候選商品：${dir.name} 先前判定為無效/售完商品（invalidProduct=true），跳過")
+                    continue
+                }
+
                 val promoLink = json.optString("promoLink", "")
                     .takeIf { it.isNotBlank() && it != "null" }
                 if (promoLink == null) {
@@ -1516,6 +1525,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
 
         var successCount = 0
         var failCount = 0
+        var skippedInvalidCount = 0
         var reason = UploadFinishReason.ALL_DONE
 
         for ((index, candidate) in candidates.withIndex()) {
@@ -1527,32 +1537,44 @@ class ShopeeAccessibilityService : AccessibilityService() {
             appendDebugLog("  → [${index + 1}/${candidates.size}] 開始處理：${candidate.folder.name}")
             onEvent(UploadEvent.Log("處理中：${candidate.folder.name}"))
 
-            val ok = try {
+            val result = try {
                 processOneUploadCandidate(candidate)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
                 appendDebugLog("  → [${candidate.folder.name}] 發生例外：${e.javaClass.simpleName} ${e.message}")
-                false
+                UploadCandidateResult.FAILED
             } finally {
                 cleanupTempUploadCopy()
             }
 
-            if (ok) {
-                successCount++
-                markShopeePosted(candidate.folder)
-                appendDebugLog("  → [${candidate.folder.name}] 上架成功，已標記 shopeePosted=true")
-                onEvent(UploadEvent.Log("✓ 上架成功：${candidate.folder.name}"))
-                // 【2026-08-27改版】不再上架蝦皮完就立刻刪除整個資料夾——階段3(FB上架)要
-                // 重複利用這支影片，所以改成「兩邊都上架完才真的刪除」，見deleteFolderIfFullyPosted()。
-                // 目前FB階段還沒做完，這裡呼叫的當下實際上不會真的刪除，只是先把判斷邏輯接上，
-                // 之後FB流程做完、markFbPosted()寫入後，下次任何一邊呼叫這個函式就會自動清掉。
-                deleteFolderIfFullyPosted(candidate.folder)
-            } else {
-                failCount++
-                appendDebugLog("  → [${candidate.folder.name}] 上架失敗，停止本次批次（避免對同樣的錯誤/每日上限持續重試）")
-                onEvent(UploadEvent.Log("✗ 上架失敗：${candidate.folder.name}，停止本次批次"))
-                reason = UploadFinishReason.STOPPED_ON_FAILURE
+            when (result) {
+                UploadCandidateResult.SUCCESS -> {
+                    successCount++
+                    markShopeePosted(candidate.folder)
+                    appendDebugLog("  → [${candidate.folder.name}] 上架成功，已標記 shopeePosted=true")
+                    onEvent(UploadEvent.Log("✓ 上架成功：${candidate.folder.name}"))
+                    // 【2026-08-27改版】不再上架蝦皮完就立刻刪除整個資料夾——階段3(FB上架)要
+                    // 重複利用這支影片，所以改成「兩邊都上架完才真的刪除」，見deleteFolderIfFullyPosted()。
+                    // 目前FB階段還沒做完，這裡呼叫的當下實際上不會真的刪除，只是先把判斷邏輯接上，
+                    // 之後FB流程做完、markFbPosted()寫入後，下次任何一邊呼叫這個函式就會自動清掉。
+                    deleteFolderIfFullyPosted(candidate.folder)
+                }
+                UploadCandidateResult.INVALID_SKIP -> {
+                    // 【2026-09-03新增】商品本身無效/售完，不是流程錯誤，標記後繼續處理下一筆，
+                    // 不讓它像真正的失敗一樣擋住整批（見processOneUploadCandidate裡的偵測邏輯）。
+                    skippedInvalidCount++
+                    appendDebugLog("  → [${candidate.folder.name}] 商品無效/售完，已標記跳過，繼續處理下一筆")
+                    onEvent(UploadEvent.Log("⊘ 已跳過（商品無效/售完）：${candidate.folder.name}"))
+                }
+                UploadCandidateResult.FAILED -> {
+                    failCount++
+                    appendDebugLog("  → [${candidate.folder.name}] 上架失敗，停止本次批次（避免對同樣的錯誤/每日上限持續重試）")
+                    onEvent(UploadEvent.Log("✗ 上架失敗：${candidate.folder.name}，停止本次批次"))
+                    reason = UploadFinishReason.STOPPED_ON_FAILURE
+                }
+            }
+            if (result == UploadCandidateResult.FAILED) {
                 break
             }
 
@@ -1561,7 +1583,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             }
         }
 
-        appendDebugLog("===== 上架自動化結束：成功 $successCount／失敗 $failCount，原因=$reason =====")
+        appendDebugLog("===== 上架自動化結束：成功 $successCount／失敗 $failCount／跳過無效 $skippedInvalidCount，原因=$reason =====")
         onEvent(UploadEvent.Finished(successCount, failCount, reason))
 
         // 【2026-08-28新增】蝦皮批次跑完後，若這次有任何一支成功上架（代表有新的FB候選商品
@@ -1603,13 +1625,24 @@ class ShopeeAccessibilityService : AccessibilityService() {
      * 處理一筆候選商品的完整流程：匯入連結→勾選→分享→選短影音→媒體庫選片→撰寫內文→發佈。
      * 任何一步逾時或失敗就回傳false並記錄詳細原因，不拋例外（呼叫端已包try/catch保護整批）。
      */
-    private suspend fun processOneUploadCandidate(candidate: UploadCandidate): Boolean {
+    /**
+     * 【2026-09-03新增】單筆上架候選的處理結果，取代原本的Boolean：
+     * - SUCCESS：上架成功
+     * - INVALID_SKIP：商品本身已經無效/售完（不是流程錯誤），標記後跳過，繼續處理下一筆
+     * - FAILED：真正的流程錯誤（找不到節點、逾時、可能是每日上限等），停止本次整批
+     * 分開INVALID_SKIP跟FAILED是因為前者重試沒有意義、也不該擋住其他還沒處理的候選商品，
+     * 後者則通常代表某種環境/流程層級的問題，繼續處理下一筆有可能一路錯下去，維持原本
+     * 「停止整批」的保守做法比較安全。
+     */
+    private enum class UploadCandidateResult { SUCCESS, INVALID_SKIP, FAILED }
+
+    private suspend fun processOneUploadCandidate(candidate: UploadCandidate): UploadCandidateResult {
         // 0. 確認目前在「分潤按讚好物」清單畫面
         // 注意：不能只比對「分潤按讚好物」這幾個字，因為蝦皮首頁本身也有一個同名的功能入口
         // （點進去才是清單頁），單純比對文字會把首頁誤判成已經在清單畫面。改用actionbar標題
         // 節點比對，清單頁標題格式固定是「分潤按讚好物(數字)」帶括號，首頁選單項目不會是這個格式。
         var root = rootInActiveWindow ?: run {
-            appendDebugLog("  → 讀不到目前畫面"); return false
+            appendDebugLog("  → 讀不到目前畫面"); return UploadCandidateResult.FAILED
         }
         val titleNode = findNodeByIdSuffix(root, "labelActionBarTitle")
         val titleText = titleNode?.text?.toString()
@@ -1617,7 +1650,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             ?: findTextContaining(root, "My Likes(")
         if (titleText == null || !(titleText.contains("分潤按讚好物(") || titleText.contains("My Likes("))) {
             appendDebugLog("  → 目前畫面不是「分潤按讚好物」清單（畫面標題=${titleText ?: "讀不到"}），請先手動導航到這個畫面再啟動")
-            return false
+            return UploadCandidateResult.FAILED
         }
 
         // 1~3. 貼上連結→按「新增至按讚好物」這整套動作當一個單位，做兩次當保險
@@ -1680,7 +1713,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
 
         if (!pasteAndSubmitOnce("第1次")) {
             appendDebugLog("  → 第1次貼上連結失敗，中止本次上架")
-            return false
+            return UploadCandidateResult.FAILED
         }
         // 第2次是保險加強，失敗也不中止整體流程（已經成功送出過一次）。
         pasteAndSubmitOnce("第2次（保險）")
@@ -1691,30 +1724,42 @@ class ShopeeAccessibilityService : AccessibilityService() {
         // 所以特別拉長這裡的等待，並把選到的商品文字記進log，方便之後直接從log驗證選對了沒，
         // 不用等整個流程跑完才能靠肉眼確認。
         if (!waitForAnyText(listOf("分潤按讚好物", "My Likes"), 4000)) {
-            appendDebugLog("  → 新增連結後等不到回到清單畫面"); return false
+            appendDebugLog("  → 新增連結後等不到回到清單畫面"); return UploadCandidateResult.FAILED
         }
         delay(7350)
-        root = rootInActiveWindow ?: return false
+        root = rootInActiveWindow ?: return UploadCandidateResult.FAILED
         val firstCheckbox = findFirstNodeById(root, "AN_Checkbox_CheckedIconUnCheckIcon_Img")
         if (firstCheckbox == null) {
-            appendDebugLog("  → 找不到清單第一筆的勾選框"); return false
+            appendDebugLog("  → 找不到清單第一筆的勾選框"); return UploadCandidateResult.FAILED
         }
         // 記錄這一列的文字內容（商品名稱等），讓debug log能驗證選到的是不是剛匯入的那筆
+        // 【2026-09-03新增】同時檢查這一列有沒有「無效」「已下架」「已售完」這類標記——
+        // 擷取當下商品可能還正常，但等到實際要上架時，商品已經被賣家下架/賣光/被蝦皮系統
+        // 標記無效，這種情況繼續點下去也不會成功，而且不是流程本身的錯誤，重試也沒用。
+        // 偵測到就直接標記跳過、處理下一筆，不讓它像其他真正的失敗一樣擋住整批。TW/PH
+        // 兩地文字都比對，跟其他地方的雙語比對做法一致。
+        val rowTexts = mutableListOf<String>()
         run {
             var rowNode: AccessibilityNodeInfo? = firstCheckbox
             var d = 0
             while (rowNode?.parent != null && d < 5) { rowNode = rowNode.parent; d++ }
-            val rowTexts = mutableListOf<String>()
             rowNode?.let { collectTextNodes(it, rowTexts, maxDepth = 8, maxNodes = 15) }
             appendDebugLog("  → 清單第一筆內容（用來核對是否為剛匯入的商品，本次匯入連結=${candidate.promoLink}）：${rowTexts.joinToString(" | ")}")
         }
+        val invalidKeywords = listOf("無效", "已下架", "已售完", "Invalid", "Out of Stock", "Sold Out", "Delisted")
+        val matchedInvalidKeyword = invalidKeywords.firstOrNull { kw -> rowTexts.any { it.contains(kw) } }
+        if (matchedInvalidKeyword != null) {
+            appendDebugLog("  → [${candidate.folder.name}] 清單第一筆內容包含「$matchedInvalidKeyword」，判定商品已無效/售完，標記跳過不重試")
+            markProductInvalid(candidate.folder, "上架時偵測到清單標記：$matchedInvalidKeyword")
+            return UploadCandidateResult.INVALID_SKIP
+        }
         if (!clickNodeBestEffort(firstCheckbox)) {
-            appendDebugLog("  → 點擊清單第一筆的勾選框失敗"); return false
+            appendDebugLog("  → 點擊清單第一筆的勾選框失敗"); return UploadCandidateResult.FAILED
         }
         delay(2500)
 
         // 5. 點「分享」
-        root = rootInActiveWindow ?: return false
+        root = rootInActiveWindow ?: return UploadCandidateResult.FAILED
         val shareTextNode = (root.findAccessibilityNodeInfosByText("分享") + root.findAccessibilityNodeInfosByText("Share"))
             .firstOrNull { it.text?.toString() == "分享" || it.text?.toString() == "Share" }
         val shareButton = shareTextNode?.let { node ->
@@ -1725,18 +1770,18 @@ class ShopeeAccessibilityService : AccessibilityService() {
             }
         }
         if (shareButton == null || !clickNodeBestEffort(shareButton)) {
-            appendDebugLog("  → 找不到或點擊「分享」按鈕失敗"); return false
+            appendDebugLog("  → 找不到或點擊「分享」按鈕失敗"); return UploadCandidateResult.FAILED
         }
 
         // 6. 等分享面板出現「蝦皮短影音」選項（等不到最常見原因：已達每日上架上限或商品已分享過）
         if (!waitForAnyText(listOf("蝦皮短影音", "Shopee Video"), 4000)) {
             appendDebugLog("  → 分享面板沒有出現「蝦皮短影音」選項，可能已達每日上架上限或其他限制")
-            return false
+            return UploadCandidateResult.FAILED
         }
-        root = rootInActiveWindow ?: return false
+        root = rootInActiveWindow ?: return UploadCandidateResult.FAILED
         val shortVideoOption = findNodeByTexts(root, listOf("蝦皮短影音", "Shopee Video"))
         if (shortVideoOption == null || !clickNodeBestEffort(shortVideoOption)) {
-            appendDebugLog("  → 點擊「蝦皮短影音」失敗"); return false
+            appendDebugLog("  → 點擊「蝦皮短影音」失敗"); return UploadCandidateResult.FAILED
         }
 
         // 7. 趁畫面切換的空檔，把影片登記進媒體庫，確保等一下的選片畫面找得到
@@ -1745,39 +1790,39 @@ class ShopeeAccessibilityService : AccessibilityService() {
         delay(2100)
 
         // 8. 點「媒體庫」
-        root = rootInActiveWindow ?: run { appendDebugLog("  → 等不到短影音錄影頁"); return false }
+        root = rootInActiveWindow ?: run { appendDebugLog("  → 等不到短影音錄影頁"); return UploadCandidateResult.FAILED }
         val galleryEntrance = findNodeByIdSuffix(root, "ll_gallery_entrance") ?: findNodeByTexts(root, listOf("媒體庫", "Library"))
         if (galleryEntrance == null || !clickNodeBestEffort(galleryEntrance)) {
-            appendDebugLog("  → 找不到或點擊「媒體庫」入口失敗"); return false
+            appendDebugLog("  → 找不到或點擊「媒體庫」入口失敗"); return UploadCandidateResult.FAILED
         }
 
         // 9. 等媒體庫畫面出現，切到「短影音」分頁，選第一個（剛登記進媒體庫的最新影片會排最前面）
         if (!waitForAnyText(listOf("相片集", "Gallery"), 4000)) {
-            appendDebugLog("  → 等不到媒體庫選片畫面"); return false
+            appendDebugLog("  → 等不到媒體庫選片畫面"); return UploadCandidateResult.FAILED
         }
         delay(2100)
-        root = rootInActiveWindow ?: return false
+        root = rootInActiveWindow ?: return UploadCandidateResult.FAILED
         val videoTab = (root.findAccessibilityNodeInfosByText("短影音") + root.findAccessibilityNodeInfosByText("Video"))
             .firstOrNull { it.isClickable }
         if (videoTab != null) {
             clickNodeBestEffort(videoTab)
             delay(2500)
         }
-        root = rootInActiveWindow ?: return false
+        root = rootInActiveWindow ?: return UploadCandidateResult.FAILED
         val firstGalleryItem = findNodeByIdSuffix(root, "ll_check")
         if (firstGalleryItem == null || !clickNodeBestEffort(firstGalleryItem)) {
-            appendDebugLog("  → 找不到或點擊媒體庫第一個項目失敗"); return false
+            appendDebugLog("  → 找不到或點擊媒體庫第一個項目失敗"); return UploadCandidateResult.FAILED
         }
         delay(2100)
 
         // 10. 點「下一步」
-        root = rootInActiveWindow ?: return false
+        root = rootInActiveWindow ?: return UploadCandidateResult.FAILED
         // 「下一步」按鈕的id會隨選取狀態改變：還沒選任何項目時是tv_pick_next，
         // 選了項目之後畫面版型會變（按鈕移到上方、顯示已選數量），id變成tv_pick_top_next。
         // 這裡已經選好1個項目了，正常應該找tv_pick_top_next，但兩個都試一次比較保險。
         val nextButton = findNodeByIdSuffix(root, "tv_pick_top_next") ?: findNodeByIdSuffix(root, "tv_pick_next")
         if (nextButton == null || !clickNodeBestEffort(nextButton)) {
-            appendDebugLog("  → 找不到或點擊「下一步」失敗"); return false
+            appendDebugLog("  → 找不到或點擊「下一步」失敗"); return UploadCandidateResult.FAILED
         }
 
         // 10.5 選片後蝦皮會先進到一個「影片編輯預覽」畫面（剪輯／文字／貼紙／配音／音效），
@@ -1785,7 +1830,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         // 之前漏掉這一關，才會一直卡在「等不到撰寫內文畫面」。
         if (waitForAnyText(listOf("剪輯", "配音", "音效", "Trimmer", "Voiceover", "Stickers"), 5000)) {
             delay(3150)
-            root = rootInActiveWindow ?: return false
+            root = rootInActiveWindow ?: return UploadCandidateResult.FAILED
             val editorNextButton = findNodeByTexts(root, listOf("下一步", "Next"))
             if (editorNextButton != null) {
                 clickNodeBestEffort(editorNextButton)
@@ -1800,12 +1845,12 @@ class ShopeeAccessibilityService : AccessibilityService() {
 
         // 11. 等「撰寫內文」畫面
         if (!waitForAnyText(listOf("撰寫內文", "為您的短影音撰寫內文", "Add Caption", "Add caption to your videos"), 5000)) {
-            appendDebugLog("  → 等不到「撰寫內文」畫面"); return false
+            appendDebugLog("  → 等不到「撰寫內文」畫面"); return UploadCandidateResult.FAILED
         }
         delay(2400)
 
         // 12. 確認商品卡是否自動帶入（只記錄不當失敗條件，避免因為判斷誤差擋住整個流程）
-        root = rootInActiveWindow ?: return false
+        root = rootInActiveWindow ?: return UploadCandidateResult.FAILED
         val productCardPresent = findNodeByIdSuffix(root, "rl_product_item") != null
         appendDebugLog("  → 撰寫內文畫面：商品卡${if (productCardPresent) "已自動帶入" else "沒看到（請留意，可能要手動補加）"}")
 
@@ -1819,19 +1864,19 @@ class ShopeeAccessibilityService : AccessibilityService() {
         // 先關閉的那個會被系統改回開啟——這次先點拼接、再點合拍，用來驗證這個猜測，
         // 如果猜測成立，這次應該會變成「拼接」被改回開啟、「合拍」關閉成功（順序互換）。
         delay(3500)
-        root = rootInActiveWindow ?: return false
+        root = rootInActiveWindow ?: return UploadCandidateResult.FAILED
         findNodeByIdSuffix(root, "tv_allow_stitch")?.let {
             val (tapX, tapY) = tapToggleNearLabel(it)
             appendDebugLog("  → 已點擊「允許他人拼接」開關（座標點擊法，實際點擊位置 X=%.1f Y=%.1f）".format(tapX, tapY))
         }
         delay(1650)
-        root = rootInActiveWindow ?: return false
+        root = rootInActiveWindow ?: return UploadCandidateResult.FAILED
         findNodeByIdSuffix(root, "tv_allow_duet")?.let {
             val (tapX, tapY) = tapToggleNearLabel(it)
             appendDebugLog("  → 已點擊「允許他人合拍」開關（座標點擊法，實際點擊位置 X=%.1f Y=%.1f）".format(tapX, tapY))
         }
         delay(1650)
-        root = rootInActiveWindow ?: return false
+        root = rootInActiveWindow ?: return UploadCandidateResult.FAILED
         findNodeByIdSuffix(root, "tv_ai_generated_title")?.let { titleNode ->
             // 實測校正發現：這顆開關的垂直位置不是對齊標題那一行，而是對齊「標題+底下
             // 說明文字」整塊區域的中點（說明文字很長，開關視覺上對齊在偏中間、偏下的位置）。
@@ -1859,10 +1904,10 @@ class ShopeeAccessibilityService : AccessibilityService() {
         delay(2400)
 
         // 14. 填入文案（【順序調整】改到最後，緊接著點「發佈」之前）
-        root = rootInActiveWindow ?: return false
+        root = rootInActiveWindow ?: return UploadCandidateResult.FAILED
         val captionInput = findNodeByIdSuffix(root, "et_caption")
         if (captionInput == null) {
-            appendDebugLog("  → 找不到文案輸入框"); return false
+            appendDebugLog("  → 找不到文案輸入框"); return UploadCandidateResult.FAILED
         }
         val shortVideoCaption = buildShortVideoCaption(candidate)
         appendDebugLog("  → 撰寫內文：套用黃金3秒/痛點/導購格式文案（長度=${shortVideoCaption.length}字）")
@@ -1895,10 +1940,10 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
 
         // 15. 點「發佈」
-        root = rootInActiveWindow ?: return false
+        root = rootInActiveWindow ?: return UploadCandidateResult.FAILED
         val postButton = findNodeByIdSuffix(root, "btn_post")
         if (postButton == null || !clickNodeBestEffort(postButton)) {
-            appendDebugLog("  → 找不到或點擊「發佈」失敗"); return false
+            appendDebugLog("  → 找不到或點擊「發佈」失敗"); return UploadCandidateResult.FAILED
         }
 
         // 16. 判定成功的依據：按下發佈後，畫面上不再有文案輸入框（代表已經離開撰寫內文畫面）
@@ -1906,7 +1951,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         val stillOnCaptionScreen = rootInActiveWindow?.let { findNodeByIdSuffix(it, "et_caption") } != null
         if (stillOnCaptionScreen) {
             appendDebugLog("  → 按下發佈後仍停在撰寫內文畫面，判定失敗（可能跳出錯誤提示或達到每日上限）")
-            return false
+            return UploadCandidateResult.FAILED
         }
 
         // 17. 發佈成功後導航回「分潤按讚好物」清單畫面，讓下一筆候選商品能接續處理
@@ -1917,7 +1962,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         // 只記錄log，讓使用者知道需要手動導航。
         navigateBackToLikesListAfterPost()
 
-        return true
+        return UploadCandidateResult.SUCCESS
     }
 
     /**
@@ -2714,6 +2759,27 @@ class ShopeeAccessibilityService : AccessibilityService() {
             depth++
         }
         return false
+    }
+
+    /**
+     * 【2026-09-03新增】標記某個商品資料夾判定為「無效/售完」商品：寫入invalidProduct=true
+     * 跟原因，讓下次scanUploadCandidates()掃描時自動跳過這筆，不會每次上架自動化都重新
+     * 卡在同一個壞掉的商品上——根因是擷取當下商品還正常，但等到實際要上架時，商品已經
+     * 被賣家下架、賣光、或蝦皮系統標記無效，這種情況不是程式邏輯錯誤，重試也沒有用，
+     * 應該跳過繼續處理下一筆，而不是像其他真正的失敗一樣讓整批停下來。
+     */
+    private fun markProductInvalid(folder: File, reason: String) {
+        try {
+            val metaFile = File(folder, "meta.json")
+            if (!metaFile.isFile) return
+            val json = org.json.JSONObject(metaFile.readText())
+            json.put("invalidProduct", true)
+            json.put("invalidProductReason", reason)
+            json.put("invalidProductAt", SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).format(Date()))
+            metaFile.writeText(json.toString(2))
+        } catch (e: Exception) {
+            appendDebugLog("  → 標記invalidProduct失敗（${folder.name}）：${e.javaClass.simpleName} ${e.message}")
+        }
     }
 
     /**
