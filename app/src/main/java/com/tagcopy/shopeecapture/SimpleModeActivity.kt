@@ -1165,20 +1165,19 @@ private fun scanVideos(context: Context): List<VideoItem> {
  * 這裡改成用suspendCancellableCoroutine真的等callback觸發後才繼續，逾時3秒
  * 就放棄等待、直接嘗試開啟播放器（避免掃描本身卡住或失敗時把使用者卡住）。
  *
- * 另外光靠scanFile()「重新掃描」不保證一定會完整覆蓋舊紀錄裡的壞欄位（部分廠牌
- * ROM對已存在的MediaStore項目可能只做部分欄位更新），這裡先主動刪除MediaStore
- * 裡任何跟這個路徑對應的舊紀錄，確保沒有殘留的壞中繼資料可以被撿到，再讓
- * scanFile()建立一筆全新、乾淨的索引，比單純重新掃描更保險。刪除失敗（例如
- * 該路徑本來就沒有MediaStore紀錄）不影響後續流程。
+ * 【2026-09-04重大安全修正】原本這裡在scanFile()之前，會先對這個檔案的原始路徑呼叫
+ * contentResolver.delete()，目的是想「先清掉MediaStore裡可能殘留的壞索引，逼系統
+ * 建立一筆全新乾淨的記錄」。但已經證實：在有完整儲存權限（MANAGE_EXTERNAL_STORAGE）
+ * 的情況下，對一個檔案的實際路徑呼叫contentResolver.delete()，系統會把「實體檔案」
+ * 一併刪除，不只是清掉索引——這正是ShopeeAccessibilityService.kt裡
+ * registerVideoInMediaStore()這個函式的註解記錄過的同一個坑，那邊已經改成「用暫時
+ * 副本，不動原始檔案」修好了，但這裡是後來獨立寫的，沒有沿用那套安全寫法，又踩了
+ * 一次，導致使用者在「檢查影片」畫面點播放時，實際的output.mp4被意外刪除。
+ * 已確認造成過真實的影片檔案遺失，這裡直接拿掉delete()這一步，只保留單純重新掃描
+ * （不強迫先清除舊索引）。代價是某些殘缺過的影片可能仍需要多重新整理一次才會顯示
+ * 正常時長，但這遠比再次刪掉使用者的影片檔案安全。
  */
 private suspend fun rescanAndWait(context: Context, file: File) {
-    try {
-        context.contentResolver.delete(
-            android.provider.MediaStore.Files.getContentUri("external"),
-            "${android.provider.MediaStore.Files.FileColumns.DATA}=?",
-            arrayOf(file.absolutePath)
-        )
-    } catch (e: Exception) { /* 沒有舊紀錄可刪或刪除失敗都不影響後續掃描 */ }
     withTimeoutOrNull(3000) {
         suspendCancellableCoroutine<Unit> { cont ->
             android.media.MediaScannerConnection.scanFile(
