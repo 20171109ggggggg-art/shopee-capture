@@ -20,7 +20,18 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Decode keystore
+        # 【2026-09-05新增】把GitHub Secrets裡的KEYSTORE_BASE64還原成實體keystore檔案，
+        # 存在runner的家目錄（不是repo裡面，這個檔案只存在這次CI執行的暫時環境，
+        # 執行完就跟著runner一起銷毀，不會留下任何痕跡）。
+        run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > $HOME/shopee-capture-release.jks
+
       - name: Build debug APK
+        env:
+          KEYSTORE_PATH: /home/runner/shopee-capture-release.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: gradle assembleDebug
 
       - name: Upload APK
