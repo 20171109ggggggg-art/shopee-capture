@@ -128,7 +128,7 @@ object RemoteVideoGenerator {
 
             var outcome: GenOutcome? = null
             try {
-                outcome = generateOne(folder, serverUrl, force) { step ->
+                outcome = generateOne(context, folder, serverUrl, force) { step ->
                     writeProgress(
                         captionQueueDir, total, idx, name, "running",
                         okNames.size, skippedNames.size, errorItems.size, step = step
@@ -186,6 +186,7 @@ object RemoteVideoGenerator {
     }
 
     private fun generateOne(
+        context: Context,
         folder: File,
         serverUrl: String,
         force: Boolean,
@@ -263,19 +264,71 @@ object RemoteVideoGenerator {
                 return GenOutcome.Error("筆電服務回應內容是空的")
             }
             appendVideoLog("[${folder.name}] 讀到回應內容 ${bytes.size} bytes，準備寫入 ${outputFile.path}")
-            try {
-                outputFile.writeBytes(bytes)
-            } catch (e: Exception) {
-                appendVideoLog("[${folder.name}] 寫入檔案失敗：${e.javaClass.simpleName} ${e.message}")
-                return GenOutcome.Error("寫入影片檔案失敗：${e.javaClass.simpleName} ${e.message}")
+            // 【2026-09-04再修正】比fsync+延遲複查更徹底的做法：改成atomic write模式——
+            // 先寫進output.mp4.part這個暫存檔名，驗證完整無誤後才rename成正式的
+            // output.mp4。rename在同一個磁碟區上是瞬間完成、不會有中間狀態的操作，
+            // 所以output.mp4這個檔名要嘛完全不存在，要嘛就是完整寫好的檔案，不會被誰
+            // （包括這支App自己下次判斷是否需要重新生成的邏輯）誤判成「看得到但其實
+            // 是殘缺檔案」。加上失敗自動重試最多3次（bytes已經在記憶體裡，不用重新
+            // 連筆電），比單純多等一下再檢查更有機會真的解決暫時性的系統卡頓問題。
+            val tempFile = File(folder, "output.mp4.part")
+            var writeOk = false
+            var lastWriteError = ""
+            for (attempt in 1..3) {
+                try {
+                    if (tempFile.exists()) tempFile.delete()
+                    java.io.FileOutputStream(tempFile).use { fos ->
+                        fos.write(bytes)
+                        fos.fd.sync()
+                    }
+                    val tempSize = if (tempFile.isFile) tempFile.length() else -1L
+                    if (tempSize != bytes.size.toLong()) {
+                        lastWriteError = "暫存檔大小不符（預期${bytes.size}，實際$tempSize）"
+                        appendVideoLog("[${folder.name}] 第${attempt}次寫入暫存檔驗證失敗：$lastWriteError")
+                        Thread.sleep(500)
+                        continue
+                    }
+                    if (outputFile.exists()) outputFile.delete()
+                    if (!tempFile.renameTo(outputFile)) {
+                        lastWriteError = "暫存檔改名為output.mp4失敗"
+                        appendVideoLog("[${folder.name}] 第${attempt}次$lastWriteError")
+                        Thread.sleep(500)
+                        continue
+                    }
+                    val finalSize = if (outputFile.isFile) outputFile.length() else -1L
+                    if (finalSize == bytes.size.toLong()) {
+                        appendVideoLog("[${folder.name}] 第${attempt}次寫入成功並改名完成，最終檔案大小=$finalSize bytes")
+                        writeOk = true
+                        break
+                    } else {
+                        lastWriteError = "改名後最終大小不符（預期${bytes.size}，實際$finalSize）"
+                        appendVideoLog("[${folder.name}] 第${attempt}次$lastWriteError")
+                    }
+                } catch (e: Exception) {
+                    lastWriteError = "${e.javaClass.simpleName} ${e.message}"
+                    appendVideoLog("[${folder.name}] 第${attempt}次寫入發生例外：$lastWriteError")
+                }
+                Thread.sleep(500)
             }
-            // 寫完立刻回讀檔案大小驗證是否真的落地成功，跟收到的bytes數量一致才算數，
-            // 避免「writeBytes()沒丟例外，但實際上系統中途把檔案截斷」這種難以察覺的
-            // 落差被誤判成功。
-            val actualSize = if (outputFile.isFile) outputFile.length() else -1L
-            appendVideoLog("[${folder.name}] 寫入後實際檔案大小=$actualSize bytes（預期${bytes.size} bytes）")
-            if (actualSize != bytes.size.toLong()) {
-                return GenOutcome.Error("寫入影片檔案後大小不符（預期${bytes.size}，實際$actualSize），可能是儲存空間不足或權限被收回")
+            if (!writeOk) {
+                return GenOutcome.Error("寫入影片檔案失敗（重試3次後仍失敗）：$lastWriteError")
+            }
+
+            // 【2026-09-04新增】比照ShopeeAccessibilityService.kt裡registerVideoInMediaStore()
+            // 註解說明的同一個背景：這裡是直接用File API寫檔案，不是透過MediaStore.insert()，
+            // 系統的媒體索引不會自動知道多了這個檔案，部分檔案總管/相簿App在索引更新前可能
+            // 看不到它（但檔案本身確實已經完整寫入，不是遺失）。這裡只是單純觸發一次掃描
+            // 讓索引盡快更新，不等待掃描結果、不影響回傳速度；掃描失敗也只記log，不當成
+            // 這支影片生成失敗（檔案本身已經確認寫入成功，索引與否是次要的顯示問題）。
+            try {
+                android.media.MediaScannerConnection.scanFile(
+                    context,
+                    arrayOf(outputFile.absolutePath),
+                    arrayOf("video/mp4"),
+                    null
+                )
+            } catch (e: Exception) {
+                appendVideoLog("[${folder.name}] 觸發媒體庫掃描時發生例外（不影響生成結果）：${e.javaClass.simpleName} ${e.message}")
             }
         }
 
