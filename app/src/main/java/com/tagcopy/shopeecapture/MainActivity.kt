@@ -383,6 +383,59 @@ fun FlowRowChips(options: List<String>, selected: String, onSelect: (String) -> 
 fun SettingsExportImportCard(context: android.content.Context, onImported: () -> Unit = {}) {
     val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
+    // 【2026-09-04新增】「上傳到筆電」會覆蓋掉筆電上這個帳號原本存的設定（帳號/地區/
+    // 伺服器網址/Gemini API Key/篩選條件等全部一次覆蓋），誤按會把原本存好的設定洗掉，
+    // 加一道確認對話框。按鈕本身只負責跳出確認，實際上傳邏輯移到doUploadSettings()，
+    // 對話框按下「確認上傳」才會真的執行。
+    var showUploadConfirm by remember { mutableStateOf(false) }
+
+    fun doUploadSettings() {
+        val account = AccountPrefs.getAccount(context)
+        val autoCaptureCfg = AutoCapturePrefs.load(context)
+        val autoCaptureJson = JSONObject().apply {
+            put("targetCount", autoCaptureCfg.targetCount)
+            put("minDelayMs", autoCaptureCfg.minDelayMs)
+            put("maxDelayMs", autoCaptureCfg.maxDelayMs)
+            put("timeLimitMs", autoCaptureCfg.timeLimitMs ?: JSONObject.NULL)
+            put("maxAttemptsLimitEnabled", autoCaptureCfg.maxAttemptsLimitEnabled)
+            put("timeLimitEnabled", autoCaptureCfg.timeLimitEnabled)
+            put("minCommissionPercent", autoCaptureCfg.filter.minCommissionPercent ?: JSONObject.NULL)
+            put("maxCommissionPercent", autoCaptureCfg.filter.maxCommissionPercent ?: JSONObject.NULL)
+            put("minPrice", autoCaptureCfg.filter.minPrice ?: JSONObject.NULL)
+            put("maxPrice", autoCaptureCfg.filter.maxPrice ?: JSONObject.NULL)
+            put("minSoldCount", autoCaptureCfg.filter.minSoldCount ?: JSONObject.NULL)
+            put("maxSoldCount", autoCaptureCfg.filter.maxSoldCount ?: JSONObject.NULL)
+            put("minPromoterCount", autoCaptureCfg.filter.minPromoterCount ?: JSONObject.NULL)
+            put("maxPromoterCount", autoCaptureCfg.filter.maxPromoterCount ?: JSONObject.NULL)
+        }
+        val json = JSONObject().apply {
+            put("account", account)
+            put("accountHistory", org.json.JSONArray(AccountPrefs.getAccountHistory(context)))
+            put("region", RegionPrefs.getRegion(context).label)
+            put("serverUrl", ServerPrefs.getServerUrl(context))
+            put("geminiApiKey", GeminiApiPrefs.getApiKey(context))
+            put("geminiEnabled", GeminiApiPrefs.isEnabled(context))
+            put("geminiPrompt", GeminiApiPrefs.getPrompt(context))
+            put("autoCapture", autoCaptureJson)
+            put("uploadTargetCount", UploadAutomationPrefs.getTargetCount(context))
+            put("fbUploadEnabled", UploadAutomationPrefs.isFbUploadEnabled(context))
+        }
+        busy = true
+        scope.launch {
+            try {
+                RemoteVideoGenerator.uploadSettings(context, account, json.toString())
+                Toast.makeText(context, context.getString(R.string.settings_export_done), Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                Toast.makeText(
+                    context,
+                    context.getString(R.string.settings_sync_failed, e.message ?: ""),
+                    Toast.LENGTH_LONG
+                ).show()
+            } finally {
+                busy = false
+            }
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -399,53 +452,7 @@ fun SettingsExportImportCard(context: android.content.Context, onImported: () ->
         Spacer(Modifier.height(12.dp))
         Row(modifier = Modifier.fillMaxWidth()) {
             OutlinedButton(
-                onClick = {
-                    val account = AccountPrefs.getAccount(context)
-                    val autoCaptureCfg = AutoCapturePrefs.load(context)
-                    val autoCaptureJson = JSONObject().apply {
-                        put("targetCount", autoCaptureCfg.targetCount)
-                        put("minDelayMs", autoCaptureCfg.minDelayMs)
-                        put("maxDelayMs", autoCaptureCfg.maxDelayMs)
-                        put("timeLimitMs", autoCaptureCfg.timeLimitMs ?: JSONObject.NULL)
-                        put("maxAttemptsLimitEnabled", autoCaptureCfg.maxAttemptsLimitEnabled)
-                        put("timeLimitEnabled", autoCaptureCfg.timeLimitEnabled)
-                        put("minCommissionPercent", autoCaptureCfg.filter.minCommissionPercent ?: JSONObject.NULL)
-                        put("maxCommissionPercent", autoCaptureCfg.filter.maxCommissionPercent ?: JSONObject.NULL)
-                        put("minPrice", autoCaptureCfg.filter.minPrice ?: JSONObject.NULL)
-                        put("maxPrice", autoCaptureCfg.filter.maxPrice ?: JSONObject.NULL)
-                        put("minSoldCount", autoCaptureCfg.filter.minSoldCount ?: JSONObject.NULL)
-                        put("maxSoldCount", autoCaptureCfg.filter.maxSoldCount ?: JSONObject.NULL)
-                        put("minPromoterCount", autoCaptureCfg.filter.minPromoterCount ?: JSONObject.NULL)
-                        put("maxPromoterCount", autoCaptureCfg.filter.maxPromoterCount ?: JSONObject.NULL)
-                    }
-                    val json = JSONObject().apply {
-                        put("account", account)
-                        put("accountHistory", org.json.JSONArray(AccountPrefs.getAccountHistory(context)))
-                        put("region", RegionPrefs.getRegion(context).label)
-                        put("serverUrl", ServerPrefs.getServerUrl(context))
-                        put("geminiApiKey", GeminiApiPrefs.getApiKey(context))
-                        put("geminiEnabled", GeminiApiPrefs.isEnabled(context))
-                        put("geminiPrompt", GeminiApiPrefs.getPrompt(context))
-                        put("autoCapture", autoCaptureJson)
-                        put("uploadTargetCount", UploadAutomationPrefs.getTargetCount(context))
-                        put("fbUploadEnabled", UploadAutomationPrefs.isFbUploadEnabled(context))
-                    }
-                    busy = true
-                    scope.launch {
-                        try {
-                            RemoteVideoGenerator.uploadSettings(context, account, json.toString())
-                            Toast.makeText(context, context.getString(R.string.settings_export_done), Toast.LENGTH_SHORT).show()
-                        } catch (e: Exception) {
-                            Toast.makeText(
-                                context,
-                                context.getString(R.string.settings_sync_failed, e.message ?: ""),
-                                Toast.LENGTH_LONG
-                            ).show()
-                        } finally {
-                            busy = false
-                        }
-                    }
-                },
+                onClick = { showUploadConfirm = true },
                 enabled = !busy,
                 shape = RoundedCornerShape(0.dp),
                 modifier = Modifier.weight(1f)
@@ -529,6 +536,23 @@ fun SettingsExportImportCard(context: android.content.Context, onImported: () ->
                 Text(stringResource(R.string.btn_import_settings), fontSize = 13.sp)
             }
         }
+    }
+
+    if (showUploadConfirm) {
+        AlertDialog(
+            onDismissRequest = { showUploadConfirm = false },
+            title = { Text("確認上傳設定到筆電？") },
+            text = { Text("這會覆蓋掉筆電上「${AccountPrefs.getAccount(context)}」這個帳號原本存的設定（帳號/地區/伺服器網址/Gemini API Key/篩選條件等），確定要繼續嗎？") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showUploadConfirm = false
+                    doUploadSettings()
+                }) { Text("確認上傳") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showUploadConfirm = false }) { Text(stringResource(R.string.simple_cancel)) }
+            }
+        )
     }
 }
 

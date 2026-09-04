@@ -55,24 +55,46 @@ object RemoteVideoGenerator {
      * 檔案，每次呼叫runBatch()開頭都會重置成新檔名（見runBatch()裡的reset）。
      * 寫檔失敗（例如存取權限被系統收回）只忽略，不能讓記錄本身變成新的失敗點。
      */
-    private fun appendVideoLog(line: String) {
+    /**
+     * 【2026-09-04新增】把筆電端process_folder()生成成功後回寫的videoGeneratedAt/
+     * narrationText/hashtags這幾個欄位，合併寫回手機本地的meta.json。
+     * 只更新這幾個固定欄位，不是整份覆蓋——account/promoLink/shopeePosted/fbPosted/
+     * region這些欄位是手機本地才有正確狀態的，筆電端那份meta.json（server端只是暫時
+     * 解壓縮出來跑生成用的副本）不會有這些欄位的正確值，覆蓋掉會出問題。
+     * 背景：這幾個欄位（尤其videoGeneratedAt）是蝦皮上架自動化掃描候選商品的必要
+     * 條件（見ShopeeAccessibilityService.kt的scanUploadCandidates()），v1.026改成
+     * 筆電生成架構後，這個回寫從來沒有真的傳回手機，導致上架自動化永遠掃不到
+     * 任何候選商品，這裡修正。
+     * 合併失敗只記log，不拋例外——這支影片本身已經確認生成/寫入成功，不該因為
+     * 這個次要欄位合併失敗就讓整支影片被判定失敗（比較嚴重的後果只是上架自動化
+     * 暫時掃不到這支候選，之後重新生成一次就會補上，是可回復的）。
+     */
+    private fun mergeGeneratedMetaFields(folder: File, remoteMetaJsonText: String) {
         try {
-            val dir = File(
-                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-                "ShopeeCaptureDebugLog"
-            )
-            if (!dir.exists()) dir.mkdirs()
-            val fileName = currentVideoLogFileName
-                ?: "video_gen_log_${java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())}.txt".also {
-                    currentVideoLogFileName = it
+            val remote = JSONObject(remoteMetaJsonText)
+            val localMetaFile = File(folder, "meta.json")
+            val local = if (localMetaFile.isFile) {
+                try {
+                    JSONObject(localMetaFile.readText())
+                } catch (e: Exception) {
+                    JSONObject()
                 }
-            val file = File(dir, fileName)
-            val timestamp = java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())
-            file.appendText("[$timestamp] $line\n")
+            } else {
+                JSONObject()
+            }
+            for (key in listOf("videoGeneratedAt", "narrationText", "hashtags")) {
+                if (remote.has(key)) {
+                    local.put(key, remote.get(key))
+                }
+            }
+            localMetaFile.writeText(local.toString())
+            appendVideoLog("[${folder.name}] 已合併videoGeneratedAt等欄位回本地meta.json")
         } catch (e: Exception) {
-            // 寫檔失敗不影響主流程，忽略即可
+            appendVideoLog("[${folder.name}] 合併meta.json欄位失敗（不影響影片本身，但上架自動化可能還是掃不到這支）：${e.javaClass.simpleName} ${e.message}")
         }
     }
+
+
 
     private sealed class GenOutcome {
         data class Ok(val outputPath: String) : GenOutcome()
@@ -263,7 +285,36 @@ object RemoteVideoGenerator {
                 appendVideoLog("[${folder.name}] 筆電回應內容是空的（body為null）")
                 return GenOutcome.Error("筆電服務回應內容是空的")
             }
-            appendVideoLog("[${folder.name}] 讀到回應內容 ${bytes.size} bytes，準備寫入 ${outputFile.path}")
+            appendVideoLog("[${folder.name}] 讀到回應內容 ${bytes.size} bytes，解析zip內容")
+            // 【2026-09-04新增】筆電端/generate-video現在回傳的是zip（裡面裝output.mp4＋
+            // 更新後的meta.json），不是單純的mp4本身——筆電端process_folder()生成成功後
+            // 會把videoGeneratedAt/narrationText/hashtags這幾個欄位回寫進meta.json，原本
+            // 手機端完全沒收到這份更新，導致本地meta.json的videoGeneratedAt永遠是空的，
+            // 蝦皮上架自動化掃描候選商品時（要求videoGeneratedAt有值）完全找不到候選，
+            // 這裡解析zip，把mp4內容跟meta.json內容分開處理。
+            var mp4Bytes: ByteArray? = null
+            var remoteMetaJsonText: String? = null
+            try {
+                java.util.zip.ZipInputStream(bytes.inputStream()).use { zis ->
+                    var entry = zis.nextEntry
+                    while (entry != null) {
+                        when (entry.name) {
+                            "output.mp4" -> mp4Bytes = zis.readBytes()
+                            "meta.json" -> remoteMetaJsonText = zis.readBytes().toString(Charsets.UTF_8)
+                        }
+                        entry = zis.nextEntry
+                    }
+                }
+            } catch (e: Exception) {
+                appendVideoLog("[${folder.name}] 解析zip回應失敗：${e.javaClass.simpleName} ${e.message}")
+                return GenOutcome.Error("解析筆電回應的zip失敗：${e.javaClass.simpleName} ${e.message}")
+            }
+            val videoBytes = mp4Bytes
+            if (videoBytes == null) {
+                appendVideoLog("[${folder.name}] zip裡沒有找到output.mp4")
+                return GenOutcome.Error("筆電回應的zip裡沒有output.mp4")
+            }
+            appendVideoLog("[${folder.name}] zip解析完成，mp4=${videoBytes.size} bytes，meta.json=${if (remoteMetaJsonText != null) "有" else "無"}，準備寫入 ${outputFile.path}")
             // 【2026-09-04再修正】比fsync+延遲複查更徹底的做法：改成atomic write模式——
             // 先寫進output.mp4.part這個暫存檔名，驗證完整無誤後才rename成正式的
             // output.mp4。rename在同一個磁碟區上是瞬間完成、不會有中間狀態的操作，
@@ -278,12 +329,12 @@ object RemoteVideoGenerator {
                 try {
                     if (tempFile.exists()) tempFile.delete()
                     java.io.FileOutputStream(tempFile).use { fos ->
-                        fos.write(bytes)
+                        fos.write(videoBytes)
                         fos.fd.sync()
                     }
                     val tempSize = if (tempFile.isFile) tempFile.length() else -1L
-                    if (tempSize != bytes.size.toLong()) {
-                        lastWriteError = "暫存檔大小不符（預期${bytes.size}，實際$tempSize）"
+                    if (tempSize != videoBytes.size.toLong()) {
+                        lastWriteError = "暫存檔大小不符（預期${videoBytes.size}，實際$tempSize）"
                         appendVideoLog("[${folder.name}] 第${attempt}次寫入暫存檔驗證失敗：$lastWriteError")
                         Thread.sleep(500)
                         continue
@@ -296,12 +347,12 @@ object RemoteVideoGenerator {
                         continue
                     }
                     val finalSize = if (outputFile.isFile) outputFile.length() else -1L
-                    if (finalSize == bytes.size.toLong()) {
+                    if (finalSize == videoBytes.size.toLong()) {
                         appendVideoLog("[${folder.name}] 第${attempt}次寫入成功並改名完成，最終檔案大小=$finalSize bytes")
                         writeOk = true
                         break
                     } else {
-                        lastWriteError = "改名後最終大小不符（預期${bytes.size}，實際$finalSize）"
+                        lastWriteError = "改名後最終大小不符（預期${videoBytes.size}，實際$finalSize）"
                         appendVideoLog("[${folder.name}] 第${attempt}次$lastWriteError")
                     }
                 } catch (e: Exception) {
@@ -312,6 +363,15 @@ object RemoteVideoGenerator {
             }
             if (!writeOk) {
                 return GenOutcome.Error("寫入影片檔案失敗（重試3次後仍失敗）：$lastWriteError")
+            }
+
+            // 【2026-09-04新增】把筆電端process_folder()回寫的videoGeneratedAt/narrationText/
+            // hashtags這幾個欄位合併回本地meta.json——只更新這幾個欄位，account/promoLink/
+            // shopeePosted/fbPosted/region這些手機本地才有正確狀態的欄位不會被蓋掉。
+            // 合併失敗只記log，不影響這支影片本身算不算生成成功（比較嚴重的後果是
+            // 上架自動化掃不到這支候選，但那是可以之後補救的，不該讓整個生成流程失敗）。
+            if (remoteMetaJsonText != null) {
+                mergeGeneratedMetaFields(folder, remoteMetaJsonText!!)
             }
 
             // 【2026-09-04新增】比照ShopeeAccessibilityService.kt裡registerVideoInMediaStore()
