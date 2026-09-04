@@ -55,6 +55,25 @@ object RemoteVideoGenerator {
      * 檔案，每次呼叫runBatch()開頭都會重置成新檔名（見runBatch()裡的reset）。
      * 寫檔失敗（例如存取權限被系統收回）只忽略，不能讓記錄本身變成新的失敗點。
      */
+    private fun appendVideoLog(line: String) {
+        try {
+            val dir = File(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                "ShopeeCaptureDebugLog"
+            )
+            if (!dir.exists()) dir.mkdirs()
+            val fileName = currentVideoLogFileName
+                ?: "video_gen_log_${java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())}.txt".also {
+                    currentVideoLogFileName = it
+                }
+            val file = File(dir, fileName)
+            val timestamp = java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())
+            file.appendText("[$timestamp] $line\n")
+        } catch (e: Exception) {
+            // 寫檔失敗不影響主流程，忽略即可
+        }
+    }
+
     /**
      * 【2026-09-04新增】把筆電端process_folder()生成成功後回寫的videoGeneratedAt/
      * narrationText/hashtags這幾個欄位，合併寫回手機本地的meta.json。
