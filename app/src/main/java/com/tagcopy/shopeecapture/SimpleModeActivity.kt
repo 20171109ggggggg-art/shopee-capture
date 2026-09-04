@@ -615,9 +615,16 @@ private fun applyImageSelection(
 }
 
 /**
- * 【2026-08-30新增，2026-09-03改成最多3張】自動選圖＋AI改圖的整合流程，取代原本
- * 「手動九宮格選圖」+「浮球AI改圖批次按鈕」兩個分開的手動步驟。在「生成影片」畫面
- * 按下「開始生成影片」時，對每個勾選但還沒處理完的商品依序做：
+ * 【2026-08-30新增，2026-09-03改成最多3張，2026-09-04新增查詢共用商品】自動選圖＋
+ * AI改圖的整合流程，取代原本「手動九宮格選圖」+「浮球AI改圖批次按鈕」兩個分開的
+ * 手動步驟。在「生成影片」畫面按下「開始生成影片」時，對每個勾選但還沒處理完的
+ * 商品依序做：
+ * 0.【2026-09-04新增】選圖/改圖都還沒做完的商品：先用meta.json的promoLink查詢
+ *   筆電共用資料夾，看有沒有其他帳號已經處理過同一個商品（筆電端用連結解析出的
+ *   「店鋪ID_商品ID」精準比對，不是用商品名稱模糊比對）。有找到就直接套用那批圖片
+ *   （自動沿用，不彈窗詢問），標記選圖+AI改圖都完成，跳過下面1、2兩步驟，省下
+ *   Gemini API辨識/改圖的時間與費用。查不到（連結解析失敗、沒有其他帳號處理過、
+ *   或連不上筆電）就靜靜退回下面原本的流程，不會顯示錯誤或中斷這個商品的處理。
  * 1. 還沒選圖的商品：把候選圖片（最多10張）都讀進來，呼叫GeminiImageSelector自動挑出
  *    最多3張最完整的（商品本身候選圖不夠3張、或AI判斷合格的不到3張，就選幾張算幾張）。
  *    成功就只留這幾張（其餘刪除、依序重新命名成image_1/2/3），標記選圖完成；
@@ -626,11 +633,10 @@ private fun applyImageSelection(
  * 2. 選圖完成但還沒AI改圖、且AI換背景功能有開啟的商品：對這幾張圖各自呼叫
  *    GeminiImageEditor改背景，標記AI改圖完成。單張改圖失敗保留該張原圖繼續走，
  *    不影響這個商品能不能繼續生成影片（只是那張背景沒換成功而已）。
- *    【2026-09-03新增】這幾張改好的圖，連同商品名稱/連結，會額外同步一份到筆電的
- *    共用資料夾（見RemoteVideoGenerator.uploadSharedProductImages()），方便之後
- *    其他帳號擷取到同一個商品時能重複利用、不用整套AI流程重跑一次——目前只做到
- *    「存到共用資料夾」，還沒有自動比對「這是不是同一個商品」的機制，那部分待後續
- *    確認商品識別方式後再做。同步失敗不影響本次生成，只是這次沒進到共用資料夾而已。
+ *    這幾張改好的圖，連同商品名稱/連結，會額外同步一份到筆電的共用資料夾（見
+ *    RemoteVideoGenerator.uploadSharedProductImages()），方便之後其他帳號擷取到
+ *    同一個商品時能重複利用。套用共用圖片的商品（第0步）本來就是從共用資料夾
+ *    拿來的，不會再同步回去。
  * 3. 已經選圖+AI改圖都完成的商品：不用重新處理，直接算成功。
  *
  * onStatus：即時回報目前處理到哪個商品、哪個步驟，給UI顯示簡短文字用。
@@ -654,8 +660,39 @@ private suspend fun runAutoSelectAndEditPipeline(
         val progressPrefix = "(${idx + 1}/${products.size}) $label"
         var currentImages = product.imagePaths
         var justSelected = false
+        var usedSharedProduct = false
 
-        if (!product.selectionDone) {
+        val alreadyDone = product.selectionDone && File(product.folder, ".ai_processed").exists()
+        if (!alreadyDone && ServerPrefs.isConfigured(context)) {
+            val promoLink = try {
+                JSONObject(File(product.folder, "meta.json").readText()).optString("promoLink", "")
+            } catch (e: Exception) {
+                ""
+            }
+            val region = try {
+                JSONObject(File(product.folder, "meta.json").readText()).optString("region", "TW")
+            } catch (e: Exception) {
+                "TW"
+            }
+            if (promoLink.isNotBlank()) {
+                onStatus("$progressPrefix：查詢共用圖片")
+                usedSharedProduct = try {
+                    RemoteVideoGenerator.applySharedProductImages(context, region, promoLink, product.folder)
+                } catch (e: Exception) {
+                    false
+                }
+                if (usedSharedProduct) {
+                    onStatus("$progressPrefix：套用共用圖片")
+                    File(product.folder, ".image_selection_done").createNewFile()
+                    File(product.folder, ".ai_processed").createNewFile()
+                    currentImages = (1..SHARED_IMAGE_POOL_SIZE).mapNotNull { n ->
+                        product.folder.listFiles { f -> f.nameWithoutExtension == "image_$n" }?.firstOrNull()
+                    }
+                }
+            }
+        }
+
+        if (!usedSharedProduct && !product.selectionDone) {
             onStatus("$progressPrefix：辨識圖片中")
             val bitmaps = currentImages.map { decodeSampledBitmap(it.path, 1024).first }
             if (bitmaps.any { it == null } || apiKey.isBlank()) {
@@ -678,7 +715,7 @@ private suspend fun runAutoSelectAndEditPipeline(
         }
 
         val aiProcessedNow = File(product.folder, ".ai_processed").exists()
-        if (aiEnabled && !aiProcessedNow) {
+        if (!usedSharedProduct && aiEnabled && !aiProcessedNow) {
             onStatus("$progressPrefix：AI改圖中")
             currentImages.forEach { targetFile ->
                 if (targetFile.exists()) {
@@ -699,7 +736,7 @@ private suspend fun runAutoSelectAndEditPipeline(
             justSelected = true
         }
 
-        if (justSelected && ServerPrefs.isConfigured(context)) {
+        if (justSelected && !usedSharedProduct && ServerPrefs.isConfigured(context)) {
             onStatus("$progressPrefix：同步共用資料夾")
             try {
                 val region = try {
@@ -707,11 +744,17 @@ private suspend fun runAutoSelectAndEditPipeline(
                 } catch (e: Exception) {
                     "TW"
                 }
+                val promoLink = try {
+                    JSONObject(File(product.folder, "meta.json").readText()).optString("promoLink", "")
+                } catch (e: Exception) {
+                    ""
+                }
                 RemoteVideoGenerator.uploadSharedProductImages(
                     context = context,
                     account = AccountPrefs.getAccount(context),
                     region = region,
                     productName = product.productName ?: product.folder.name,
+                    productLink = promoLink,
                     images = currentImages.filter { it.exists() }
                 )
             } catch (e: Exception) {

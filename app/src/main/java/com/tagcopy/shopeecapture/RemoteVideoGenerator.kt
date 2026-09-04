@@ -459,17 +459,17 @@ object RemoteVideoGenerator {
     }
 
     /**
-     * 【2026-09-03新增，同日補上依地區分開】把AI選圖+改圖完成的圖片（最多3張）連同
-     * 商品名稱同步到筆電的共用資料夾，讓之後其他帳號擷取到同一個商品時可以重複利用
-     * 這幾張圖，不用整套辨識/改圖流程重跑一次（省時間也省Gemini API費用）。
+     * 【2026-09-03新增，同日補上依地區分開；2026-09-04新增productLink】把AI選圖+
+     * 改圖完成的圖片（最多3張）連同商品名稱／連結同步到筆電的共用資料夾，讓之後
+     * 其他帳號擷取到同一個商品時可以重複利用這幾張圖，不用整套辨識/改圖流程重跑
+     * 一次（省時間也省Gemini API費用）。
      *
      * 依地區（TW/PH）分開存放——台灣跟菲律賓賣的是完全不同的商品目錄，共用資料夾
      * 不該把兩邊混在一起比對。
      *
-     * 目前用「商品名稱」當作分類依據——還沒有比對「這是不是同一個商品」更可靠的方式
-     * （例如連結裡的商品編號，這個方式還沒驗證過準不準），所以這步只負責把圖存到
-     * 共用資料夾，還沒有自動比對/自動提示「這個商品已經有其他帳號擷取過」的機制，
-     * 那部分要等確認更準的商品識別方式後再做。
+     * 【2026-09-04】productLink有值時，筆電端會優先解析出「店鋪ID_商品ID」當分類鍵
+     * （已驗證這組數字跨帳號分享同一商品時一致，比商品名稱精準）；解析失敗才退回
+     * 用商品名稱分類，這裡不用先判斷連結格式，交給筆電端統一處理。
      *
      * 同步失敗會丟例外，由呼叫端決定要不要提示使用者；不影響本次選圖/改圖/生成流程
      * 本身是否成功。
@@ -479,6 +479,7 @@ object RemoteVideoGenerator {
         account: String,
         region: String,
         productName: String,
+        productLink: String = "",
         images: List<File>
     ): Unit = withContext(Dispatchers.IO) {
         if (images.isEmpty()) return@withContext
@@ -490,6 +491,7 @@ object RemoteVideoGenerator {
             .addFormDataPart("account", account)
             .addFormDataPart("region", region)
             .addFormDataPart("product_name", productName)
+            .addFormDataPart("product_link", productLink)
 
         images.forEachIndexed { index, file ->
             bodyBuilder.addFormDataPart(
@@ -519,6 +521,68 @@ object RemoteVideoGenerator {
                 }
                 throw IOException(detail)
             }
+        }
+    }
+
+    /**
+     * 【2026-09-04新增】共用資料夾第二階段：查詢並套用其他帳號已經處理過的同一個
+     * 商品圖片。用meta.json裡的promoLink向筆電查詢，筆電會解析出「店鋪ID_商品ID」
+     * 精準比對（不用商品名稱模糊比對）。
+     *
+     * 找到就清掉folder裡舊的候選圖片（image_1/2/3等），把下載回來的共用圖片解壓
+     * 進去、重新編號成image_1/2/3，回傳true；呼叫端據此判斷可以直接跳過AI選圖/
+     * 改圖兩步驟。
+     *
+     * 沒找到（伺服器回404，代表連結解析不出商品編號、或沒有其他帳號處理過這個
+     * 商品）回傳false，不當例外——這是預期內的正常情況，呼叫端應該退回原本的
+     * AI選圖/改圖流程，不是錯誤。連線失敗等其他問題也回傳false（不中斷整個
+     * 商品的處理，跟uploadSharedProductImages()「同步失敗不影響本次生成」是
+     * 不同的錯誤處理哲學——這裡屬於「錦上添花」的加速功能，找不到/連不上都
+     * 應該靜靜退回正常流程，不該讓呼叫端還要額外處理例外）。
+     */
+    suspend fun applySharedProductImages(
+        context: Context,
+        region: String,
+        productLink: String,
+        folder: File
+    ): Boolean = withContext(Dispatchers.IO) {
+        if (productLink.isBlank()) return@withContext false
+        val serverUrl = ServerPrefs.getServerUrl(context)
+        if (serverUrl.isBlank()) return@withContext false
+
+        val url = "$serverUrl/check-shared-product" +
+            "?region=${java.net.URLEncoder.encode(region, "UTF-8")}" +
+            "&product_link=${java.net.URLEncoder.encode(productLink, "UTF-8")}"
+        val request = Request.Builder().url(url).get().build()
+
+        val zipBytes = try {
+            client.newCall(request).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext false
+                resp.body?.bytes()
+            }
+        } catch (e: Exception) {
+            Log.w("RemoteVideoGenerator", "查詢共用商品圖片失敗：${e.javaClass.simpleName} ${e.message}")
+            return@withContext false
+        } ?: return@withContext false
+
+        try {
+            // 清掉folder裡舊的候選圖片，避免共用圖片跟原本擷取到的候選圖混在一起，
+            // 讓make_video.py的find_images()誤判張數或抓到不該用的舊檔案。
+            folder.listFiles { f -> f.isFile && f.nameWithoutExtension.startsWith("image_") }
+                ?.forEach { it.delete() }
+
+            java.util.zip.ZipInputStream(zipBytes.inputStream()).use { zis ->
+                var entry = zis.nextEntry
+                while (entry != null) {
+                    val outFile = File(folder, entry.name)
+                    outFile.outputStream().use { out -> zis.copyTo(out) }
+                    entry = zis.nextEntry
+                }
+            }
+            true
+        } catch (e: Exception) {
+            Log.w("RemoteVideoGenerator", "套用共用商品圖片失敗：${e.javaClass.simpleName} ${e.message}")
+            false
         }
     }
 
