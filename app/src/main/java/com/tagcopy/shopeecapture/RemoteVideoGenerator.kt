@@ -44,6 +44,36 @@ object RemoteVideoGenerator {
 
     private const val UNCLASSIFIED_ACCOUNT = "未分類帳號"
 
+    private var currentVideoLogFileName: String? = null
+
+    /**
+     * 【2026-09-04新增】比照ShopeeAccessibilityService.kt的appendDebugLog()同一套持久化
+     * log機制，供之後如果再發生「App回報生成成功、但手機本地找不到output.mp4」這類異常
+     * 時，能有實際證據可查、不用再靠猜的排查。放在同一個資料夾（Download/
+     * ShopeeCaptureDebugLog/）但檔名前綴改成video_gen_log_（原本擷取階段的是
+     * debug_log_），方便辨識、不會互相覆蓋覆寫。同一批次（一次runBatch()）共用同一份
+     * 檔案，每次呼叫runBatch()開頭都會重置成新檔名（見runBatch()裡的reset）。
+     * 寫檔失敗（例如存取權限被系統收回）只忽略，不能讓記錄本身變成新的失敗點。
+     */
+    private fun appendVideoLog(line: String) {
+        try {
+            val dir = File(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                "ShopeeCaptureDebugLog"
+            )
+            if (!dir.exists()) dir.mkdirs()
+            val fileName = currentVideoLogFileName
+                ?: "video_gen_log_${java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())}.txt".also {
+                    currentVideoLogFileName = it
+                }
+            val file = File(dir, fileName)
+            val timestamp = java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())
+            file.appendText("[$timestamp] $line\n")
+        } catch (e: Exception) {
+            // 寫檔失敗不影響主流程，忽略即可
+        }
+    }
+
     private sealed class GenOutcome {
         data class Ok(val outputPath: String) : GenOutcome()
         data class Skipped(val message: String) : GenOutcome()
@@ -69,6 +99,9 @@ object RemoteVideoGenerator {
         val serverUrl = ServerPrefs.getServerUrl(context)
         val folders = captionQueueDir.listFiles { f -> f.isDirectory && f.name in selectedFolderNames }
             ?.sortedBy { it.name } ?: emptyList()
+
+        currentVideoLogFileName = null
+        appendVideoLog("===== 開始生成批次，共 ${folders.size} 支，force=$force =====")
 
         val okNames = mutableListOf<String>()
         val skippedNames = mutableListOf<String>()
@@ -145,6 +178,8 @@ object RemoteVideoGenerator {
             )
         }
 
+        appendVideoLog("===== 批次結束：成功${okNames.size}／跳過${skippedNames.size}／失敗${errorItems.size}／停止=$stopped／筆電斷線=$laptopUnreachable =====")
+
         if (serverUrl.isNotBlank()) {
             backupDedupHistory(serverUrl)
         }
@@ -161,6 +196,7 @@ object RemoteVideoGenerator {
         // 它是不是一支完整可播放的影片，避免上次生成到一半被中斷留下的殘缺檔案被誤判
         // 成「已完成」而永遠不會重新生成。
         if (outputFile.isFile && !force && isValidVideo(outputFile)) {
+            appendVideoLog("[${folder.name}] output.mp4已存在且驗證通過，跳過")
             return GenOutcome.Skipped("output.mp4 已存在")
         }
 
@@ -189,13 +225,16 @@ object RemoteVideoGenerator {
             .build()
 
         onStep("筆電生成中")
+        appendVideoLog("[${folder.name}] 送出generate-video請求，zip大小=${zipBytes.size} bytes")
         val response = try {
             client.newCall(request).execute()
         } catch (e: IOException) {
+            appendVideoLog("[${folder.name}] 連線筆電失敗：${e.javaClass.simpleName} ${e.message}")
             throw ServerUnreachableException("連線筆電服務失敗（$serverUrl）：${e.javaClass.simpleName} ${e.message}")
         }
 
         response.use { resp ->
+            appendVideoLog("[${folder.name}] 收到回應，HTTP ${resp.code}，isSuccessful=${resp.isSuccessful}")
             if (!resp.isSuccessful) {
                 val detail = try {
                     val text = resp.body?.string()
@@ -204,14 +243,39 @@ object RemoteVideoGenerator {
                 } catch (e: Exception) {
                     "HTTP ${resp.code}"
                 }
+                appendVideoLog("[${folder.name}] 筆電回報失敗：$detail")
                 return GenOutcome.Error("筆電服務回報生成失敗：$detail")
             }
-            val bytes = resp.body?.bytes()
-                ?: return GenOutcome.Error("筆電服務回應內容是空的")
+            // 【2026-09-04】原本resp.body?.bytes()這行沒有自己的try/catch，只有下面
+            // outputFile.writeBytes()那行有包——如果讀取回應內容本身就失敗（例如傳輸
+            // 中斷、逾時），例外會直接從這裡往外丟，不會被下面那個try/catch接住。
+            // 外層runBatch()的呼叫端有一層Exception兜底會記錄成失敗，理論上不會被
+            // 完全吃掉，但這裡明確補上自己的try/catch，讓失敗原因（讀取回應失敗
+            // vs 寫檔失敗）在log裡分得更清楚，之後真的再發生能一眼看出是哪一段。
+            val bytes = try {
+                resp.body?.bytes()
+            } catch (e: Exception) {
+                appendVideoLog("[${folder.name}] 讀取筆電回應內容失敗：${e.javaClass.simpleName} ${e.message}")
+                return GenOutcome.Error("讀取筆電回應內容失敗：${e.javaClass.simpleName} ${e.message}")
+            }
+            if (bytes == null) {
+                appendVideoLog("[${folder.name}] 筆電回應內容是空的（body為null）")
+                return GenOutcome.Error("筆電服務回應內容是空的")
+            }
+            appendVideoLog("[${folder.name}] 讀到回應內容 ${bytes.size} bytes，準備寫入 ${outputFile.path}")
             try {
                 outputFile.writeBytes(bytes)
             } catch (e: Exception) {
+                appendVideoLog("[${folder.name}] 寫入檔案失敗：${e.javaClass.simpleName} ${e.message}")
                 return GenOutcome.Error("寫入影片檔案失敗：${e.javaClass.simpleName} ${e.message}")
+            }
+            // 寫完立刻回讀檔案大小驗證是否真的落地成功，跟收到的bytes數量一致才算數，
+            // 避免「writeBytes()沒丟例外，但實際上系統中途把檔案截斷」這種難以察覺的
+            // 落差被誤判成功。
+            val actualSize = if (outputFile.isFile) outputFile.length() else -1L
+            appendVideoLog("[${folder.name}] 寫入後實際檔案大小=$actualSize bytes（預期${bytes.size} bytes）")
+            if (actualSize != bytes.size.toLong()) {
+                return GenOutcome.Error("寫入影片檔案後大小不符（預期${bytes.size}，實際$actualSize），可能是儲存空間不足或權限被收回")
             }
         }
 
