@@ -80,6 +80,15 @@ fun RootScreen() {
         mutableStateOf(RestrictedSettingsPrefs.isConfirmed(context))
     }
 
+    // 【2026-09-04新增】「從筆電下載」匯入設定成功後，用來讓下面所有讀取Prefs值的
+    // 設定卡片重新讀取一次目前實際存在SharedPreferences裡的值。這些卡片各自的欄位
+    // 都是用remember{ mutableStateOf(XxxPrefs.get...) }在第一次進畫面時讀一次就鎖住，
+    // 匯入設定當下直接寫SharedPreferences不會自動觸發這些已經記住的狀態重新讀取，
+    // 造成畫面看起來「沒套用」（實際上底層資料有寫入成功，只是畫面沒跟著換）。
+    // 每個相關卡片把這個值放進remember(settingsReloadKey){...}的key裡，值一變就會
+    // 重新從Prefs讀一次最新內容。
+    var settingsReloadKey by remember { mutableStateOf(0) }
+
     val overlayLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) {
@@ -158,19 +167,19 @@ fun RootScreen() {
 
         Spacer(Modifier.height(28.dp))
 
-        SettingsExportImportCard(context)
+        SettingsExportImportCard(context, onImported = { settingsReloadKey++ })
 
         Spacer(Modifier.height(20.dp))
 
-        RegionSettingsCard(context)
+        RegionSettingsCard(context, reloadKey = settingsReloadKey)
 
         Spacer(Modifier.height(20.dp))
 
-        AccountSettingsCard(context)
+        AccountSettingsCard(context, reloadKey = settingsReloadKey)
 
         Spacer(Modifier.height(20.dp))
 
-        ServerSettingsCard(context)
+        ServerSettingsCard(context, reloadKey = settingsReloadKey)
 
         Spacer(Modifier.height(20.dp))
 
@@ -299,7 +308,7 @@ fun RootScreen() {
 
         Spacer(Modifier.height(14.dp))
 
-        AutoCaptureSettingsCard(context)
+        AutoCaptureSettingsCard(context, reloadKey = settingsReloadKey)
 
         Spacer(Modifier.height(14.dp))
 
@@ -315,7 +324,7 @@ fun RootScreen() {
 
         Spacer(Modifier.height(14.dp))
 
-        AiBackgroundCard(context)
+        AiBackgroundCard(context, reloadKey = settingsReloadKey)
 
         Spacer(Modifier.height(32.dp))
 
@@ -371,7 +380,7 @@ fun FlowRowChips(options: List<String>, selected: String, onSelect: (String) -> 
 }
 
 @Composable
-fun SettingsExportImportCard(context: android.content.Context) {
+fun SettingsExportImportCard(context: android.content.Context, onImported: () -> Unit = {}) {
     val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
 
@@ -500,6 +509,7 @@ fun SettingsExportImportCard(context: android.content.Context) {
                                 UploadAutomationPrefs.setFbUploadEnabled(context, json.optBoolean("fbUploadEnabled", true))
                             }
                             Toast.makeText(context, context.getString(R.string.settings_import_done), Toast.LENGTH_LONG).show()
+                            onImported()
                         } catch (e: Exception) {
                             Toast.makeText(
                                 context,
@@ -523,8 +533,8 @@ fun SettingsExportImportCard(context: android.content.Context) {
 }
 
 @Composable
-fun RegionSettingsCard(context: android.content.Context) {
-    var region by remember { mutableStateOf(RegionPrefs.getRegion(context)) }
+fun RegionSettingsCard(context: android.content.Context, reloadKey: Int = 0) {
+    var region by remember(reloadKey) { mutableStateOf(RegionPrefs.getRegion(context)) }
 
     Column(
         modifier = Modifier
@@ -551,11 +561,11 @@ fun RegionSettingsCard(context: android.content.Context) {
 }
 
 @Composable
-fun AccountSettingsCard(context: android.content.Context) {
-    var accountText by remember {
+fun AccountSettingsCard(context: android.content.Context, reloadKey: Int = 0) {
+    var accountText by remember(reloadKey) {
         mutableStateOf(if (AccountPrefs.isSet(context)) AccountPrefs.getAccount(context) else "")
     }
-    var history by remember { mutableStateOf(AccountPrefs.getAccountHistory(context)) }
+    var history by remember(reloadKey) { mutableStateOf(AccountPrefs.getAccountHistory(context)) }
     val scope = rememberCoroutineScope()
     var restoring by remember { mutableStateOf(false) }
 
@@ -654,8 +664,8 @@ fun AccountSettingsCard(context: android.content.Context) {
 }
 
 @Composable
-fun ServerSettingsCard(context: android.content.Context) {
-    var urlText by remember { mutableStateOf(ServerPrefs.getServerUrl(context)) }
+fun ServerSettingsCard(context: android.content.Context, reloadKey: Int = 0) {
+    var urlText by remember(reloadKey) { mutableStateOf(ServerPrefs.getServerUrl(context)) }
 
     Column(
         modifier = Modifier
@@ -695,23 +705,23 @@ fun ServerSettingsCard(context: android.content.Context) {
 }
 
 @Composable
-fun AutoCaptureSettingsCard(context: android.content.Context) {
-    var config by remember { mutableStateOf(AutoCapturePrefs.load(context)) }
-    var countText by remember { mutableStateOf(config.targetCount.toString()) }
-    var minDelayText by remember { mutableStateOf((config.minDelayMs / 1000.0).toString()) }
-    var maxDelayText by remember { mutableStateOf((config.maxDelayMs / 1000.0).toString()) }
+fun AutoCaptureSettingsCard(context: android.content.Context, reloadKey: Int = 0) {
+    var config by remember(reloadKey) { mutableStateOf(AutoCapturePrefs.load(context)) }
+    var countText by remember(reloadKey) { mutableStateOf(config.targetCount.toString()) }
+    var minDelayText by remember(reloadKey) { mutableStateOf((config.minDelayMs / 1000.0).toString()) }
+    var maxDelayText by remember(reloadKey) { mutableStateOf((config.maxDelayMs / 1000.0).toString()) }
 
-    var minCommissionText by remember { mutableStateOf(config.filter.minCommissionPercent?.toString() ?: "") }
-    var maxCommissionText by remember { mutableStateOf(config.filter.maxCommissionPercent?.toString() ?: "") }
-    var minPriceText by remember { mutableStateOf(config.filter.minPrice?.toString() ?: "") }
-    var maxPriceText by remember { mutableStateOf(config.filter.maxPrice?.toString() ?: "") }
-    var minSoldText by remember { mutableStateOf(config.filter.minSoldCount?.toString() ?: "") }
-    var maxSoldText by remember { mutableStateOf(config.filter.maxSoldCount?.toString() ?: "") }
-    var minPromoterText by remember { mutableStateOf(config.filter.minPromoterCount?.toString() ?: "") }
-    var maxPromoterText by remember { mutableStateOf(config.filter.maxPromoterCount?.toString() ?: "") }
-    var timeLimitText by remember { mutableStateOf(config.timeLimitMs?.let { (it / 60000).toString() } ?: "") }
-    var maxAttemptsEnabled by remember { mutableStateOf(config.maxAttemptsLimitEnabled) }
-    var timeLimitEnabled by remember { mutableStateOf(config.timeLimitEnabled) }
+    var minCommissionText by remember(reloadKey) { mutableStateOf(config.filter.minCommissionPercent?.toString() ?: "") }
+    var maxCommissionText by remember(reloadKey) { mutableStateOf(config.filter.maxCommissionPercent?.toString() ?: "") }
+    var minPriceText by remember(reloadKey) { mutableStateOf(config.filter.minPrice?.toString() ?: "") }
+    var maxPriceText by remember(reloadKey) { mutableStateOf(config.filter.maxPrice?.toString() ?: "") }
+    var minSoldText by remember(reloadKey) { mutableStateOf(config.filter.minSoldCount?.toString() ?: "") }
+    var maxSoldText by remember(reloadKey) { mutableStateOf(config.filter.maxSoldCount?.toString() ?: "") }
+    var minPromoterText by remember(reloadKey) { mutableStateOf(config.filter.minPromoterCount?.toString() ?: "") }
+    var maxPromoterText by remember(reloadKey) { mutableStateOf(config.filter.maxPromoterCount?.toString() ?: "") }
+    var timeLimitText by remember(reloadKey) { mutableStateOf(config.timeLimitMs?.let { (it / 60000).toString() } ?: "") }
+    var maxAttemptsEnabled by remember(reloadKey) { mutableStateOf(config.maxAttemptsLimitEnabled) }
+    var timeLimitEnabled by remember(reloadKey) { mutableStateOf(config.timeLimitEnabled) }
 
     fun persist() {
         val count = countText.toIntOrNull()?.coerceIn(1, 100) ?: config.targetCount
@@ -933,10 +943,10 @@ fun VideoImportCard(context: android.content.Context) {
  * 原圖，不會影響原本的擷取流程。
  */
 @Composable
-fun AiBackgroundCard(context: android.content.Context) {
-    var apiKey by remember { mutableStateOf(GeminiApiPrefs.getApiKey(context)) }
-    var enabled by remember { mutableStateOf(GeminiApiPrefs.isEnabled(context)) }
-    var prompt by remember { mutableStateOf(GeminiApiPrefs.getPrompt(context)) }
+fun AiBackgroundCard(context: android.content.Context, reloadKey: Int = 0) {
+    var apiKey by remember(reloadKey) { mutableStateOf(GeminiApiPrefs.getApiKey(context)) }
+    var enabled by remember(reloadKey) { mutableStateOf(GeminiApiPrefs.isEnabled(context)) }
+    var prompt by remember(reloadKey) { mutableStateOf(GeminiApiPrefs.getPrompt(context)) }
     var apiKeyVisible by remember { mutableStateOf(false) }
 
     Column(
