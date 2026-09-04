@@ -1747,7 +1747,20 @@ class ShopeeAccessibilityService : AccessibilityService() {
             appendDebugLog("  → 清單第一筆內容（用來核對是否為剛匯入的商品，本次匯入連結=${candidate.promoLink}）：${rowTexts.joinToString(" | ")}")
         }
         val invalidKeywords = listOf("無效", "已下架", "已售完", "Invalid", "Out of Stock", "Sold Out", "Delisted")
-        val matchedInvalidKeyword = invalidKeywords.firstOrNull { kw -> rowTexts.any { it.contains(kw) } }
+        // 【2026-09-04修正】原本直接對整批rowTexts比對關鍵字，實測發現往上5層父節點＋往下
+        // 挖8層深度抓到的範圍太大，把畫面上方固定存在的排序頁籤「無效商品」（跟「最新」
+        // 「較高分潤」同一排的篩選標籤，不是針對這個商品的狀態）也一起掃進去，導致
+        // 每支商品都被誤判成無效、上架永遠上不成功（debug log實際證據：清單第一筆內容
+        // 擷取到的文字裡包含「無效商品」，但那是頁籤文字，不是這個商品真的無效）。
+        // 修法：先排除已經證實會誤判的這幾個固定頁籤文字，再做關鍵字比對——沒有節點樹
+        // dump佐證「往上幾層」抓的範圍該怎麼調整比較準，不用猜的去改樹狀結構，直接針對
+        // 已經證實的誤判來源做排除最直接可靠。TW/PH兩地頁籤文字都排除。
+        val knownChromeTexts = setOf(
+            "排序：", "最新", "較高分潤", "無效商品",
+            "Sort by", "Newest", "Higher Commission", "Invalid Products"
+        )
+        val filteredRowTexts = rowTexts.filterNot { it in knownChromeTexts }
+        val matchedInvalidKeyword = invalidKeywords.firstOrNull { kw -> filteredRowTexts.any { it.contains(kw) } }
         if (matchedInvalidKeyword != null) {
             appendDebugLog("  → [${candidate.folder.name}] 清單第一筆內容包含「$matchedInvalidKeyword」，判定商品已無效/售完，標記跳過不重試")
             markProductInvalid(candidate.folder, "上架時偵測到清單標記：$matchedInvalidKeyword")
