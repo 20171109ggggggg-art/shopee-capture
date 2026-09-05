@@ -1304,6 +1304,16 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
         appendDebugLog("  → 掃描候選商品：CaptionQueue 底下共 ${dirs.size} 個商品資料夾")
 
+        // 【2026-09-05新增】一支手機可能有多個蝦皮帳號輪流使用（見meta.json的account
+        // 欄位——擷取當下把使用中帳號記進去），原本這裡沒有比對account，切換帳號跑
+        // 上架自動化時，會連還沒上架完成的「其他帳號」商品也一起掃進候選清單，拿現在
+        // 登入的這個帳號去操作——分潤連結（promoLink）是當初擷取那個帳號的追蹤連結，
+        // 用別的帳號身份操作會導致分潤歸屬算錯，甚至可能上架失敗。改成只挑account欄位
+        // 等於目前使用中帳號的商品，其他帳號的商品即使符合其他條件也跳過，留著等切回
+        // 那個帳號才處理。FB上架（scanFbUploadCandidates）不用比照加，使用者確認FB
+        // 只有單一帳號，沒有這個問題。
+        val activeAccount = AccountPrefs.getAccount(this)
+
         for (dir in dirs) {
             val metaFile = File(dir, "meta.json")
             if (!metaFile.isFile) {
@@ -1312,6 +1322,12 @@ class ShopeeAccessibilityService : AccessibilityService() {
             }
             try {
                 val json = org.json.JSONObject(metaFile.readText())
+
+                val productAccount = json.optString("account", "")
+                if (productAccount.isNotBlank() && productAccount != activeAccount) {
+                    appendDebugLog("  → 掃描候選商品：${dir.name} 屬於帳號「$productAccount」，跟目前使用中帳號「$activeAccount」不同，跳過")
+                    continue
+                }
 
                 val videoGeneratedAt = json.optString("videoGeneratedAt", "")
                     .takeIf { it.isNotBlank() && it != "null" }
