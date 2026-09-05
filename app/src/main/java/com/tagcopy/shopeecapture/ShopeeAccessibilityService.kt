@@ -2848,8 +2848,13 @@ class ShopeeAccessibilityService : AccessibilityService() {
      * 重複利用同一支影片，蝦皮上架完就把影片刪了的話FB階段就沒有影片可以用了。
      * 改成：兩個平台都上架完（shopeePosted=true 且 fbPosted=true）才真的刪除資料夾；
      * 只完成其中一邊的話，先保留整個資料夾（含影片），等另一邊也完成再刪。
-     * 目前FB階段還沒開發，所以現況等於「蝦皮上架完先保留，之後接上FB流程才會真的清掉」，
-     * 磁碟空間吃緊的問題會回來，之後FB流程做完、跑順了要留意觀察空間狀況。
+     *
+     * 【2026-09-05修正】上面這套邏輯有個前提：FB上架遲早會發生。但如果使用者把
+     * 「FB上架功能」總開關關掉（UploadAutomationPrefs.isFbUploadEnabled()==false），
+     * fbPosted永遠不會變成true，資料夾會無限期留著、磁碟空間持續被占用，等於這個
+     * 開關關掉之後刪除機制形同失效。改成：FB總開關關閉時，只要shopeePosted就足夠
+     * 刪除（不用等一個註定不會發生的fbPosted）；開關開著時維持原本「兩邊都上架完
+     * 才刪」的邏輯不變。
      */
     private fun deleteFolderIfFullyPosted(folder: File) {
         try {
@@ -2861,15 +2866,18 @@ class ShopeeAccessibilityService : AccessibilityService() {
             val json = org.json.JSONObject(metaFile.readText())
             val shopeePosted = json.optBoolean("shopeePosted", false)
             val fbPosted = json.optBoolean("fbPosted", false)
-            if (!shopeePosted || !fbPosted) {
-                appendDebugLog("  → [${folder.name}] 尚未兩邊都上架完成（shopeePosted=$shopeePosted, fbPosted=$fbPosted），保留資料夾與影片")
+            val fbEnabled = UploadAutomationPrefs.isFbUploadEnabled(this)
+            val readyToDelete = if (fbEnabled) shopeePosted && fbPosted else shopeePosted
+            if (!readyToDelete) {
+                appendDebugLog("  → [${folder.name}] 尚未符合刪除條件（shopeePosted=$shopeePosted, fbPosted=$fbPosted, FB上架功能開啟=$fbEnabled），保留資料夾與影片")
                 return
             }
             val deleted = folder.deleteRecursively()
             if (deleted) {
-                appendDebugLog("  → [${folder.name}] 蝦皮與FB都已上架完成，已刪除整個資料夾，騰出磁碟空間")
+                val reason = if (fbEnabled) "蝦皮與FB都已上架完成" else "蝦皮已上架完成（FB上架功能目前關閉，不等FB）"
+                appendDebugLog("  → [${folder.name}] $reason，已刪除整個資料夾，騰出磁碟空間")
             } else {
-                appendDebugLog("  → [${folder.name}] 兩邊都上架完成但刪除資料夾失敗（部分檔案可能刪除不完全），可能需要手動清理")
+                appendDebugLog("  → [${folder.name}] 符合刪除條件但刪除資料夾失敗（部分檔案可能刪除不完全），可能需要手動清理")
             }
         } catch (e: Exception) {
             appendDebugLog("  → [${folder.name}] 判斷/刪除資料夾發生例外：${e.javaClass.simpleName} ${e.message}")
