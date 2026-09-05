@@ -2603,26 +2603,39 @@ class ShopeeAccessibilityService : AccessibilityService() {
      * 這樣才會準確落在真正的商品卡片上，而不是外層容器。
      */
     private fun findClickableAncestorContainingDesc(root: AccessibilityNodeInfo, exactDesc: String): AccessibilityNodeInfo? {
-        var targetNode: AccessibilityNodeInfo? = null
-        fun findExact(node: AccessibilityNodeInfo?, depth: Int) {
-            if (node == null || targetNode != null || depth > 30) return
+        // 【2026-09-05修正】原本只抓「節點樹深度優先遍歷第一個找到」的符合節點，但FB搜尋
+        // 結果畫面同一個商品名稱常常會搜出好幾張長得很像的商品卡（不同賣家/不同規格），
+        // 每張卡片都有desc=="蝦皮購物"這個標籤，深度優先遍歷抓到的「第一個」不保證是畫面上
+        // 「視覺上排最上面」的那張——這兩種「第一個」的定義不一樣，Litho這類自繪UI的節點樹
+        // 順序不一定跟畫面座標由上到下排列一致。改成蒐集全部符合的候選卡片，依畫面座標的
+        // Y軸位置排序，選「視覺上最靠近畫面上方」的那張——已經用實際案例驗證過，畫面排
+        // 最上面的那張才是正確對應要找的商品。
+        val candidates = mutableListOf<AccessibilityNodeInfo>()
+        fun findAllExact(node: AccessibilityNodeInfo?, depth: Int) {
+            if (node == null || depth > 30) return
             if (node.contentDescription?.toString() == exactDesc) {
-                targetNode = node
-                return
+                candidates.add(node)
             }
-            for (i in 0 until node.childCount) findExact(node.getChild(i), depth + 1)
+            for (i in 0 until node.childCount) findAllExact(node.getChild(i), depth + 1)
         }
-        findExact(root, 0)
-        val start = targetNode ?: return null
+        findAllExact(root, 0)
+        if (candidates.isEmpty()) return null
 
-        var ancestor = start.parent
-        var depth = 0
-        while (ancestor != null && depth < 8) {
-            if (ancestor.isClickable) return ancestor
-            ancestor = ancestor.parent
-            depth++
+        val ancestorsWithTop = candidates.mapNotNull { start ->
+            var ancestor = start.parent
+            var depth = 0
+            while (ancestor != null && depth < 8) {
+                if (ancestor.isClickable) {
+                    val bounds = Rect()
+                    ancestor.getBoundsInScreen(bounds)
+                    return@mapNotNull ancestor to bounds.top
+                }
+                ancestor = ancestor.parent
+                depth++
+            }
+            null
         }
-        return null
+        return ancestorsWithTop.minByOrNull { it.second }?.first
     }
 
     /**
