@@ -416,13 +416,16 @@ object RemoteVideoGenerator {
 
     /** 把商品資料夾整包壓成zip（在記憶體中組，不落地暫存檔案）。故意排除output.mp4
      * 本身——會進到這裡代表舊影片不存在或驗證失敗，沒必要把壞掉/不需要的舊檔案也
-     * 傳一份耗費手機流量。 */
+     * 傳一份耗費手機流量。【2026-09-05新增】一併排除`.preview_`開頭的暫存檔——這是
+     * 「檢查影片」畫面播放時另外複製出來、給外部播放器App用的一次性副本（避免播放器
+     * 依網址快取顯示過期內容），不是商品內容的一部分，上傳到筆電也沒有用途。 */
     private fun zipFolder(folder: File): ByteArray {
         val buffer = ByteArrayOutputStream()
         ZipOutputStream(buffer).use { zos ->
             folder.listFiles()?.forEach { file ->
                 if (!file.isFile) return@forEach
                 if (file.name == "output.mp4") return@forEach
+                if (file.name.startsWith(".preview_")) return@forEach
                 zos.putNextEntry(ZipEntry(file.name))
                 file.inputStream().use { it.copyTo(zos) }
                 zos.closeEntry()

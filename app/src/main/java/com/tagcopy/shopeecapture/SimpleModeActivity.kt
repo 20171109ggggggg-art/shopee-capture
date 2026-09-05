@@ -1295,10 +1295,20 @@ private fun ReviewVideosScreen(context: Context, onBack: () -> Unit) {
                                     rescanAndWait(context, video.videoFile)
                                 } catch (e: Exception) { /* 掃描本身失敗不影響後續嘗試播放 */ }
                                 try {
+                                    // 【2026-09-05新增】外部影片播放器App常常依「網址」快取畫面內容，
+                                    // 同一支output.mp4即使內容已經重新生成過，播放器可能還是顯示
+                                    // 舊的快取結果，不是我們App本身的檔案/程式邏輯出問題。修法：
+                                    // 每次播放前先複製成帶時間戳記的全新暫存檔名，讓外部播放器
+                                    // 每次拿到的都是從沒看過的新網址，強迫它讀取最新內容，不會受
+                                    // 舊快取影響。先清掉這個資料夾裡先前留下的暫存副本，避免累積。
+                                    video.folder.listFiles { f -> f.name.startsWith(".preview_") }
+                                        ?.forEach { it.delete() }
+                                    val previewFile = File(video.folder, ".preview_${System.currentTimeMillis()}.mp4")
+                                    video.videoFile.copyTo(previewFile, overwrite = true)
                                     val uri: Uri = FileProvider.getUriForFile(
                                         context,
                                         "com.tagcopy.shopeecapture.fileprovider",
-                                        video.videoFile
+                                        previewFile
                                     )
                                     val intent = Intent(Intent.ACTION_VIEW).apply {
                                         setDataAndType(uri, "video/mp4")
