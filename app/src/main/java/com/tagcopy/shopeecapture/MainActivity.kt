@@ -972,6 +972,11 @@ fun AiBackgroundCard(context: android.content.Context, reloadKey: Int = 0) {
     var enabled by remember(reloadKey) { mutableStateOf(GeminiApiPrefs.isEnabled(context)) }
     var prompt by remember(reloadKey) { mutableStateOf(GeminiApiPrefs.getPrompt(context)) }
     var apiKeyVisible by remember { mutableStateOf(false) }
+    // 【2026-09-05新增】AI改圖服務供應商（Gemini/ChatGPT）與OpenAI API Key，
+    // 使用者手動切換要用哪個供應商，不做自動判斷/自動備援切換。
+    var provider by remember(reloadKey) { mutableStateOf(GeminiApiPrefs.getImageEditProvider(context)) }
+    var openAiApiKey by remember(reloadKey) { mutableStateOf(GeminiApiPrefs.getOpenAiApiKey(context)) }
+    var openAiApiKeyVisible by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -1027,13 +1032,53 @@ fun AiBackgroundCard(context: android.content.Context, reloadKey: Int = 0) {
         )
         Spacer(Modifier.height(10.dp))
 
+        Text("AI改圖服務", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = InkColor)
+        Spacer(Modifier.height(6.dp))
+        FlowRowChips(
+            options = ImageEditProvider.entries.map { it.label },
+            selected = provider.label,
+            onSelect = { label ->
+                provider = ImageEditProvider.fromLabel(label)
+                GeminiApiPrefs.setImageEditProvider(context, provider)
+            }
+        )
+        Spacer(Modifier.height(10.dp))
+
+        if (provider == ImageEditProvider.CHATGPT) {
+            Text(
+                "還沒有OpenAI API Key？瀏覽器打開 platform.openai.com/api-keys，登入後點" +
+                    "「Create new secret key」，複製貼到下面欄位即可。OpenAI沒有免費額度，" +
+                    "第一次使用需要先在帳戶加入付款方式。",
+                fontSize = 12.sp, color = MutedColor, lineHeight = 17.sp
+            )
+            Spacer(Modifier.height(10.dp))
+            OutlinedTextField(
+                value = openAiApiKey,
+                onValueChange = {
+                    openAiApiKey = it
+                    GeminiApiPrefs.setOpenAiApiKey(context, it)
+                },
+                label = { Text("OpenAI API Key", fontSize = 12.sp) },
+                singleLine = true,
+                visualTransformation = if (openAiApiKeyVisible) androidx.compose.ui.text.input.VisualTransformation.None
+                    else androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                trailingIcon = {
+                    TextButton(onClick = { openAiApiKeyVisible = !openAiApiKeyVisible }) {
+                        Text(if (openAiApiKeyVisible) "隱藏" else "顯示", fontSize = 11.sp)
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(10.dp))
+        }
+
         OutlinedTextField(
             value = prompt,
             onValueChange = {
                 prompt = it
                 GeminiApiPrefs.setPrompt(context, it)
             },
-            label = { Text("換背景提示詞（可自行調整）", fontSize = 12.sp) },
+            label = { Text("換背景提示詞（可自行調整，兩個供應商共用同一份）", fontSize = 12.sp) },
             minLines = 3,
             modifier = Modifier.fillMaxWidth()
         )

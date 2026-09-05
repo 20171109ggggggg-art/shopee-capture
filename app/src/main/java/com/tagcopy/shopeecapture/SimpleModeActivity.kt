@@ -654,6 +654,11 @@ private suspend fun runAutoSelectAndEditPipeline(
     val aiEnabled = GeminiApiPrefs.isEnabled(context)
     val apiKey = GeminiApiPrefs.getApiKey(context)
     val editPrompt = GeminiApiPrefs.getPrompt(context)
+    // 【2026-09-05新增】AI改圖供應商可能是Gemini或ChatGPT（設定畫面選單切換），
+    // 選圖辨識（GeminiImageSelector）不受影響、固定用Gemini，只有「換背景」這步
+    // 依此分派給對應的object呼叫。
+    val imageEditProvider = GeminiApiPrefs.getImageEditProvider(context)
+    val openAiApiKey = GeminiApiPrefs.getOpenAiApiKey(context)
 
     products.forEachIndexed { idx, product ->
         val label = product.productName ?: product.folder.name
@@ -721,10 +726,20 @@ private suspend fun runAutoSelectAndEditPipeline(
                 if (targetFile.exists()) {
                     val original = android.graphics.BitmapFactory.decodeFile(targetFile.path)
                     if (original != null) {
-                        val editResult = GeminiImageEditor.editBackground(original, apiKey, editPrompt)
-                        if (editResult.success && editResult.editedBitmap != null) {
+                        val editResult = when (imageEditProvider) {
+                            ImageEditProvider.GEMINI -> {
+                                val r = GeminiImageEditor.editBackground(original, apiKey, editPrompt)
+                                Triple(r.success, r.editedBitmap, r.errorMessage)
+                            }
+                            ImageEditProvider.CHATGPT -> {
+                                val r = OpenAiImageEditor.editBackground(original, openAiApiKey, editPrompt)
+                                Triple(r.success, r.editedBitmap, r.errorMessage)
+                            }
+                        }
+                        val (editSuccess, editedBitmap, _) = editResult
+                        if (editSuccess && editedBitmap != null) {
                             java.io.FileOutputStream(targetFile).use { out ->
-                                editResult.editedBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, out)
+                                editedBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, out)
                             }
                         }
                         // 改圖失敗（result.success=false）就保留原圖繼續走，不算這個商品失敗，

@@ -3,7 +3,24 @@ package com.tagcopy.shopeecapture
 import android.content.Context
 
 /**
- * AI換背景（測試功能）的設定：Gemini API Key、是否啟用、換背景提示詞。
+ * 【2026-09-05新增】AI改圖要用哪個供應商——使用者在設定畫面「AI改圖服務」選單手動切換，
+ * 不做自動判斷/自動備援切換（品質好壞很難用程式準確判斷，切錯了反而更難排查）。
+ * 兩邊共用同一份換背景提示詞（getPrompt()/setPrompt()），不分裂成兩份維護；
+ * 如果之後發現ChatGPT對這份提示詞有系統性理解落差，再考慮另外調整。
+ */
+enum class ImageEditProvider(val label: String) {
+    GEMINI("Gemini"),
+    CHATGPT("ChatGPT");
+
+    companion object {
+        fun fromLabel(label: String): ImageEditProvider =
+            entries.firstOrNull { it.label == label } ?: GEMINI
+    }
+}
+
+/**
+ * AI換背景（測試功能）的設定：Gemini/OpenAI API Key、是否啟用、換背景提示詞、
+ * 目前選用的AI改圖供應商。
  * API Key存在SharedPreferences的私有檔案裡，只有這個App自己能讀到（其他App讀不到）。
  */
 object GeminiApiPrefs {
@@ -11,6 +28,8 @@ object GeminiApiPrefs {
     private const val KEY_API_KEY = "api_key"
     private const val KEY_ENABLED = "enabled"
     private const val KEY_PROMPT = "prompt"
+    private const val KEY_OPENAI_API_KEY = "openai_api_key"
+    private const val KEY_IMAGE_EDIT_PROVIDER = "image_edit_provider"
 
     val DEFAULT_PROMPT =
         "保留這張圖片裡的商品本體形狀、顏色、材質完全不變，" +
@@ -61,6 +80,33 @@ object GeminiApiPrefs {
     fun setPrompt(context: Context, prompt: String) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
             .putString(KEY_PROMPT, prompt)
+            .apply()
+    }
+
+    fun getOpenAiApiKey(context: Context): String {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_OPENAI_API_KEY, "") ?: ""
+    }
+
+    fun setOpenAiApiKey(context: Context, apiKey: String) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+            .putString(KEY_OPENAI_API_KEY, apiKey.trim())
+            .apply()
+    }
+
+    fun getImageEditProvider(context: Context): ImageEditProvider {
+        val name = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_IMAGE_EDIT_PROVIDER, ImageEditProvider.GEMINI.name)
+        return try {
+            ImageEditProvider.valueOf(name ?: ImageEditProvider.GEMINI.name)
+        } catch (e: Exception) {
+            ImageEditProvider.GEMINI
+        }
+    }
+
+    fun setImageEditProvider(context: Context, provider: ImageEditProvider) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+            .putString(KEY_IMAGE_EDIT_PROVIDER, provider.name)
             .apply()
     }
 }
