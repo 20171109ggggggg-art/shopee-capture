@@ -744,6 +744,7 @@ private fun ReviewEditedImagesContent(products: List<GenerateQueueItem>, onDone:
 }
 
 
+/**
  * AI改圖的整合流程，取代原本「手動九宮格選圖」+「浮球AI改圖批次按鈕」兩個分開的
  * 手動步驟。在「生成影片」畫面按下「開始生成影片」時，對每個勾選但還沒處理完的
  * 商品依序做：
