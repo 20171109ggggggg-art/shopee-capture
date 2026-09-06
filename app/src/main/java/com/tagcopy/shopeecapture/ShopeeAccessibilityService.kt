@@ -3267,20 +3267,60 @@ class ShopeeAccessibilityService : AccessibilityService() {
         val fileToRegister = tempCopy ?: videoFile
         lastTempUploadCopy = tempCopy
 
-        val result = withTimeoutOrNull(8000) {
-            suspendCancellableCoroutine<Uri?> { continuation ->
-                try {
-                    MediaScannerConnection.scanFile(
-                        applicationContext,
-                        arrayOf(fileToRegister.absolutePath),
-                        arrayOf("video/mp4")
-                    ) { _, uri ->
-                        if (continuation.isActive) continuation.resume(uri)
+        // 【2026-09-07修正】原本用MediaScannerConnection.scanFile()單純觸發系統掃描，
+        // 掃描結果的DATE_TAKEN／建立時間欄位是系統從mp4檔案本身的metadata讀出來的
+        // ——這支影片是筆電端ffmpeg編碼產生的，metadata裡的「建立時間」是編碼當下
+        // （可能是好幾小時前甚至前一天），不是「剛剛複製進手機」的時間。使用者實際
+        // 盯著畫面驗證過：即使v1.058的ID核對顯示MediaStore資料庫排序是對的，選片畫面
+        // 上顯示的排序卻一直不會把這支影片排到最前面——研判蝦皮/FB的選片畫面很可能是
+        // 照這個「影片建立時間」排序，不是照「加入媒體庫的時間」，難怪不管多晚登記
+        // 排序都不會變新。
+        // 改成優先用ContentResolver.insert()明確指定DATE_ADDED/DATE_MODIFIED/DATE_TAKEN
+        // 三個時間欄位都蓋成「現在」，不依賴系統從檔案本身metadata讀值。insert()失敗
+        // （例如某些機型/Android版本限制DATA欄位直接寫入）才退回舊的scanFile()做法，
+        // 兩條路徑都會把實際用的時間戳記寫進log，方便之後比對是不是真的解決了。
+        val now = System.currentTimeMillis()
+        val insertedUri = try {
+            val values = android.content.ContentValues().apply {
+                put(MediaStore.Video.Media.DISPLAY_NAME, fileToRegister.name)
+                put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                put(MediaStore.Video.Media.DATA, fileToRegister.absolutePath)
+                put(MediaStore.Video.Media.DATE_ADDED, now / 1000)
+                put(MediaStore.Video.Media.DATE_MODIFIED, now / 1000)
+                put(MediaStore.Video.Media.DATE_TAKEN, now)
+            }
+            applicationContext.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+        } catch (e: Exception) {
+            appendDebugLog("  → [除錯] ContentResolver.insert()登記失敗，改用scanFile()備援：${e.javaClass.simpleName} ${e.message}")
+            null
+        }
+
+        val result: Uri?
+        if (insertedUri != null) {
+            appendDebugLog(
+                "  → [除錯] 用insert()登記成功：${fileToRegister.name} -> $insertedUri，" +
+                    "DATE_ADDED/DATE_MODIFIED=${now / 1000}秒，DATE_TAKEN=${now}毫秒（都是現在）"
+            )
+            result = insertedUri
+        } else {
+            result = withTimeoutOrNull(8000) {
+                suspendCancellableCoroutine<Uri?> { continuation ->
+                    try {
+                        MediaScannerConnection.scanFile(
+                            applicationContext,
+                            arrayOf(fileToRegister.absolutePath),
+                            arrayOf("video/mp4")
+                        ) { _, uri ->
+                            if (continuation.isActive) continuation.resume(uri)
+                        }
+                    } catch (e: Exception) {
+                        appendDebugLog("  → 影片登記進媒體庫時發生例外：${e.javaClass.simpleName} ${e.message}")
+                        if (continuation.isActive) continuation.resume(null)
                     }
-                } catch (e: Exception) {
-                    appendDebugLog("  → 影片登記進媒體庫時發生例外：${e.javaClass.simpleName} ${e.message}")
-                    if (continuation.isActive) continuation.resume(null)
                 }
+            }
+            if (result != null) {
+                appendDebugLog("  → [除錯] insert()失敗，改用scanFile()登記成功：${fileToRegister.name} -> $result（時間戳記依賴檔案本身metadata，非明確指定）")
             }
         }
         lastTempUploadUri = result
@@ -3334,30 +3374,41 @@ class ShopeeAccessibilityService : AccessibilityService() {
      * 只能從程式碼推測——現在選片前後都呼叫這個，把實際查到的內容寫進log，
      * 之後如果同樣問題再發生，log能直接證實選片當下MediaStore真正的排序狀態，
      * 不用再靠猜的。
+     *
+     * 【2026-09-07調整】原本只查DATE_ADDED（加入媒體庫的時間），但使用者實際觀察到
+     * 就算DATE_ADDED核對是對的，選片畫面顯示的排序還是沒把新影片排到最前面——懷疑
+     * 選片畫面實際排序依據是DATE_TAKEN（影片本身的建立/拍攝時間，ffmpeg生成的影片
+     * 這個值是編碼當下、不是複製進手機的時間）。改成兩個排序依據都查、都記錄，
+     * 不要只驗證其中一個假設。
      */
-    private fun queryTopVideoUri(): Uri? {
+    private fun queryTopVideoUri(orderByColumn: String = MediaStore.Video.Media.DATE_ADDED): Uri? {
         val collection = MediaStore.Video.Media.EXTERNAL_CONTENT_URI
         val projection = arrayOf(
             MediaStore.Video.Media._ID,
             MediaStore.Video.Media.DISPLAY_NAME,
-            MediaStore.Video.Media.DATE_ADDED
+            MediaStore.Video.Media.DATE_ADDED,
+            MediaStore.Video.Media.DATE_TAKEN
         )
-        val sortOrder = "${MediaStore.Video.Media.DATE_ADDED} DESC"
+        val sortOrder = "$orderByColumn DESC"
         return try {
             contentResolver.query(collection, projection, null, null, sortOrder)?.use { cursor ->
                 if (cursor.moveToFirst()) {
                     val id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Video.Media._ID))
                     val name = cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME))
+                    val dateAdded = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_ADDED))
+                    val dateTaken = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_TAKEN))
                     val uri = ContentUris.withAppendedId(collection, id)
-                    appendDebugLog("  → [除錯] MediaStore目前排最前面的影片：$name（$uri）")
+                    appendDebugLog(
+                        "  → [除錯] 依$orderByColumn排序最前面：$name（$uri，DATE_ADDED=${dateAdded}秒，DATE_TAKEN=${dateTaken}毫秒）"
+                    )
                     uri
                 } else {
-                    appendDebugLog("  → [除錯] MediaStore查無任何影片紀錄")
+                    appendDebugLog("  → [除錯] MediaStore查無任何影片紀錄（排序欄位=$orderByColumn）")
                     null
                 }
             }
         } catch (e: Exception) {
-            appendDebugLog("  → [除錯] 查詢MediaStore最新影片失敗：${e.javaClass.simpleName} ${e.message}")
+            appendDebugLog("  → [除錯] 查詢MediaStore最新影片失敗（排序欄位=$orderByColumn）：${e.javaClass.simpleName} ${e.message}")
             null
         }
     }
@@ -3373,18 +3424,25 @@ class ShopeeAccessibilityService : AccessibilityService() {
      * 兩種字串不同、但指向同一筆紀錄（同一個數字ID）——實測log證實過content://media/
      * external_primary/video/media/1000041240跟content://media/external/video/media/1000041240
      * 其實是同一支影片，比對只看最後那段數字ID，不比對磁碟區名稱那段。
+     *
+     * 【2026-09-07再調整】同時核對DATE_ADDED跟DATE_TAKEN兩種排序依據，各自記錄一致/
+     * 不一致，用來驗證「選片畫面實際照哪個欄位排序」這個懷疑方向。
      */
     private fun logSelectionSanityCheck(context: String) {
         val expected = lastTempUploadUri
-        val actual = queryTopVideoUri()
         val expectedId = expected?.let { ContentUris.parseId(it) }
-        val actualId = actual?.let { ContentUris.parseId(it) }
-        when {
-            expected == null -> appendDebugLog("  → [除錯][$context] 沒有記錄到剛登記的影片URI，無法核對")
-            actual == null -> appendDebugLog("  → [除錯][$context] 查不到MediaStore目前排最前面的影片，無法核對")
-            expectedId == actualId -> appendDebugLog("  → [除錯][$context] ✅核對一致（ID=$expectedId）：即將選到的就是剛登記的那支")
-            else -> appendDebugLog("  → [除錯][$context] ⚠️核對不一致！剛登記的ID是 $expectedId（$expected），但MediaStore排最前面的ID是 $actualId（$actual），選片很可能選錯")
+        if (expected == null) {
+            appendDebugLog("  → [除錯][$context] 沒有記錄到剛登記的影片URI，無法核對")
+            return
         }
+        val byDateAdded = queryTopVideoUri(MediaStore.Video.Media.DATE_ADDED)
+        val byDateTaken = queryTopVideoUri(MediaStore.Video.Media.DATE_TAKEN)
+        val idByDateAdded = byDateAdded?.let { ContentUris.parseId(it) }
+        val idByDateTaken = byDateTaken?.let { ContentUris.parseId(it) }
+        appendDebugLog(
+            "  → [除錯][$context] 核對結果：DATE_ADDED排序${if (idByDateAdded == expectedId) "✅一致" else "⚠️不一致"}，" +
+                "DATE_TAKEN排序${if (idByDateTaken == expectedId) "✅一致" else "⚠️不一致"}（期望ID=$expectedId）"
+        )
     }
 
     /** 查詢相簿裡「指定時間之後」新增的最新一張圖片，回傳它的 content Uri（讀不到就回傳 null）。 */
