@@ -342,6 +342,67 @@ private data class GenerateQueueItem(
     val aiProcessed: Boolean
 )
 
+/**
+ * 【2026-09-06新增】AI改圖完成狀態改成「每張照片各自記錄」，取代原本整個商品資料夾
+ * 共用一個`.ai_processed`標記的做法——這樣長按單張縮圖「重新AI改圖」時，可以只重跑
+ * 這一張，商品裡其他已經改滿意的照片不會被牽連重改。
+ * 向下相容：舊資料只有商品層級的`.ai_processed`（這個功能上線前處理過的商品），
+ * 沒有個別照片標記時，一樣視為「已完成」，不會被誤判成沒改過而整批重新處理一次。
+ */
+private fun isImageAiDone(imageFile: File): Boolean =
+    File(imageFile.parentFile, ".ai_done_${imageFile.name}").exists() ||
+        File(imageFile.parentFile, ".ai_processed").exists()
+
+private fun markImageAiDone(imageFile: File) {
+    try {
+        File(imageFile.parentFile, ".ai_done_${imageFile.name}").createNewFile()
+    } catch (e: Exception) { /* 標記失敗頂多下次多重跑一次這張，不影響這次改圖結果 */ }
+}
+
+/**
+ * 【2026-09-06新增】單張圖片送去AI改圖的共用邏輯，批次流程(runAutoSelectAndEditPipeline)
+ * 跟長按選單「重新AI改圖」都呼叫這支，避免兩處各寫一份、改一邊忘了改另一邊。
+ * 如果`.orig_`備份已經存在（代表這張至少改過一次），會從備份（真正的原圖）重新讀取
+ * 內容送去改圖，不是拿「目前已改圖的結果」再改一次——後者會疊加變形，改越多次結果
+ * 越奇怪。備份本身不會被刪除，改完之後「換原圖」「重新AI改圖」都還能繼續用同一份
+ * 備份操作。
+ */
+private suspend fun aiEditSingleImage(
+    targetFile: File,
+    provider: ImageEditProvider,
+    apiKey: String,
+    openAiApiKey: String,
+    editPrompt: String
+) {
+    if (!targetFile.exists()) return
+    val backupFile = File(targetFile.parentFile, ".orig_${targetFile.name}")
+    val sourcePath = if (backupFile.exists()) {
+        backupFile.path
+    } else {
+        try {
+            targetFile.copyTo(backupFile, overwrite = false)
+        } catch (e: Exception) { /* 備份失敗不影響改圖本身，只是之後不能換原圖/重改 */ }
+        targetFile.path
+    }
+    val original = android.graphics.BitmapFactory.decodeFile(sourcePath) ?: return
+    val (editSuccess, editedBitmap, _) = when (provider) {
+        ImageEditProvider.GEMINI -> {
+            val r = GeminiImageEditor.editBackground(original, apiKey, editPrompt)
+            Triple(r.success, r.editedBitmap, r.errorMessage)
+        }
+        ImageEditProvider.CHATGPT -> {
+            val r = OpenAiImageEditor.editBackground(original, openAiApiKey, editPrompt)
+            Triple(r.success, r.editedBitmap, r.errorMessage)
+        }
+    }
+    // 改圖失敗就保留目前的圖繼續用，不中斷流程，行為跟之前一致。
+    if (editSuccess && editedBitmap != null) {
+        java.io.FileOutputStream(targetFile).use { out ->
+            editedBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, out)
+        }
+    }
+}
+
 private fun loadCapturedProducts(root: File): List<GenerateQueueItem> {
     if (!root.exists()) return emptyList()
     return root.listFiles()
@@ -366,7 +427,7 @@ private fun loadCapturedProducts(root: File): List<GenerateQueueItem> {
                 imagePaths = images,
                 hasVideo = File(dir, "output.mp4").exists(),
                 selectionDone = File(dir, ".image_selection_done").exists(),
-                aiProcessed = File(dir, ".ai_processed").exists()
+                aiProcessed = images.isNotEmpty() && images.all { isImageAiDone(it) }
             )
         }
         ?.sortedByDescending { it.folder.lastModified() }
@@ -541,7 +602,10 @@ private fun EditedThumbnail(
     onChanged: () -> Unit,
     onPreview: () -> Unit
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var menuOpen by remember { mutableStateOf(false) }
+    var reprocessing by remember { mutableStateOf(false) }
     val backupFile = remember(file.path, file.lastModified()) { File(file.parentFile, ".orig_${file.name}") }
     val hasBackup = backupFile.isFile
 
@@ -553,9 +617,24 @@ private fun EditedThumbnail(
                 .clip(RoundedCornerShape(8.dp))
                 .combinedClickable(
                     onClick = onPreview,
-                    onLongClick = { menuOpen = true }
+                    onLongClick = { if (!reprocessing) menuOpen = true }
                 )
         )
+        if (reprocessing) {
+            Box(
+                modifier = Modifier
+                    .size(46.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color.Black.copy(alpha = 0.45f)),
+                contentAlignment = Alignment.Center
+            ) {
+                androidx.compose.material3.CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp),
+                    color = Color.White,
+                    strokeWidth = 2.dp
+                )
+            }
+        }
         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
             DropdownMenuItem(
                 text = { Text(if (hasBackup) "換原圖" else "換原圖（無備份）") },
@@ -567,6 +646,28 @@ private fun EditedThumbnail(
                         backupFile.delete()
                         onChanged()
                     } catch (e: Exception) { /* 失敗就保留現狀，可以再長按重試 */ }
+                }
+            )
+            // 【2026-09-06新增】只重跑這一張，商品裡其他已經改滿意的照片不會被牽連
+            // 重改——用aiEditSingleImage()對真正的原圖（.orig_備份）重新送一次AI改圖，
+            // 不是拿目前這張已改過的結果再改一次。沒有備份代表這張從沒被AI改過，
+            // 沒有「重新」的意義，反灰停用，請改用「開始修改圖片」正常流程。
+            DropdownMenuItem(
+                text = { Text(if (hasBackup) "重新AI改圖" else "重新AI改圖（尚未改過）") },
+                enabled = hasBackup && !reprocessing,
+                onClick = {
+                    menuOpen = false
+                    reprocessing = true
+                    scope.launch {
+                        val provider = GeminiApiPrefs.getImageEditProvider(context)
+                        val apiKey = GeminiApiPrefs.getApiKey(context)
+                        val openAiApiKey = GeminiApiPrefs.getOpenAiApiKey(context)
+                        val editPrompt = GeminiApiPrefs.getPrompt(context)
+                        aiEditSingleImage(file, provider, apiKey, openAiApiKey, editPrompt)
+                        markImageAiDone(file)
+                        reprocessing = false
+                        onChanged()
+                    }
                 }
             )
             DropdownMenuItem(
@@ -794,6 +895,8 @@ private fun applyImageSelection(
     for (file in allImages) {
         if (file.name !in chosenNames) {
             file.delete()
+            File(file.parentFile, ".orig_${file.name}").delete()
+            File(file.parentFile, ".ai_done_${file.name}").delete()
         } else {
             kept.add(file)
         }
@@ -802,18 +905,28 @@ private fun applyImageSelection(
     // 重新編號：kept是依原本編號由小到大排的，第k個（0-index）的目標編號是k+1，
     // 一定 <= 它原本的編號（因為前面最多k個檔案被跳過/已重新命名挪走），所以依序
     // 處理不會發生「要改的目標檔名還被別的檔案佔用」的衝突，不需要額外用暫存檔名。
+    // 【2026-09-06調整】改名的同時把對應的.orig_備份也一併改名（保留備份跟照片的
+    // 對應關係，不然重新編號後.orig_開頭的備份會對不到新檔名，變成孤兒檔案）；
+    // 不管有沒有實際改名，這張的.ai_done_標記都直接清掉——選圖結果變了，每張照片
+    // 各自的「已改圖」標記不再有效，要重新排進下一次AI改圖批次（跟原本整個商品
+    // 共用一個`.ai_processed`標記時的邏輯一致，只是現在改成逐張處理）。
     kept.forEachIndexed { index, file ->
         val newIndex = index + 1
         val ext = file.extension.ifBlank { "jpg" }
         val newFile = File(folder, "image_$newIndex.$ext")
+        val oldBackup = File(folder, ".orig_${file.name}")
+        File(folder, ".ai_done_${file.name}").delete()
         if (file.path != newFile.path) {
             file.renameTo(newFile)
+            if (oldBackup.exists()) {
+                oldBackup.renameTo(File(folder, ".orig_${newFile.name}"))
+            }
         }
     }
 
     File(folder, ".image_selection_done").createNewFile()
-    // 選圖結果變了（不管是第一次選還是重新選過），舊的AI處理標記不再有效，
-    // 讓它重新排進下一次AI改圖批次的待處理清單。
+    // 舊版遺留的商品層級.ai_processed標記（這個功能上線前處理過的商品）也一併清掉，
+    // 避免isImageAiDone()的向下相容判斷把重新選圖後的照片誤判成已經改過。
     File(folder, ".ai_processed").delete()
 }
 
@@ -870,7 +983,8 @@ private suspend fun runAutoSelectAndEditPipeline(
         var justSelected = false
         var usedSharedProduct = false
 
-        val alreadyDone = product.selectionDone && File(product.folder, ".ai_processed").exists()
+        val alreadyDone = product.selectionDone && product.imagePaths.isNotEmpty() &&
+            product.imagePaths.all { isImageAiDone(it) }
         if (!alreadyDone && ServerPrefs.isConfigured(context)) {
             val promoLink = try {
                 JSONObject(File(product.folder, "meta.json").readText()).optString("promoLink", "")
@@ -892,10 +1006,10 @@ private suspend fun runAutoSelectAndEditPipeline(
                 if (usedSharedProduct) {
                     onStatus("$progressPrefix：套用共用圖片")
                     File(product.folder, ".image_selection_done").createNewFile()
-                    File(product.folder, ".ai_processed").createNewFile()
                     currentImages = (1..SHARED_IMAGE_POOL_SIZE).mapNotNull { n ->
                         product.folder.listFiles { f -> f.nameWithoutExtension == "image_$n" }?.firstOrNull()
                     }
+                    currentImages.forEach { markImageAiDone(it) }
                 }
             }
         }
@@ -922,46 +1036,15 @@ private suspend fun runAutoSelectAndEditPipeline(
             justSelected = true
         }
 
-        val aiProcessedNow = File(product.folder, ".ai_processed").exists()
-        if (!usedSharedProduct && aiEnabled && !aiProcessedNow) {
+        val imagesToProcess = if (!usedSharedProduct && aiEnabled) {
+            currentImages.filter { !isImageAiDone(it) }
+        } else emptyList()
+        if (imagesToProcess.isNotEmpty()) {
             onStatus("$progressPrefix：AI改圖中")
-            currentImages.forEach { targetFile ->
-                if (targetFile.exists()) {
-                    // 【2026-09-05新增】改圖前先備份一份原圖（.orig_開頭），供「檢查修圖結果」
-                    // 畫面的「換原圖」功能使用——AI改圖是直接覆蓋原檔案，沒有這份備份的話
-                    // 改壞了就沒有原圖可以換回去。只在備份還不存在時才備份一次，避免同一張圖
-                    // 因為某種原因被改圖兩次時，第二次備份把「第一次改圖的結果」誤存成「原圖」。
-                    val backupFile = File(targetFile.parentFile, ".orig_${targetFile.name}")
-                    if (!backupFile.exists()) {
-                        try {
-                            targetFile.copyTo(backupFile, overwrite = false)
-                        } catch (e: Exception) { /* 備份失敗不影響改圖本身，只是之後不能換回原圖 */ }
-                    }
-
-                    val original = android.graphics.BitmapFactory.decodeFile(targetFile.path)
-                    if (original != null) {
-                        val editResult = when (imageEditProvider) {
-                            ImageEditProvider.GEMINI -> {
-                                val r = GeminiImageEditor.editBackground(original, apiKey, editPrompt)
-                                Triple(r.success, r.editedBitmap, r.errorMessage)
-                            }
-                            ImageEditProvider.CHATGPT -> {
-                                val r = OpenAiImageEditor.editBackground(original, openAiApiKey, editPrompt)
-                                Triple(r.success, r.editedBitmap, r.errorMessage)
-                            }
-                        }
-                        val (editSuccess, editedBitmap, _) = editResult
-                        if (editSuccess && editedBitmap != null) {
-                            java.io.FileOutputStream(targetFile).use { out ->
-                                editedBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, out)
-                            }
-                        }
-                        // 改圖失敗（result.success=false）就保留原圖繼續走，不算這個商品失敗，
-                        // 跟原本浮球批次按鈕的行為一致。
-                    }
-                }
+            imagesToProcess.forEach { targetFile ->
+                aiEditSingleImage(targetFile, imageEditProvider, apiKey, openAiApiKey, editPrompt)
+                markImageAiDone(targetFile)
             }
-            File(product.folder, ".ai_processed").createNewFile()
             justSelected = true
         }
 
@@ -1181,6 +1264,23 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
             if (products.isEmpty()) {
                 Text("目前沒有已擷取的商品", fontSize = 13.sp, color = SimpleMuted)
             } else {
+                // 【2026-09-06新增】全選/全不選：原本要一個一個點打勾框，商品一多很花時間。
+                // 這排按鈕只動selectedIds這個勾選狀態，不碰縮圖/預覽相關的任何東西，
+                // 不會影響長按選單或單點放大預覽。
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = { selectedIds = products.map { it.folder.name }.toSet() }) {
+                        Text("全選", fontSize = 13.sp, color = SimpleInk)
+                    }
+                    TextButton(onClick = { selectedIds = emptySet() }) {
+                        Text("全不選", fontSize = 13.sp, color = SimpleInk)
+                    }
+                    TextButton(onClick = {
+                        selectedIds = products.filter { !it.aiProcessed }.map { it.folder.name }.toSet()
+                    }) {
+                        Text("只選未改圖", fontSize = 13.sp, color = SimpleInk)
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
                 products.forEach { product ->
                     ProductSelectRow(
                         product = product,
