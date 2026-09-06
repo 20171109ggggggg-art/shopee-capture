@@ -1846,6 +1846,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             delay(2500)
         }
         root = rootInActiveWindow ?: return UploadCandidateResult.FAILED
+        logSelectionSanityCheck("蝦皮短影音選片")
         val firstGalleryItem = findNodeByIdSuffix(root, "ll_check")
         if (firstGalleryItem == null || !clickNodeBestEffort(firstGalleryItem)) {
             appendDebugLog("  → 找不到或點擊媒體庫第一個項目失敗"); return UploadCandidateResult.FAILED
@@ -2466,6 +2467,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
         delay(800)
         root = rootInActiveWindow ?: return false
+        logSelectionSanityCheck("FB Reel選片")
         val firstVideoItem = findNodeByDescContaining(root, "項目1，拍攝於")
         if (firstVideoItem == null || !clickFbNode(firstVideoItem)) {
             appendDebugLog("  → [FB] 找不到或點擊相簿第一個影片項目失敗"); return false
@@ -3315,9 +3317,59 @@ class ShopeeAccessibilityService : AccessibilityService() {
         lastTempUploadUri = null
     }
 
+    /**
+     * 【2026-09-06新增，除錯用】查詢MediaStore目前依新增時間排序「最前面」的一支影片
+     * （id/檔名/URI），對照registerVideoInMediaStore()剛剛登記的那支是否一致。
+     * 起因：懷疑選片邏輯選到舊影片，但log裡沒有「實際選到了哪個URI」這種直接證據，
+     * 只能從程式碼推測——現在選片前後都呼叫這個，把實際查到的內容寫進log，
+     * 之後如果同樣問題再發生，log能直接證實選片當下MediaStore真正的排序狀態，
+     * 不用再靠猜的。
+     */
+    private fun queryTopVideoUri(): Uri? {
+        val collection = MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        val projection = arrayOf(
+            MediaStore.Video.Media._ID,
+            MediaStore.Video.Media.DISPLAY_NAME,
+            MediaStore.Video.Media.DATE_ADDED
+        )
+        val sortOrder = "${MediaStore.Video.Media.DATE_ADDED} DESC"
+        return try {
+            contentResolver.query(collection, projection, null, null, sortOrder)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Video.Media._ID))
+                    val name = cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME))
+                    val uri = ContentUris.withAppendedId(collection, id)
+                    appendDebugLog("  → [除錯] MediaStore目前排最前面的影片：$name（$uri）")
+                    uri
+                } else {
+                    appendDebugLog("  → [除錯] MediaStore查無任何影片紀錄")
+                    null
+                }
+            }
+        } catch (e: Exception) {
+            appendDebugLog("  → [除錯] 查詢MediaStore最新影片失敗：${e.javaClass.simpleName} ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * 【2026-09-06新增，除錯用】選片前呼叫，核對「剛剛registerVideoInMediaStore()登記的
+     * 那支」是否真的等於現在MediaStore排最前面的那支。不一致就直接寫進log明確標記，
+     * 不用等結果貼錯了才回頭猜原因。
+     */
+    private fun logSelectionSanityCheck(context: String) {
+        val expected = lastTempUploadUri
+        val actual = queryTopVideoUri()
+        when {
+            expected == null -> appendDebugLog("  → [除錯][$context] 沒有記錄到剛登記的影片URI，無法核對")
+            actual == null -> appendDebugLog("  → [除錯][$context] 查不到MediaStore目前排最前面的影片，無法核對")
+            expected == actual -> appendDebugLog("  → [除錯][$context] ✅核對一致：即將選到的就是剛登記的那支")
+            else -> appendDebugLog("  → [除錯][$context] ⚠️核對不一致！剛登記的是 $expected，但MediaStore排最前面的是 $actual，選片很可能選錯")
+        }
+    }
+
     /** 查詢相簿裡「指定時間之後」新增的最新一張圖片，回傳它的 content Uri（讀不到就回傳 null）。 */
-    private fun queryLatestImageUriAfter(afterTimeMs: Long): Uri? {
-        val collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+    private fun queryLatestImageUriAfter(afterTimeMs: Long): Uri? {        val collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
         val projection = arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DATE_ADDED)
         val selection = "${MediaStore.Images.Media.DATE_ADDED} >= ?"
         // MediaStore 的 DATE_ADDED 是「秒」為單位，click 時間是毫秒，這裡要換算
