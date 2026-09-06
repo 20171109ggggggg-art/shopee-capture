@@ -1771,9 +1771,17 @@ class ShopeeAccessibilityService : AccessibilityService() {
         // 修法：先排除已經證實會誤判的這幾個固定頁籤文字，再做關鍵字比對——沒有節點樹
         // dump佐證「往上幾層」抓的範圍該怎麼調整比較準，不用猜的去改樹狀結構，直接針對
         // 已經證實的誤判來源做排除最直接可靠。TW/PH兩地頁籤文字都排除。
+        // 【2026-09-06修正】PH版debug log證實，目前這排固定頁籤實際文字是
+        // 「My Likes(數量) | Sort By Newest | Better Offer | Invalid | N products found...」，
+        // 跟先前假設的「Invalid Products」整串不一樣，只是單獨「Invalid」這個字，
+        // 精確比對(in knownChromeTexts)對不上，導致每一筆都被invalidKeywords的
+        // "Invalid"子字串比對誤判成無效商品（100%命中）。這次直接照log實際文字排除，
+        // 不用猜的。「Sort By Newest」「Better Offer」也一併排除，跟log實際觀察到的
+        // 頁籤文字對齊，降低以後其他關鍵字剛好對上這幾個固定文字的風險。
         val knownChromeTexts = setOf(
             "排序：", "最新", "較高分潤", "無效商品",
-            "Sort by", "Newest", "Higher Commission", "Invalid Products"
+            "Sort by", "Newest", "Higher Commission", "Invalid Products",
+            "Sort By Newest", "Better Offer", "Invalid", "Replace All"
         )
         val filteredRowTexts = rowTexts.filterNot { it in knownChromeTexts }
         val matchedInvalidKeyword = invalidKeywords.firstOrNull { kw -> filteredRowTexts.any { it.contains(kw) } }
