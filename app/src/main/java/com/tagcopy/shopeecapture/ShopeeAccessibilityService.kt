@@ -3230,6 +3230,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
      * 但整個過程完全不會刪除或修改原始 output.mp4。
      */
     private var lastTempUploadCopy: File? = null
+    private var lastTempUploadUri: Uri? = null
 
     private suspend fun registerVideoInMediaStore(videoFile: File): Uri? {
         if (!videoFile.exists()) {
@@ -3270,6 +3271,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 }
             }
         }
+        lastTempUploadUri = result
         if (result == null) {
             appendDebugLog("  → 影片登記進媒體庫：逾時或失敗（${fileToRegister.name}）")
         } else {
@@ -3281,8 +3283,24 @@ class ShopeeAccessibilityService : AccessibilityService() {
     /**
      * 清掉registerVideoInMediaStore()複製的暫時上架副本（只刪副本，不動原始output.mp4）。
      * 呼叫端在每次處理完一筆候選商品（不管成功失敗）都要呼叫這個，避免暫時副本累積佔空間。
+     *
+     * 【2026-09-06修正】原本只刪實體檔案（File.delete()），沒有同步刪除MediaStore裡
+     * 對應的索引紀錄，留下一堆「指向已刪除檔案」的孤兒索引。懷疑這批孤兒紀錄干擾了
+     * 蝦皮「短影音」選片畫面的排序/快取，導致選片選到舊的（例如某支手提箱測試影片）
+     * 而不是剛登記的新影片，造成很多不同商品貼出同一支影片的狀況。改成先用
+     * contentResolver.delete()清掉MediaStore索引（這裡刪的是我們自己複製的暫時副本，
+     * 不是原始output.mp4，就算系統把實體檔案也一併刪掉也沒關係，本來就要丟棄），
+     * 再確認實體檔案是否還在、還在的話補刪一次。
      */
     private fun cleanupTempUploadCopy() {
+        lastTempUploadUri?.let { uri ->
+            try {
+                val rows = applicationContext.contentResolver.delete(uri, null, null)
+                appendDebugLog("  → 清除暫時上架副本的媒體庫索引：$uri（刪除筆數=$rows）")
+            } catch (e: Exception) {
+                appendDebugLog("  → 清除暫時上架副本的媒體庫索引失敗：${e.javaClass.simpleName} ${e.message}")
+            }
+        }
         lastTempUploadCopy?.let { temp ->
             try {
                 if (temp.exists()) {
@@ -3294,6 +3312,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             }
         }
         lastTempUploadCopy = null
+        lastTempUploadUri = null
     }
 
     /** 查詢相簿裡「指定時間之後」新增的最新一張圖片，回傳它的 content Uri（讀不到就回傳 null）。 */
