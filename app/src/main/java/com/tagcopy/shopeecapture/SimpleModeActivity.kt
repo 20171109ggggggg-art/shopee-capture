@@ -36,6 +36,10 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -447,6 +451,84 @@ private fun AsyncThumbnailImage(
 }
 
 /**
+ * 【2026-09-06新增】點縮圖跳出全螢幕放大預覽，可左右滑動看同商品其他張（用HorizontalPager，
+ * 從點的那張開始），跟長按選單是兩個獨立手勢——長按開選單、單點看大圖，互不衝突。
+ * 放大圖用比縮圖更大的目標尺寸重新解碼（不是把縮圖直接放大，避免糊）。
+ */
+@Composable
+private fun FullScreenAsyncImage(file: File, modifier: Modifier = Modifier) {
+    val cacheKey = remember(file.path, file.lastModified(), file.length()) {
+        "${file.path}|${file.lastModified()}|${file.length()}|full"
+    }
+    var bitmap by remember(cacheKey) { mutableStateOf(thumbnailCache.get(cacheKey)) }
+    LaunchedEffect(cacheKey) {
+        if (bitmap == null) {
+            val decoded = withContext(Dispatchers.IO) { decodeSampledBitmap(file.path, 1080).first }
+            if (decoded != null) {
+                thumbnailCache.put(cacheKey, decoded)
+                bitmap = decoded
+            }
+        }
+    }
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        bitmap?.let {
+            Image(
+                bitmap = it.asImageBitmap(),
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Fit
+            )
+        }
+    }
+}
+
+@Composable
+private fun ImagePreviewDialog(images: List<File>, initialIndex: Int, onDismiss: () -> Unit) {
+    val pagerState = rememberPagerState(initialPage = initialIndex) { images.size }
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+        ) {
+            HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
+                FullScreenAsyncImage(
+                    file = images[page],
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(16.dp)
+                )
+            }
+            if (images.size > 1) {
+                Text(
+                    "${pagerState.currentPage + 1} / ${images.size}",
+                    color = Color.White,
+                    fontSize = 13.sp,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 18.dp)
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(12.dp)
+                    .size(32.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Color.White.copy(alpha = 0.2f))
+                    .clickable { onDismiss() },
+                contentAlignment = Alignment.Center
+            ) {
+                Text("✕", color = Color.White, fontSize = 16.sp)
+            }
+        }
+    }
+}
+
+/**
  * 【2026-09-06新增】單張縮圖＋長按選單：長按跳出「換原圖」（有.orig_備份才能按，
  * 邏輯完全比照原本「檢查修圖結果」畫面）跟「刪除」（商品至少留1張才能按）。
  * 這兩個操作原本獨立成一個畫面，現在直接整合進清單，該畫面已拿掉。
@@ -456,7 +538,8 @@ private fun AsyncThumbnailImage(
 private fun EditedThumbnail(
     file: File,
     canDelete: Boolean,
-    onChanged: () -> Unit
+    onChanged: () -> Unit,
+    onPreview: () -> Unit
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     val backupFile = remember(file.path, file.lastModified()) { File(file.parentFile, ".orig_${file.name}") }
@@ -469,7 +552,7 @@ private fun EditedThumbnail(
             modifier = Modifier
                 .clip(RoundedCornerShape(8.dp))
                 .combinedClickable(
-                    onClick = {},
+                    onClick = onPreview,
                     onLongClick = { menuOpen = true }
                 )
         )
@@ -511,6 +594,7 @@ private fun ProductSelectRow(
     onImagesChanged: () -> Unit
 ) {
     val context = LocalContext.current
+    var previewIndex by remember { mutableStateOf<Int?>(null) }
     Row(
         verticalAlignment = Alignment.Top,
         modifier = Modifier
@@ -534,11 +618,12 @@ private fun ProductSelectRow(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 modifier = Modifier.horizontalScroll(rememberScrollState())
             ) {
-                product.imagePaths.forEach { file ->
+                product.imagePaths.forEachIndexed { index, file ->
                     EditedThumbnail(
                         file = file,
                         canDelete = product.imagePaths.size > 1,
-                        onChanged = onImagesChanged
+                        onChanged = onImagesChanged,
+                        onPreview = { previewIndex = index }
                     )
                 }
             }
@@ -554,6 +639,15 @@ private fun ProductSelectRow(
                 fontSize = 11.sp, color = SimpleMuted
             )
         }
+    }
+
+    val previewedIndex = previewIndex
+    if (previewedIndex != null) {
+        ImagePreviewDialog(
+            images = product.imagePaths,
+            initialIndex = previewedIndex,
+            onDismiss = { previewIndex = null }
+        )
     }
 }
 
