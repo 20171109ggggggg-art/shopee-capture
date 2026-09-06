@@ -3399,7 +3399,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
                     val dateTaken = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_TAKEN))
                     val uri = ContentUris.withAppendedId(collection, id)
                     appendDebugLog(
-                        "  → [除錯] 依$orderByColumn排序最前面：$name（$uri，DATE_ADDED=${dateAdded}秒，DATE_TAKEN=${dateTaken}毫秒）"
+                        "  → [除錯] 依${orderByColumn}排序最前面：$name（$uri，DATE_ADDED=${dateAdded}秒，DATE_TAKEN=${dateTaken}毫秒）"
                     )
                     uri
                 } else {
