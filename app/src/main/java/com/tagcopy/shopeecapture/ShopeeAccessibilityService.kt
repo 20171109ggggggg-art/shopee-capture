@@ -1851,6 +1851,16 @@ class ShopeeAccessibilityService : AccessibilityService() {
         if (firstGalleryItem == null || !clickNodeBestEffort(firstGalleryItem)) {
             appendDebugLog("  → 找不到或點擊媒體庫第一個項目失敗"); return UploadCandidateResult.FAILED
         }
+        // 【2026-09-07新增，除錯用】記錄實際點到的這個節點在螢幕上的座標範圍——
+        // findNodeByIdSuffix()是照節點樹「文件順序」找第一個符合id的節點，這裡直接假設
+        // 文件順序＝畫面上由左到右由上到下的視覺順序，但這個假設從來沒有實際驗證過。
+        // 如果log顯示的bounds不是畫面左上角附近，就代表這個假設是錯的，點到的不是
+        // 視覺上真正的「第一個項目」，抓到問題就出在這裡。
+        run {
+            val bounds = android.graphics.Rect()
+            firstGalleryItem.getBoundsInScreen(bounds)
+            appendDebugLog("  → [除錯] 點擊的媒體庫項目螢幕座標：$bounds")
+        }
         delay(2100)
 
         // 10. 點「下一步」
@@ -3356,15 +3366,24 @@ class ShopeeAccessibilityService : AccessibilityService() {
      * 【2026-09-06新增，除錯用】選片前呼叫，核對「剛剛registerVideoInMediaStore()登記的
      * 那支」是否真的等於現在MediaStore排最前面的那支。不一致就直接寫進log明確標記，
      * 不用等結果貼錯了才回頭猜原因。
+     *
+     * 【2026-09-07修正】原本直接比對Uri.equals()誤判過一次：MediaScannerConnection.scanFile()
+     * 回呼給的Uri用的是「external_primary」這個具體磁碟區名稱，但這裡查詢用
+     * MediaStore.Video.Media.EXTERNAL_CONTENT_URI組出來的是舊式的「external」，
+     * 兩種字串不同、但指向同一筆紀錄（同一個數字ID）——實測log證實過content://media/
+     * external_primary/video/media/1000041240跟content://media/external/video/media/1000041240
+     * 其實是同一支影片，比對只看最後那段數字ID，不比對磁碟區名稱那段。
      */
     private fun logSelectionSanityCheck(context: String) {
         val expected = lastTempUploadUri
         val actual = queryTopVideoUri()
+        val expectedId = expected?.let { ContentUris.parseId(it) }
+        val actualId = actual?.let { ContentUris.parseId(it) }
         when {
             expected == null -> appendDebugLog("  → [除錯][$context] 沒有記錄到剛登記的影片URI，無法核對")
             actual == null -> appendDebugLog("  → [除錯][$context] 查不到MediaStore目前排最前面的影片，無法核對")
-            expected == actual -> appendDebugLog("  → [除錯][$context] ✅核對一致：即將選到的就是剛登記的那支")
-            else -> appendDebugLog("  → [除錯][$context] ⚠️核對不一致！剛登記的是 $expected，但MediaStore排最前面的是 $actual，選片很可能選錯")
+            expectedId == actualId -> appendDebugLog("  → [除錯][$context] ✅核對一致（ID=$expectedId）：即將選到的就是剛登記的那支")
+            else -> appendDebugLog("  → [除錯][$context] ⚠️核對不一致！剛登記的ID是 $expectedId（$expected），但MediaStore排最前面的ID是 $actualId（$actual），選片很可能選錯")
         }
     }
 
