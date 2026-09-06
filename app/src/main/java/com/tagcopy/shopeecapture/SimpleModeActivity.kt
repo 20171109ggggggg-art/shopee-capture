@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
+import android.util.LruCache
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Image
@@ -25,6 +26,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -34,8 +36,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.io.File
@@ -395,16 +399,119 @@ private fun decodeSampledBitmap(path: String, targetSize: Int): Pair<android.gra
     }
 }
 
+/**
+ * 【2026-09-06新增】縮圖記憶體快取＋非同步解碼：原本decodeSampledBitmap()是在Compose
+ * 重組時用remember{}直接同步呼叫，等於在主執行緒做檔案I/O＋bitmap解碼，商品一多、
+ * 或改成每列顯示全部照片縮圖後，會嚴重卡住UI（點「生成影片」進場卡、清單裡任何操作
+ * 觸發重組都卡）。改成用LaunchedEffect在Dispatchers.IO背景執行緒解碼，畫面先留空
+ * 白格子，解完再更新。快取key含檔案mtime＋大小，換原圖/刪除等操作覆蓋掉同檔名的
+ * 內容後，key會跟著變，不會拿到快取住的舊圖。
+ */
+private val thumbnailCache = LruCache<String, android.graphics.Bitmap>(80)
+
+@Composable
+private fun AsyncThumbnailImage(
+    file: File,
+    sizeDp: androidx.compose.ui.unit.Dp,
+    modifier: Modifier = Modifier
+) {
+    val cacheKey = remember(file.path, file.lastModified(), file.length()) {
+        "${file.path}|${file.lastModified()}|${file.length()}|${sizeDp.value}"
+    }
+    var bitmap by remember(cacheKey) { mutableStateOf(thumbnailCache.get(cacheKey)) }
+    LaunchedEffect(cacheKey) {
+        if (bitmap == null) {
+            val targetPx = (sizeDp.value * 2).toInt().coerceAtLeast(48)
+            val decoded = withContext(Dispatchers.IO) { decodeSampledBitmap(file.path, targetPx).first }
+            if (decoded != null) {
+                thumbnailCache.put(cacheKey, decoded)
+                bitmap = decoded
+            }
+        }
+    }
+    Box(
+        modifier = modifier
+            .size(sizeDp)
+            .background(Color(0xFFE0DCD4))
+    ) {
+        bitmap?.let {
+            Image(
+                bitmap = it.asImageBitmap(),
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        }
+    }
+}
+
+/**
+ * 【2026-09-06新增】單張縮圖＋長按選單：長按跳出「換原圖」（有.orig_備份才能按，
+ * 邏輯完全比照原本「檢查修圖結果」畫面）跟「刪除」（商品至少留1張才能按）。
+ * 這兩個操作原本獨立成一個畫面，現在直接整合進清單，該畫面已拿掉。
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun EditedThumbnail(
+    file: File,
+    canDelete: Boolean,
+    onChanged: () -> Unit
+) {
+    var menuOpen by remember { mutableStateOf(false) }
+    val backupFile = remember(file.path, file.lastModified()) { File(file.parentFile, ".orig_${file.name}") }
+    val hasBackup = backupFile.isFile
+
+    Box {
+        AsyncThumbnailImage(
+            file = file,
+            sizeDp = 46.dp,
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .combinedClickable(
+                    onClick = {},
+                    onLongClick = { menuOpen = true }
+                )
+        )
+        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            DropdownMenuItem(
+                text = { Text(if (hasBackup) "換原圖" else "換原圖（無備份）") },
+                enabled = hasBackup,
+                onClick = {
+                    menuOpen = false
+                    try {
+                        backupFile.copyTo(file, overwrite = true)
+                        backupFile.delete()
+                        onChanged()
+                    } catch (e: Exception) { /* 失敗就保留現狀，可以再長按重試 */ }
+                }
+            )
+            DropdownMenuItem(
+                text = { Text(if (canDelete) "刪除" else "刪除（至少留1張）", color = SimpleDanger) },
+                enabled = canDelete,
+                onClick = {
+                    menuOpen = false
+                    if (canDelete) {
+                        file.delete()
+                        backupFile.delete()
+                        onChanged()
+                    }
+                }
+            )
+        }
+    }
+}
+
 @Composable
 private fun ProductSelectRow(
     product: GenerateQueueItem,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
-    onClickImages: () -> Unit
+    onClickImages: () -> Unit,
+    onImagesChanged: () -> Unit
 ) {
     val context = LocalContext.current
     Row(
-        verticalAlignment = Alignment.CenterVertically,
+        verticalAlignment = Alignment.Top,
         modifier = Modifier
             .fillMaxWidth()
             .background(Color.White)
@@ -413,30 +520,31 @@ private fun ProductSelectRow(
     ) {
         Checkbox(checked = checked, onCheckedChange = onCheckedChange)
         Spacer(Modifier.width(4.dp))
-        val thumb = product.imagePaths.firstOrNull()
-        val bitmap = remember(thumb?.path) {
-            thumb?.let { decodeSampledBitmap(it.path, 48).first }
-        }
-        if (bitmap != null) {
-            Image(
-                bitmap = bitmap.asImageBitmap(),
-                contentDescription = null,
-                modifier = Modifier.size(48.dp),
-                contentScale = ContentScale.Crop
-            )
-            Spacer(Modifier.width(10.dp))
-        }
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 product.productName ?: product.folder.name,
                 fontSize = 13.sp, color = SimpleInk, fontWeight = FontWeight.Bold,
                 maxLines = 2
             )
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(8.dp))
+            // 【2026-09-06新增】不用點進去，直接把這個商品目前的照片（AI改圖後的成果）
+            // 全部排出來；長按單張可以換原圖/刪除，取代原本獨立的「檢查修圖結果」畫面。
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.horizontalScroll(rememberScrollState())
+            ) {
+                product.imagePaths.forEach { file ->
+                    EditedThumbnail(
+                        file = file,
+                        canDelete = product.imagePaths.size > 1,
+                        onChanged = onImagesChanged
+                    )
+                }
+            }
+            Spacer(Modifier.height(6.dp))
             Text(
                 buildString {
-                    append("${product.imagePaths.size}張圖")
-                    if (product.selectionDone) append(" · 已選圖")
+                    if (product.selectionDone) append("已選圖")
                     if (product.selectionDone && GeminiApiPrefs.isEnabled(context)) {
                         append(if (product.aiProcessed) " · 已AI改圖" else " · 待AI改圖")
                     }
@@ -612,135 +720,6 @@ private fun applyImageSelection(
     // 選圖結果變了（不管是第一次選還是重新選過），舊的AI處理標記不再有效，
     // 讓它重新排進下一次AI改圖批次的待處理清單。
     File(folder, ".ai_processed").delete()
-}
-
-/**
- * 【2026-09-05新增】檢查修圖結果畫面：列出所有已完成AI改圖的商品，逐張圖片可以
- * 「換原圖」（用改圖前備份的.orig_檔案立即蓋掉現在這張，免費即時，換完就把備份
- * 刪掉——現在的內容就是原圖了，不需要再留一份）或「刪除」（這張圖直接拿掉，
- * 商品至少要留1張才能生成影片，只剩最後1張時刪除按鈕會停用）。
- * 「重新選圖補位」這個構想沒有做——applyImageSelection()確認選圖時，沒被選中的
- * 候選圖會直接刪除，到這個畫面時已經沒有候選圖池可以補位選了，需要的話之後再
- * 討論要不要改成選圖時保留候選圖（會多佔儲存空間）。
- */
-@Composable
-private fun ReviewEditedImagesContent(products: List<GenerateQueueItem>, onDone: () -> Unit) {
-    var refreshKey by remember { mutableStateOf(0) }
-    val reviewProducts = remember(products, refreshKey) {
-        products.filter { File(it.folder, ".ai_processed").exists() }
-    }
-
-    androidx.activity.compose.BackHandler(enabled = true) { onDone() }
-
-    Column(modifier = Modifier.fillMaxSize()) {
-        SimpleTopBar("檢查修圖結果", onDone)
-        Column(
-            modifier = Modifier
-                .padding(horizontal = 20.dp)
-                .verticalScroll(rememberScrollState())
-        ) {
-            InstructionCard(
-                lines = listOf(
-                    "「換原圖」用改圖前備份的原圖立即蓋掉這張，免費即時生效",
-                    "「刪除」把這張拿掉，商品至少要留1張圖才能生成影片"
-                )
-            )
-            Spacer(Modifier.height(16.dp))
-
-            if (reviewProducts.isEmpty()) {
-                Text("目前沒有已完成AI改圖的商品", fontSize = 13.sp, color = SimpleMuted)
-            } else {
-                reviewProducts.forEach { product ->
-                    // 每次refreshKey變動都重新讀資料夾實際內容，才能反映剛剛按過的換原圖/刪除操作。
-                    val currentFiles = remember(product.folder.path, refreshKey) {
-                        product.folder.listFiles { f ->
-                            f.isFile && f.nameWithoutExtension.startsWith("image_")
-                        }?.sortedBy { it.name } ?: emptyList()
-                    }
-                    if (currentFiles.isEmpty()) return@forEach
-
-                    Text(
-                        product.productName ?: product.folder.name,
-                        fontSize = 14.sp, fontWeight = FontWeight.Bold, color = SimpleInk,
-                        maxLines = 2
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        currentFiles.forEach { file ->
-                            val backupFile = File(file.parentFile, ".orig_${file.name}")
-                            val hasBackup = backupFile.isFile
-                            val decodeResult = remember(file.path, refreshKey) { decodeSampledBitmap(file.path, 120) }
-                            val bitmap = decodeResult.first
-
-                            Column(modifier = Modifier.weight(1f)) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .aspectRatio(1f)
-                                        .background(Color(0xFFE0DCD4))
-                                ) {
-                                    if (bitmap != null) {
-                                        Image(
-                                            bitmap = bitmap.asImageBitmap(),
-                                            contentDescription = null,
-                                            modifier = Modifier.fillMaxSize(),
-                                            contentScale = ContentScale.Crop
-                                        )
-                                    }
-                                    Box(
-                                        modifier = Modifier
-                                            .align(Alignment.TopStart)
-                                            .padding(4.dp)
-                                            .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(4.dp))
-                                            .padding(horizontal = 5.dp, vertical = 2.dp)
-                                    ) {
-                                        Text(
-                                            if (hasBackup) "已改圖" else "原圖",
-                                            color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold
-                                        )
-                                    }
-                                }
-                                Spacer(Modifier.height(4.dp))
-                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    if (hasBackup) {
-                                        TextButton(
-                                            onClick = {
-                                                try {
-                                                    backupFile.copyTo(file, overwrite = true)
-                                                    backupFile.delete()
-                                                    refreshKey++
-                                                } catch (e: Exception) { /* 失敗就保留現狀，可以再按一次重試 */ }
-                                            },
-                                            contentPadding = PaddingValues(2.dp),
-                                            modifier = Modifier.weight(1f)
-                                        ) {
-                                            Text("換原圖", fontSize = 10.sp, color = SimpleInk)
-                                        }
-                                    }
-                                    TextButton(
-                                        onClick = {
-                                            if (currentFiles.size > 1) {
-                                                file.delete()
-                                                backupFile.delete()
-                                                refreshKey++
-                                            }
-                                        },
-                                        contentPadding = PaddingValues(2.dp),
-                                        enabled = currentFiles.size > 1,
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Text("刪除", fontSize = 10.sp, color = SimpleDanger)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Spacer(Modifier.height(18.dp))
-                }
-            }
-            Spacer(Modifier.height(20.dp))
-        }
-    }
 }
 
 
@@ -938,7 +917,15 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
     // 這類hook在同一個Composable裡每次重組都要以同樣順序被呼叫，如果依條件提早return，
     // 會導致下面那些hook在切換畫面時時而被呼叫、時而被跳過，破壞Compose內部的slot對應，
     // 可能導致狀態錯亂。改成所有hook照樣無條件宣告，只在畫面最終要「畫什麼」的地方分支。
-    var products by remember { mutableStateOf(loadCapturedProducts(captionQueueDir)) }
+    // 【2026-09-06修正】原本loadCapturedProducts()是在remember{}裡同步呼叫，等於
+    // 一進這個畫面就在主執行緒同步做「掃資料夾＋逐一讀meta.json解析JSON」，商品一多
+    // 就會卡住進場動畫；改成用LaunchedEffect在Dispatchers.IO背景執行緒載入，
+    // productsRefreshKey遞增就觸發重新讀取，畫面先進去、資料非同步補上不擋UI。
+    var products by remember { mutableStateOf<List<GenerateQueueItem>>(emptyList()) }
+    var productsRefreshKey by remember { mutableStateOf(0) }
+    LaunchedEffect(productsRefreshKey) {
+        products = withContext(Dispatchers.IO) { loadCapturedProducts(captionQueueDir) }
+    }
     var selectedIds by remember { mutableStateOf(setOf<String>()) }
     // 【2026-08-30新增】自動辨識選圖＋AI改圖流程的進行中狀態：isPreparing為true時
     // 按鈕顯示這個逐步文字（辨識圖片中/AI改圖中，見runAutoSelectAndEditPipeline），
@@ -951,15 +938,15 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
     val coroutineScope = rememberCoroutineScope()
     var imagePickerFolder by remember { mutableStateOf<File?>(null) }
     val pickedProduct = imagePickerFolder?.let { picked -> products.find { it.folder.path == picked.path } }
-    // 【2026-09-05新增】「開始修改圖片」跟「開始生成影片」拆開成兩個按鈕：前者只跑
-    // 選圖＋AI改圖（runAutoSelectAndEditPipeline），不接著生成影片，讓使用者能先用
-    // 下面的「檢查修圖結果」畫面確認改圖結果沒問題再繼續；後者維持原樣不用改，
-    // 它本來就會檢查.image_selection_done/.ai_processed這兩個標記，已經處理過的
-    // 商品會直接跳過選圖/改圖只做生成影片，天然銜接得起來。
+    // 【2026-09-05新增，2026-09-06調整】「開始修改圖片」跟「開始生成影片」拆開成兩個
+    // 按鈕：前者只跑選圖＋AI改圖（runAutoSelectAndEditPipeline），不接著生成影片，
+    // 讓使用者能先在下面清單直接看每個商品改圖後的縮圖確認沒問題再繼續（原本獨立的
+    // 「檢查修圖結果」畫面已整合進清單，見ProductSelectRow/EditedThumbnail）；
+    // 後者維持原樣不用改，它本來就會檢查.image_selection_done/.ai_processed這兩個
+    // 標記，已經處理過的商品會直接跳過選圖/改圖只做生成影片，天然銜接得起來。
     var isImageEditing by remember { mutableStateOf(false) }
     var imageEditingStatus by remember { mutableStateOf("") }
     var imageEditErrors by remember { mutableStateOf(emptyList<Pair<String, String>>()) }
-    var showReviewScreen by remember { mutableStateOf(false) }
 
     // 進畫面當下先讀一次目前實際的進度檔案，用它來決定畫面初始狀態——
     // Termux背景執行不受App畫面切換影響，之前的版本每次重進畫面isRunning都從false
@@ -1067,18 +1054,7 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
             product = pickedProduct,
             onDone = {
                 imagePickerFolder = null
-                products = loadCapturedProducts(captionQueueDir)
-            }
-        )
-        return
-    }
-
-    if (showReviewScreen) {
-        ReviewEditedImagesContent(
-            products = products,
-            onDone = {
-                showReviewScreen = false
-                products = loadCapturedProducts(captionQueueDir)
+                productsRefreshKey++
             }
         )
         return
@@ -1103,7 +1079,7 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
             Text("已擷取商品", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = SimpleInk)
             Spacer(Modifier.height(4.dp))
             Text(
-                "點商品進去選擇要保留的圖片，打勾要生成影片的商品後按下面的按鈕開始生成",
+                "長按照片可換原圖或刪除；點商品其他地方進去選擇要保留的圖片，打勾要生成影片的商品後按下面的按鈕開始生成",
                 fontSize = 12.sp, color = SimpleMuted
             )
             Spacer(Modifier.height(12.dp))
@@ -1117,7 +1093,8 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                         onCheckedChange = { checked ->
                             selectedIds = if (checked) selectedIds + product.folder.name else selectedIds - product.folder.name
                         },
-                        onClickImages = { imagePickerFolder = product.folder }
+                        onClickImages = { imagePickerFolder = product.folder },
+                        onImagesChanged = { productsRefreshKey++ }
                     )
                     Spacer(Modifier.height(8.dp))
                 }
@@ -1137,7 +1114,7 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                             imageEditingStatus = status
                         }
                         imageEditErrors = errors
-                        products = loadCapturedProducts(captionQueueDir)
+                        productsRefreshKey++
                         isImageEditing = false
                     }
                 }
@@ -1151,11 +1128,6 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                 )
                 Spacer(Modifier.height(10.dp))
             }
-
-            TextButton(onClick = { showReviewScreen = true }) {
-                Text("檢查修圖結果", fontSize = 13.sp, color = SimpleInk)
-            }
-            Spacer(Modifier.height(10.dp))
 
             if (!serverConfigured) {
                 WarningBanner(stringResource(R.string.simple_no_server))
@@ -1192,7 +1164,7 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                             preparingStatus = status
                         }
                         prepareErrors = errors
-                        products = loadCapturedProducts(captionQueueDir)
+                        productsRefreshKey++
                         isPreparing = false
 
                         if (readyIds.isEmpty()) {
