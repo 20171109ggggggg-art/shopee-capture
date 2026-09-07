@@ -686,6 +686,7 @@ private fun EditedThumbnail(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ProductSelectRow(
     product: GenerateQueueItem,
@@ -696,12 +697,20 @@ private fun ProductSelectRow(
 ) {
     val context = LocalContext.current
     var previewIndex by remember { mutableStateOf<Int?>(null) }
+    // 【2026-09-07新增】商品列空白處長按可以直接刪除整個商品（照片+影片全刪），
+    // 防重複紀錄（captured_names/captured_links這組SharedPreferences＋永久歷史
+    // captured_history.jsonl）存在別的地方、跟商品資料夾完全分開，所以這裡只刪
+    // 資料夾本身就天生不會動到防重複紀錄——之後同一個商品不會被重複擷取進來。
+    var deleteConfirmOpen by remember { mutableStateOf(false) }
     Row(
         verticalAlignment = Alignment.Top,
         modifier = Modifier
             .fillMaxWidth()
             .background(Color.White)
-            .clickable { onClickImages() }
+            .combinedClickable(
+                onClick = { onClickImages() },
+                onLongClick = { deleteConfirmOpen = true }
+            )
             .padding(10.dp)
     ) {
         Checkbox(checked = checked, onCheckedChange = onCheckedChange)
@@ -748,6 +757,26 @@ private fun ProductSelectRow(
             images = product.imagePaths,
             initialIndex = previewedIndex,
             onDismiss = { previewIndex = null }
+        )
+    }
+
+    if (deleteConfirmOpen) {
+        AlertDialog(
+            onDismissRequest = { deleteConfirmOpen = false },
+            title = { Text("刪除這個商品？") },
+            text = {
+                Text("「${product.productName ?: product.folder.name}」的照片和影片都會刪除。防重複紀錄會保留，之後不會重複擷取到同一個商品。")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    deleteConfirmOpen = false
+                    product.folder.deleteRecursively()
+                    onImagesChanged()
+                }) { Text("刪除", color = SimpleDanger) }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteConfirmOpen = false }) { Text("取消") }
+            }
         )
     }
 }

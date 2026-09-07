@@ -2193,29 +2193,42 @@ class ShopeeAccessibilityService : AccessibilityService() {
             // 這樣稍後在FB相簿選片畫面它才會排在最前面「項目1」。跟階段2選片邏輯同一招。
             registerVideoInMediaStore(candidate.videoFile)
 
-            val ok = try {
+            val outcome = try {
                 processOneFbUploadCandidate(candidate)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
                 appendDebugLog("  → [FB ${candidate.folder.name}] 發生例外：${e.javaClass.simpleName} ${e.message}")
-                false
+                FbUploadOutcome.FAILED
             } finally {
                 cleanupTempUploadCopy()
             }
 
-            if (ok) {
-                successCount++
-                markFbPosted(candidate.folder)
-                appendDebugLog("  → [FB ${candidate.folder.name}] FB上架成功，已標記 fbPosted=true")
-                onEvent(UploadEvent.Log("✓ FB上架成功：${candidate.folder.name}"))
-                deleteFolderIfFullyPosted(candidate.folder)
-            } else {
-                failCount++
-                appendDebugLog("  → [FB ${candidate.folder.name}] FB上架失敗，停止本次批次")
-                onEvent(UploadEvent.Log("✗ FB上架失敗：${candidate.folder.name}，停止本次批次"))
-                reason = UploadFinishReason.STOPPED_ON_FAILURE
-                break
+            when (outcome) {
+                FbUploadOutcome.SUCCESS -> {
+                    successCount++
+                    markFbPosted(candidate.folder)
+                    appendDebugLog("  → [FB ${candidate.folder.name}] FB上架成功，已標記 fbPosted=true")
+                    onEvent(UploadEvent.Log("✓ FB上架成功：${candidate.folder.name}"))
+                    deleteFolderIfFullyPosted(candidate.folder)
+                }
+                FbUploadOutcome.NOT_FOUND -> {
+                    // 【2026-09-07調整】查無結果不只跳過，直接把這個商品資料夾刪掉（照片+
+                    // 影片一起刪）——反正搜尋不到，留著也上架不了，之後也不會再拿來重跑。
+                    // 防重複紀錄（captured_names/captured_links／captured_history.jsonl）
+                    // 存在別的地方，跟資料夾分開，刪資料夾不會動到，之後也不會重複擷取到
+                    // 同一個商品。不算整批失敗、不停止批次，繼續處理下一筆候選商品。
+                    appendDebugLog("  → [FB ${candidate.folder.name}] 搜尋查無結果，刪除商品資料夾，繼續下一筆")
+                    candidate.folder.deleteRecursively()
+                    onEvent(UploadEvent.Log("⚠ FB搜尋查無結果，已刪除：${candidate.folder.name}"))
+                }
+                FbUploadOutcome.FAILED -> {
+                    failCount++
+                    appendDebugLog("  → [FB ${candidate.folder.name}] FB上架失敗，停止本次批次")
+                    onEvent(UploadEvent.Log("✗ FB上架失敗：${candidate.folder.name}，停止本次批次"))
+                    reason = UploadFinishReason.STOPPED_ON_FAILURE
+                    break
+                }
             }
 
             if (successCount < maxCount) {
@@ -2342,21 +2355,28 @@ class ShopeeAccessibilityService : AccessibilityService() {
         return arrived
     }
 
-    private suspend fun processOneFbUploadCandidate(candidate: UploadCandidate): Boolean {
+    /**
+     * 【2026-09-07新增】FB上架單一商品的處理結果，取代原本的Boolean——原本不管什麼原因
+     * 失敗都當同一種「失敗」處理，一律停掉整批，但「這個商品名稱搜尋不到」（NOT_FOUND）
+     * 應該跳過繼續下一件，不該跟「畫面/流程真的壞掉」（FAILED）用同一種方式處理。
+     */
+    private enum class FbUploadOutcome { SUCCESS, NOT_FOUND, FAILED }
+
+    private suspend fun processOneFbUploadCandidate(candidate: UploadCandidate): FbUploadOutcome {
         // 0. 確認目前在FB「聯盟合作／商品」畫面，不在的話先自動導航過去
         // 【2026-08-28修正】原本要求使用者一定要先手動切到這個畫面才能按FB上架，
         // 現在改成不管目前在FB App哪個畫面，都會自動導航過去（見navigateToFbAffiliateProductsScreen）。
         if (!navigateToFbAffiliateProductsScreen()) {
             appendDebugLog("  → [FB] 自動導航到「聯盟合作→商品」畫面失敗，請確認FB App目前是否在前景")
-            return false
+            return FbUploadOutcome.FAILED
         }
         var root = rootInActiveWindow ?: run {
-            appendDebugLog("  → [FB] 讀不到目前畫面"); return false
+            appendDebugLog("  → [FB] 讀不到目前畫面"); return FbUploadOutcome.FAILED
         }
         val searchBox = findSearchBoxNode(root)
         if (searchBox == null) {
             appendDebugLog("  → [FB] 找不到搜尋框（搜尋商品、品牌或連結），請確認目前在「商品」子分頁")
-            return false
+            return FbUploadOutcome.FAILED
         }
 
         // 1. 貼上商品名稱到搜尋框並送出搜尋
@@ -2370,11 +2390,11 @@ class ShopeeAccessibilityService : AccessibilityService() {
         // 按下鍵盤的搜尋/Enter鍵送出（minSdk=30，這個action從API 30才有，符合需求）。
         if (candidate.productName.isBlank()) {
             appendDebugLog("  → [FB] 這筆候選商品沒有商品名稱(productName為空)，無法用名稱搜尋，跳過")
-            return false
+            return FbUploadOutcome.FAILED
         }
         clickFbNode(searchBox)
         delay(950)
-        root = rootInActiveWindow ?: return false
+        root = rootInActiveWindow ?: return FbUploadOutcome.FAILED
         val focusedSearchBox = findSearchBoxNode(root) ?: searchBox
         val searchBundle = android.os.Bundle().apply {
             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, candidate.productName)
@@ -2382,7 +2402,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         focusedSearchBox.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, searchBundle)
         appendDebugLog("  → [FB] 已貼上商品名稱到搜尋框：${candidate.productName}")
         delay(1600)
-        root = rootInActiveWindow ?: return false
+        root = rootInActiveWindow ?: return FbUploadOutcome.FAILED
         val searchBoxBeforeSubmit = findSearchBoxNode(root) ?: focusedSearchBox
         val imeEnterOk = searchBoxBeforeSubmit.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
         appendDebugLog("  → [FB] 送出搜尋（ACTION_IME_ENTER）：${if (imeEnterOk) "成功" else "失敗，畫面可能仍停在貼字狀態未執行搜尋"}")
@@ -2391,12 +2411,24 @@ class ShopeeAccessibilityService : AccessibilityService() {
         // 2. 點搜尋結果的商品卡（【未完全確認】找同時符合「有可點擊」+「子節點desc含蝦皮購物」
         // 的最外層卡片節點；貼連結後理論上應該只會出現這一件商品的結果）
         root = rootInActiveWindow ?: run {
-            appendDebugLog("  → [FB] 貼上連結後讀不到畫面"); return false
+            appendDebugLog("  → [FB] 貼上連結後讀不到畫面"); return FbUploadOutcome.FAILED
         }
         val resultCard = findClickableAncestorContainingDesc(root, "蝦皮購物")
         if (resultCard == null) {
+            // 【2026-09-07新增】原本這裡不管什麼原因找不到商品卡，一律當成失敗、停掉整批。
+            // 但「查無結果」（這個商品名稱在FB聯盟合作搜尋不到，例如名稱太長、太特殊、
+            // 或商品下架了）跟「畫面異常/流程真的壞掉」是完全不同層級的狀況——前者只代表
+            // 這一件商品搜不到，換下一件商品重新搜尋通常還是正常的，不該讓整批停下來。
+            // 明確判斷畫面上有沒有「查無結果」文字，有的話回傳NOT_FOUND（跳過這件，
+            // 繼續處理下一件），其他情況（例如根本沒載入出來、網路問題）才維持原本的
+            // FAILED（停掉整批，因為這種情況換下一件商品大機率會遇到同樣問題）。
+            val notFound = findTextContaining(root, "查無結果") != null
+            if (notFound) {
+                appendDebugLog("  → [FB] 搜尋「${candidate.productName}」查無結果，跳過這件商品，繼續處理下一件")
+                return FbUploadOutcome.NOT_FOUND
+            }
             appendDebugLog("  → [FB] 貼上連結後找不到搜尋結果商品卡，請確認畫面實際狀態（可能連結格式不符或還在載入）")
-            return false
+            return FbUploadOutcome.FAILED
         }
         // 【2026-08-28修正】原本用clickNodeBestEffort（靠ACTION_CLICK），實測發現FB
         // 這類自繪商品卡ACTION_CLICK回報成功但畫面完全沒反應，改用真實座標手勢點擊。
@@ -2404,7 +2436,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         resultCard.getBoundsInScreen(cardBounds)
         appendDebugLog("  → [FB] 準備點擊搜尋結果商品卡，座標中心點=(${cardBounds.centerX()}, ${cardBounds.centerY()})，卡片範圍=$cardBounds")
         if (!tapNodeCenter(resultCard)) {
-            appendDebugLog("  → [FB] 點擊搜尋結果商品卡失敗（手勢送出失敗）"); return false
+            appendDebugLog("  → [FB] 點擊搜尋結果商品卡失敗（手勢送出失敗）"); return FbUploadOutcome.FAILED
         }
         delay(2900)
 
@@ -2438,67 +2470,67 @@ class ShopeeAccessibilityService : AccessibilityService() {
             appendDebugLog("  → [FB] 等不到商品詳情頁「建立貼文」按鈕")
             // 逾時失敗時也順手dump一次節點樹，跟截圖互相對照，兩份證據一起看更準
             dumpCurrentNodeTree()
-            return false
+            return FbUploadOutcome.FAILED
         }
         delay(950)
-        root = rootInActiveWindow ?: return false
+        root = rootInActiveWindow ?: return FbUploadOutcome.FAILED
         val createPostButton = findNodeByTexts(root, listOf("建立貼文"))
         if (createPostButton == null || !clickFbNode(createPostButton)) {
-            appendDebugLog("  → [FB] 找不到或點擊「建立貼文」失敗"); return false
+            appendDebugLog("  → [FB] 找不到或點擊「建立貼文」失敗"); return FbUploadOutcome.FAILED
         }
         delay(1900)
 
         // 4. 等「加到新Reel／加到新貼文」選單，點「加到新Reel」
         if (!waitForAnyText(listOf("加到新 Reel", "加到新Reel"), 3000)) {
-            appendDebugLog("  → [FB] 等不到「加到新Reel」選單"); return false
+            appendDebugLog("  → [FB] 等不到「加到新Reel」選單"); return FbUploadOutcome.FAILED
         }
-        root = rootInActiveWindow ?: return false
+        root = rootInActiveWindow ?: return FbUploadOutcome.FAILED
         val addToReelButton = findNodeByTexts(root, listOf("加到新 Reel", "加到新Reel"))
         if (addToReelButton == null || !clickFbNode(addToReelButton)) {
-            appendDebugLog("  → [FB] 找不到或點擊「加到新Reel」失敗"); return false
+            appendDebugLog("  → [FB] 找不到或點擊「加到新Reel」失敗"); return FbUploadOutcome.FAILED
         }
         delay(4000)
 
         // 5. 等Reel錄影介面，點左下角「圖庫」
         if (!waitForAnyText(listOf("圖庫"), 5000)) {
-            appendDebugLog("  → [FB] 等不到Reel錄影介面「圖庫」按鈕"); return false
+            appendDebugLog("  → [FB] 等不到Reel錄影介面「圖庫」按鈕"); return FbUploadOutcome.FAILED
         }
         delay(800)
-        root = rootInActiveWindow ?: return false
+        root = rootInActiveWindow ?: return FbUploadOutcome.FAILED
         val galleryButton = findNodeByTexts(root, listOf("圖庫"))
         if (galleryButton == null || !clickFbNode(galleryButton)) {
-            appendDebugLog("  → [FB] 找不到或點擊「圖庫」失敗"); return false
+            appendDebugLog("  → [FB] 找不到或點擊「圖庫」失敗"); return FbUploadOutcome.FAILED
         }
         delay(2400)
 
         // 6. 等相簿選片畫面，點「項目1」（最近登記進媒體庫、時間戳記最新的就是目標影片）
         if (!waitForAnyText(listOf("建立 Reel", "項目1"), 4000)) {
-            appendDebugLog("  → [FB] 等不到相簿選片畫面"); return false
+            appendDebugLog("  → [FB] 等不到相簿選片畫面"); return FbUploadOutcome.FAILED
         }
         delay(800)
-        root = rootInActiveWindow ?: return false
+        root = rootInActiveWindow ?: return FbUploadOutcome.FAILED
         logSelectionSanityCheck("FB Reel選片")
         val firstVideoItem = findNodeByDescContaining(root, "項目1，拍攝於")
         if (firstVideoItem == null || !clickFbNode(firstVideoItem)) {
-            appendDebugLog("  → [FB] 找不到或點擊相簿第一個影片項目失敗"); return false
+            appendDebugLog("  → [FB] 找不到或點擊相簿第一個影片項目失敗"); return FbUploadOutcome.FAILED
         }
         delay(2900)
 
         // 7. 等影片編輯預覽畫面，點「下一步」
         if (!waitForAnyText(listOf("下一步"), 5000)) {
-            appendDebugLog("  → [FB] 等不到影片編輯預覽畫面「下一步」"); return false
+            appendDebugLog("  → [FB] 等不到影片編輯預覽畫面「下一步」"); return FbUploadOutcome.FAILED
         }
         delay(950)
-        root = rootInActiveWindow ?: return false
+        root = rootInActiveWindow ?: return FbUploadOutcome.FAILED
         val editorNextButton = findNodeByTexts(root, listOf("下一步"))
         if (editorNextButton == null || !clickFbNode(editorNextButton)) {
-            appendDebugLog("  → [FB] 找不到或點擊影片編輯預覽「下一步」失敗"); return false
+            appendDebugLog("  → [FB] 找不到或點擊影片編輯預覽「下一步」失敗"); return FbUploadOutcome.FAILED
         }
         delay(3500)
 
         // 8. 等「Reel設定」畫面
         if (!waitForAnyText(listOf("Reel 設定", "Reel設定"), 4000)) {
-            appendDebugLog("  → [FB] 等不到「Reel設定」畫面"); return false
+            appendDebugLog("  → [FB] 等不到「Reel設定」畫面"); return FbUploadOutcome.FAILED
         }
         delay(1900)
 
@@ -2508,7 +2540,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         // 目前是關閉狀態），點下去變成跳轉進那個功能的子設定畫面，完全跑錯地方。改成限定只在
         // 畫面最上方1/3範圍內找「關閉」——橫幅一定緊貼在Reel設定畫面最上面，這樣可以跟畫面
         // 中段那些「功能狀態文字」明確區分開來。
-        root = rootInActiveWindow ?: return false
+        root = rootInActiveWindow ?: return FbUploadOutcome.FAILED
         findTextContaining(root, "已新增商品連結")?.let {
             val screenHeight = resources.displayMetrics.heightPixels
             val topThreshold = screenHeight / 3
@@ -2542,10 +2574,10 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
 
         // 9. 填文案（沿用跟蝦皮短影音同一套「黃金3秒/痛點/導購」文案組裝邏輯）
-        root = rootInActiveWindow ?: return false
+        root = rootInActiveWindow ?: return FbUploadOutcome.FAILED
         val captionInput = findSearchBoxNode(root)
         if (captionInput == null) {
-            appendDebugLog("  → [FB] 找不到文案輸入框"); return false
+            appendDebugLog("  → [FB] 找不到文案輸入框"); return FbUploadOutcome.FAILED
         }
         val fbCaption = buildShortVideoCaption(candidate)
         val captionBundle = android.os.Bundle().apply {
@@ -2564,7 +2596,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         // 正常的[可勾選]屬性、本身就是可點擊節點，不用像蝦皮那樣用座標點擊法繞過）。
         var aiTagToggle: AccessibilityNodeInfo? = null
         for (attempt in 1..4) {
-            root = rootInActiveWindow ?: return false
+            root = rootInActiveWindow ?: return FbUploadOutcome.FAILED
             aiTagToggle = findNodeByDescContaining(root, "新增 AI 標籤")
             if (aiTagToggle != null) break
             appendDebugLog("  → [FB] 第${attempt}次找不到「新增AI標籤」開關，往下滑動後重試")
@@ -2588,7 +2620,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         // 11. 往下捲動，找「立即分享」按鈕（畫面較長，不一定在可視範圍內）
         var shareButton: AccessibilityNodeInfo? = null
         for (attempt in 1..4) {
-            root = rootInActiveWindow ?: return false
+            root = rootInActiveWindow ?: return FbUploadOutcome.FAILED
             shareButton = findNodeByTexts(root, listOf("立即分享"))
             if (shareButton != null) break
             appendDebugLog("  → [FB] 第${attempt}次找不到「立即分享」，往下滑動後重試")
@@ -2596,10 +2628,10 @@ class ShopeeAccessibilityService : AccessibilityService() {
             delay(1100)
         }
         if (shareButton == null) {
-            appendDebugLog("  → [FB] 捲動4次後仍找不到「立即分享」按鈕"); return false
+            appendDebugLog("  → [FB] 捲動4次後仍找不到「立即分享」按鈕"); return FbUploadOutcome.FAILED
         }
         if (!clickFbNode(shareButton)) {
-            appendDebugLog("  → [FB] 點擊「立即分享」失敗"); return false
+            appendDebugLog("  → [FB] 點擊「立即分享」失敗"); return FbUploadOutcome.FAILED
         }
 
         // 12. 判定成功：按下分享後，畫面上不再有「Reel設定」標題
@@ -2607,7 +2639,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         val stillOnSettingsScreen = rootInActiveWindow?.let { findTextContaining(it, "Reel 設定") != null || findTextContaining(it, "Reel設定") != null } == true
         if (stillOnSettingsScreen) {
             appendDebugLog("  → [FB] 按下分享後仍停在「Reel設定」畫面，判定失敗")
-            return false
+            return FbUploadOutcome.FAILED
         }
 
         // 13. 發佈成功後，根據實測：畫面會停在商品詳情頁（「建立貼文」按鈕那個畫面），
@@ -2622,7 +2654,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         } else {
             appendDebugLog("  → [FB] 發佈完成，但按返回鍵後畫面不是預期的搜尋結果畫面，下一筆可能需要手動確認畫面狀態")
         }
-        return true
+        return FbUploadOutcome.SUCCESS
     }
 
     /**
@@ -3297,9 +3329,33 @@ class ShopeeAccessibilityService : AccessibilityService() {
 
         val result: Uri?
         if (insertedUri != null) {
+            // 【2026-09-07新增】懷疑POCO(MIUI)相簿App有自己獨立的背景索引快取，不是
+            // 即時反映MediaStore資料庫的真實內容——log已證實insert()寫入的DATE_ADDED/
+            // DATE_TAKEN在資料庫查詢層級100%正確排最前面，但實際打開相簿App畫面卻沒有
+            // 排到第一個。額外做兩件事提高MIUI背景掃描盡快抓到異動的機率：
+            // 1. 補touch檔案系統層級的最後修改時間（部分廠牌相簿App是直接掃檔案mtime，
+            //    不是只看MediaStore資料庫欄位）
+            // 2. insert()成功後再額外呼叫一次MediaScannerConnection.scanFile()（原本
+            //    scanFile只在insert失敗時當備援才用），疊加兩種變更通知方式
+            try {
+                fileToRegister.setLastModified(now)
+            } catch (e: Exception) {
+                appendDebugLog("  → [除錯] setLastModified()失敗（不影響主要流程）：${e.javaClass.simpleName} ${e.message}")
+            }
+            try {
+                MediaScannerConnection.scanFile(
+                    applicationContext,
+                    arrayOf(fileToRegister.absolutePath),
+                    arrayOf("video/mp4"),
+                    null
+                )
+            } catch (e: Exception) {
+                appendDebugLog("  → [除錯] 額外scanFile()通知失敗（不影響主要流程）：${e.javaClass.simpleName} ${e.message}")
+            }
             appendDebugLog(
                 "  → [除錯] 用insert()登記成功：${fileToRegister.name} -> $insertedUri，" +
-                    "DATE_ADDED/DATE_MODIFIED=${now / 1000}秒，DATE_TAKEN=${now}毫秒（都是現在）"
+                    "DATE_ADDED/DATE_MODIFIED=${now / 1000}秒，DATE_TAKEN=${now}毫秒（都是現在），" +
+                    "已補touch檔案mtime+額外scanFile()通知"
             )
             result = insertedUri
         } else {
