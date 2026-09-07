@@ -19,6 +19,23 @@ enum class ImageEditProvider(val label: String) {
 }
 
 /**
+ * 【2026-09-07新增】AI辨識選圖（從候選圖裡挑出最適合當商品主圖的幾張）原本寫死只能
+ * 用Gemini，因為OpenAI沒有對應的圖片評分/選圖API。這次改成用OpenAI的Chat Completions
+ * API（視覺輸入）自己組一個功能等效的版本（見OpenAiImageSelector），讓使用者可以在
+ * 設定畫面切換，測試Gemini/ChatGPT對「選圖」這件事的判斷差異——跟AI改圖是各自獨立的
+ * 供應商設定，互不影響。
+ */
+enum class ImageSelectProvider(val label: String) {
+    GEMINI("Gemini"),
+    CHATGPT("ChatGPT");
+
+    companion object {
+        fun fromLabel(label: String): ImageSelectProvider =
+            entries.firstOrNull { it.label == label } ?: GEMINI
+    }
+}
+
+/**
  * AI換背景（測試功能）的設定：Gemini/OpenAI API Key、是否啟用、換背景提示詞、
  * 目前選用的AI改圖供應商。
  * API Key存在SharedPreferences的私有檔案裡，只有這個App自己能讀到（其他App讀不到）。
@@ -30,6 +47,7 @@ object GeminiApiPrefs {
     private const val KEY_PROMPT = "prompt"
     private const val KEY_OPENAI_API_KEY = "openai_api_key"
     private const val KEY_IMAGE_EDIT_PROVIDER = "image_edit_provider"
+    private const val KEY_IMAGE_SELECT_PROVIDER = "image_select_provider"
 
     val DEFAULT_PROMPT =
         "保留這張圖片裡的商品本體形狀、顏色、材質完全不變，" +
@@ -107,6 +125,22 @@ object GeminiApiPrefs {
     fun setImageEditProvider(context: Context, provider: ImageEditProvider) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
             .putString(KEY_IMAGE_EDIT_PROVIDER, provider.name)
+            .apply()
+    }
+
+    fun getImageSelectProvider(context: Context): ImageSelectProvider {
+        val name = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_IMAGE_SELECT_PROVIDER, ImageSelectProvider.GEMINI.name)
+        return try {
+            ImageSelectProvider.valueOf(name ?: ImageSelectProvider.GEMINI.name)
+        } catch (e: Exception) {
+            ImageSelectProvider.GEMINI
+        }
+    }
+
+    fun setImageSelectProvider(context: Context, provider: ImageSelectProvider) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+            .putString(KEY_IMAGE_SELECT_PROVIDER, provider.name)
             .apply()
     }
 }

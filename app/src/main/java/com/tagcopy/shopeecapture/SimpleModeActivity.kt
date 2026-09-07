@@ -339,7 +339,8 @@ private data class GenerateQueueItem(
     val imagePaths: List<File>,
     val hasVideo: Boolean,
     val selectionDone: Boolean,
-    val aiProcessed: Boolean
+    val aiProcessed: Boolean,
+    val skipAiEdit: Boolean
 )
 
 /**
@@ -357,6 +358,33 @@ private fun markImageAiDone(imageFile: File) {
     try {
         File(imageFile.parentFile, ".ai_done_${imageFile.name}").createNewFile()
     } catch (e: Exception) { /* 標記失敗頂多下次多重跑一次這張，不影響這次改圖結果 */ }
+}
+
+/**
+ * 【2026-09-07新增】「只用原圖」開關：勾起來時，除了寫`.skip_ai_edit`標記（讓批次流程
+ * 以後跳過這個商品的AI改圖），也立刻把商品裡所有已經改過、還留著`.orig_`備份的照片
+ * 都還原回原圖（等於一次做完每張圖的「換原圖」，不用一張一張長按）。還原的同時把
+ * 對應的`.ai_done_`標記也清掉，維持狀態一致——之後如果取消勾選、想重新用AI改圖，
+ * 批次流程會正確認得出「這些是還沒改過的原圖」，不會誤判成已經改過而跳過。
+ * 取消勾選只是刪掉標記本身，不會對照片內容做任何事（維持目前是什麼樣子就是什麼樣子）。
+ */
+private fun toggleSkipAiEdit(product: GenerateQueueItem, enabled: Boolean) {
+    val marker = File(product.folder, ".skip_ai_edit")
+    if (enabled) {
+        try { marker.createNewFile() } catch (e: Exception) { /* 標記失敗不影響下面的還原動作 */ }
+        product.imagePaths.forEach { file ->
+            val backup = File(file.parentFile, ".orig_${file.name}")
+            if (backup.isFile) {
+                try {
+                    backup.copyTo(file, overwrite = true)
+                    backup.delete()
+                } catch (e: Exception) { /* 這張還原失敗，維持現狀，不影響其他張 */ }
+            }
+            File(file.parentFile, ".ai_done_${file.name}").delete()
+        }
+    } else {
+        marker.delete()
+    }
 }
 
 /**
@@ -427,7 +455,8 @@ private fun loadCapturedProducts(root: File): List<GenerateQueueItem> {
                 imagePaths = images,
                 hasVideo = File(dir, "output.mp4").exists(),
                 selectionDone = File(dir, ".image_selection_done").exists(),
-                aiProcessed = images.isNotEmpty() && images.all { isImageAiDone(it) }
+                aiProcessed = images.isNotEmpty() && images.all { isImageAiDone(it) },
+                skipAiEdit = File(dir, ".skip_ai_edit").exists()
             )
         }
         ?.sortedByDescending { it.folder.lastModified() }
@@ -644,6 +673,10 @@ private fun EditedThumbnail(
                     try {
                         backupFile.copyTo(file, overwrite = true)
                         backupFile.delete()
+                        // 【2026-09-07修正】換回原圖後也要清掉這張的.ai_done_標記，不然
+                        // 明明內容已經是原圖了，卻還被當成「已改圖完成」，之後批次跑不會
+                        // 重新處理它——跟toggleSkipAiEdit()的還原邏輯保持一致。
+                        File(file.parentFile, ".ai_done_${file.name}").delete()
                         onChanged()
                     } catch (e: Exception) { /* 失敗就保留現狀，可以再長按重試 */ }
                 }
@@ -748,6 +781,28 @@ private fun ProductSelectRow(
                 },
                 fontSize = 11.sp, color = SimpleMuted
             )
+            // 【2026-09-07新增】「只用原圖」：勾起來這個商品永遠跳過AI改圖，不管全域
+            // 開關是開是關；勾的當下也會把已經改過的照片還原回原圖（見toggleSkipAiEdit）。
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .padding(top = 2.dp)
+                    .clickable {
+                        toggleSkipAiEdit(product, !product.skipAiEdit)
+                        onImagesChanged()
+                    }
+            ) {
+                Checkbox(
+                    checked = product.skipAiEdit,
+                    onCheckedChange = {
+                        toggleSkipAiEdit(product, it)
+                        onImagesChanged()
+                    },
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text("只用原圖", fontSize = 11.sp, color = SimpleMuted)
+            }
         }
     }
 
@@ -1000,10 +1055,13 @@ private suspend fun runAutoSelectAndEditPipeline(
     val apiKey = GeminiApiPrefs.getApiKey(context)
     val editPrompt = GeminiApiPrefs.getPrompt(context)
     // 【2026-09-05新增】AI改圖供應商可能是Gemini或ChatGPT（設定畫面選單切換），
-    // 選圖辨識（GeminiImageSelector）不受影響、固定用Gemini，只有「換背景」這步
     // 依此分派給對應的object呼叫。
     val imageEditProvider = GeminiApiPrefs.getImageEditProvider(context)
     val openAiApiKey = GeminiApiPrefs.getOpenAiApiKey(context)
+    // 【2026-09-07新增】AI辨識選圖原本寫死用Gemini，現在也能切換成ChatGPT
+    // （OpenAiImageSelector），方便測試兩邊選圖判斷的差異，跟AI改圖是各自獨立的
+    // 供應商設定。
+    val imageSelectProvider = GeminiApiPrefs.getImageSelectProvider(context)
 
     products.forEachIndexed { idx, product ->
         val label = product.productName ?: product.folder.name
@@ -1046,15 +1104,24 @@ private suspend fun runAutoSelectAndEditPipeline(
         if (!usedSharedProduct && !product.selectionDone) {
             onStatus("$progressPrefix：辨識圖片中")
             val bitmaps = currentImages.map { decodeSampledBitmap(it.path, 1024).first }
-            if (bitmaps.any { it == null } || apiKey.isBlank()) {
-                val reason = if (apiKey.isBlank()) "尚未設定Gemini API Key" else "有圖片讀取失敗"
-                failed.add(product.folder.name to "辨識圖片失敗：$reason")
+            // 【2026-09-07修正】辨識選圖現在依imageSelectProvider分派給Gemini或OpenAI，
+            // API Key也要看對應的供應商檢查，不能只看Gemini的Key有沒有填——不然選了
+            // ChatGPT、Gemini Key是空的，會被誤判成「尚未設定Gemini API Key」，讓人
+            // 誤以為跟改圖供應商設定有關（實際上這兩個供應商切換是分開的）。
+            val selectApiKey = if (imageSelectProvider == ImageSelectProvider.CHATGPT) openAiApiKey else apiKey
+            val selectApiKeyLabel = if (imageSelectProvider == ImageSelectProvider.CHATGPT) "OpenAI" else "Gemini"
+            if (bitmaps.any { it == null } || selectApiKey.isBlank()) {
+                val reason = if (selectApiKey.isBlank()) "尚未設定${selectApiKeyLabel} API Key" else "有圖片讀取失敗"
+                failed.add(product.folder.name to "辨識圖片失敗（使用${imageSelectProvider.label}）：$reason")
                 return@forEachIndexed
             }
             val nonNullBitmaps: List<android.graphics.Bitmap> = bitmaps.filterNotNull()
-            val result = GeminiImageSelector.selectBestImages(nonNullBitmaps, apiKey, SHARED_IMAGE_POOL_SIZE)
+            val result = when (imageSelectProvider) {
+                ImageSelectProvider.GEMINI -> GeminiImageSelector.selectBestImages(nonNullBitmaps, selectApiKey, SHARED_IMAGE_POOL_SIZE)
+                ImageSelectProvider.CHATGPT -> OpenAiImageSelector.selectBestImages(nonNullBitmaps, selectApiKey, SHARED_IMAGE_POOL_SIZE)
+            }
             if (!result.success || result.selectedIndexes.isEmpty()) {
-                failed.add(product.folder.name to "辨識圖片失敗：${result.errorMessage ?: "未知錯誤"}")
+                failed.add(product.folder.name to "辨識圖片失敗（使用${imageSelectProvider.label}）：${result.errorMessage ?: "未知錯誤"}")
                 return@forEachIndexed
             }
             val chosenFiles = result.selectedIndexes.map { currentImages[it] }
@@ -1065,7 +1132,9 @@ private suspend fun runAutoSelectAndEditPipeline(
             justSelected = true
         }
 
-        val imagesToProcess = if (!usedSharedProduct && aiEnabled) {
+        // 【2026-09-07新增】product.skipAiEdit（「只用原圖」開關）勾起來的商品，
+        // 不管全域AI改圖開關是開是關，一律跳過AI改圖這一步，直接拿目前的圖生成影片。
+        val imagesToProcess = if (!usedSharedProduct && aiEnabled && !product.skipAiEdit) {
             currentImages.filter { !isImageAiDone(it) }
         } else emptyList()
         if (imagesToProcess.isNotEmpty()) {
@@ -1134,6 +1203,7 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
         products = withContext(Dispatchers.IO) { loadCapturedProducts(captionQueueDir) }
     }
     var selectedIds by remember { mutableStateOf(setOf<String>()) }
+    var bulkDeleteConfirmOpen by remember { mutableStateOf(false) }
     // 【2026-08-30新增】自動辨識選圖＋AI改圖流程的進行中狀態：isPreparing為true時
     // 按鈕顯示這個逐步文字（辨識圖片中/AI改圖中，見runAutoSelectAndEditPipeline），
     // 這個階段完全在App內（Kotlin）跑，還沒交給Termux，跟isRunning（Termux跑批次
@@ -1308,6 +1378,15 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                     }) {
                         Text("只選未改圖", fontSize = 13.sp, color = SimpleInk)
                     }
+                    // 【2026-09-07新增】批次刪除：勾選多個商品後按這顆，一次刪光勾選的商品
+                    // （照片+影片），不用一個一個長按。防重複紀錄不受影響，沿用跟長按刪除
+                    // 商品同一套邏輯。
+                    TextButton(
+                        onClick = { bulkDeleteConfirmOpen = true },
+                        enabled = selectedIds.isNotEmpty()
+                    ) {
+                        Text("刪除", fontSize = 13.sp, color = SimpleDanger)
+                    }
                 }
                 Spacer(Modifier.height(8.dp))
                 products.forEach { product ->
@@ -1324,6 +1403,25 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                 }
             }
             Spacer(Modifier.height(20.dp))
+
+            if (bulkDeleteConfirmOpen) {
+                AlertDialog(
+                    onDismissRequest = { bulkDeleteConfirmOpen = false },
+                    title = { Text("刪除${selectedIds.size}個商品？") },
+                    text = { Text("勾選商品的照片和影片都會刪除。防重複紀錄會保留，之後不會重複擷取到同一個商品。") },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            bulkDeleteConfirmOpen = false
+                            products.filter { it.folder.name in selectedIds }.forEach { it.folder.deleteRecursively() }
+                            selectedIds = emptySet()
+                            productsRefreshKey++
+                        }) { Text("刪除", color = SimpleDanger) }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { bulkDeleteConfirmOpen = false }) { Text("取消") }
+                    }
+                )
+            }
 
             BigActionButton(
                 text = if (isImageEditing) imageEditingStatus.ifBlank { "修圖中" } else "開始修改圖片",

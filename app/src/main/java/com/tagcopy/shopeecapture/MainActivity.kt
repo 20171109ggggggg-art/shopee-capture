@@ -416,6 +416,12 @@ fun SettingsExportImportCard(context: android.content.Context, onImported: () ->
             put("geminiApiKey", GeminiApiPrefs.getApiKey(context))
             put("geminiEnabled", GeminiApiPrefs.isEnabled(context))
             put("geminiPrompt", GeminiApiPrefs.getPrompt(context))
+            // 【2026-09-07新增】原本只匯出Gemini API Key，OpenAI的API Key跟兩個供應商
+            // 切換（AI改圖用哪家、AI辨識選圖用哪家）都漏了，換新手機/重新安裝時這幾項
+            // 要重新手動設定一次，容易忘記。
+            put("openAiApiKey", GeminiApiPrefs.getOpenAiApiKey(context))
+            put("imageEditProvider", GeminiApiPrefs.getImageEditProvider(context).name)
+            put("imageSelectProvider", GeminiApiPrefs.getImageSelectProvider(context).name)
             put("autoCapture", autoCaptureJson)
             put("uploadTargetCount", UploadAutomationPrefs.getTargetCount(context))
             put("fbUploadEnabled", UploadAutomationPrefs.isFbUploadEnabled(context))
@@ -481,6 +487,19 @@ fun SettingsExportImportCard(context: android.content.Context, onImported: () ->
                             }
                             json.optString("geminiPrompt", "").takeIf { it.isNotBlank() }
                                 ?.let { GeminiApiPrefs.setPrompt(context, it) }
+                            // 【2026-09-07新增】對應上面匯出新增的三項，還原時也要讀回來。
+                            json.optString("openAiApiKey", "").takeIf { it.isNotBlank() }
+                                ?.let { GeminiApiPrefs.setOpenAiApiKey(context, it) }
+                            json.optString("imageEditProvider", "").takeIf { it.isNotBlank() }
+                                ?.let {
+                                    try { GeminiApiPrefs.setImageEditProvider(context, ImageEditProvider.valueOf(it)) }
+                                    catch (e: Exception) { /* 舊格式或壞資料就維持現狀 */ }
+                                }
+                            json.optString("imageSelectProvider", "").takeIf { it.isNotBlank() }
+                                ?.let {
+                                    try { GeminiApiPrefs.setImageSelectProvider(context, ImageSelectProvider.valueOf(it)) }
+                                    catch (e: Exception) { /* 舊格式或壞資料就維持現狀 */ }
+                                }
                             if (json.has("autoCapture") && !json.isNull("autoCapture")) {
                                 val ac = json.getJSONObject("autoCapture")
                                 fun dOrNull(key: String): Double? =
@@ -542,7 +561,7 @@ fun SettingsExportImportCard(context: android.content.Context, onImported: () ->
         AlertDialog(
             onDismissRequest = { showUploadConfirm = false },
             title = { Text("確認上傳設定到筆電？") },
-            text = { Text("這會覆蓋掉筆電上「${AccountPrefs.getAccount(context)}」這個帳號原本存的設定（帳號/地區/伺服器網址/Gemini API Key/篩選條件等），確定要繼續嗎？") },
+            text = { Text("這會覆蓋掉筆電上「${AccountPrefs.getAccount(context)}」這個帳號原本存的設定（帳號/地區/伺服器網址/Gemini與ChatGPT API Key/AI供應商切換/篩選條件等），確定要繼續嗎？") },
             confirmButton = {
                 TextButton(onClick = {
                     showUploadConfirm = false
@@ -1071,6 +1090,38 @@ fun AiBackgroundCard(context: android.content.Context, reloadKey: Int = 0) {
             )
             Spacer(Modifier.height(10.dp))
         }
+
+        Spacer(Modifier.height(10.dp))
+
+        // 【2026-09-07新增】AI辨識選圖（從候選圖裡挑主圖）原本寫死用Gemini，現在也能
+        // 切換成ChatGPT，方便測試兩邊選圖結果的差異——跟上面的「AI改圖服務」是各自獨立
+        // 的供應商設定，互不影響（改圖選ChatGPT，選圖還是可以用Gemini，反之亦然）。
+        var selectProvider by remember(reloadKey) { mutableStateOf(GeminiApiPrefs.getImageSelectProvider(context)) }
+        Text("AI辨識選圖服務", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = InkColor)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "從擷取到的候選圖片裡，自動挑出最適合當商品主圖的幾張（取代人工選圖那一步）。" +
+                "跟上面AI改圖是分開的設定，可以各自選要用Gemini還是ChatGPT。",
+            fontSize = 12.sp, color = MutedColor, lineHeight = 17.sp
+        )
+        Spacer(Modifier.height(6.dp))
+        FlowRowChips(
+            options = ImageSelectProvider.entries.map { it.label },
+            selected = selectProvider.label,
+            onSelect = { label ->
+                selectProvider = ImageSelectProvider.fromLabel(label)
+                GeminiApiPrefs.setImageSelectProvider(context, selectProvider)
+            }
+        )
+        if (selectProvider == ImageSelectProvider.CHATGPT && openAiApiKey.isBlank()) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "選圖也要用到ChatGPT，記得上面的OpenAI API Key也要填（點「AI改圖服務」切成" +
+                    "ChatGPT會顯示欄位，填完切回Gemini也沒關係，Key會保留）。",
+                fontSize = 11.sp, color = MutedColor
+            )
+        }
+        Spacer(Modifier.height(10.dp))
 
         OutlinedTextField(
             value = prompt,
