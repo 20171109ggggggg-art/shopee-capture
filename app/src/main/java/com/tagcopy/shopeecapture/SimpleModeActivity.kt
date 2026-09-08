@@ -340,7 +340,11 @@ private data class GenerateQueueItem(
     val hasVideo: Boolean,
     val selectionDone: Boolean,
     val aiProcessed: Boolean,
-    val skipAiEdit: Boolean
+    val skipAiEdit: Boolean,
+    // 【2026-09-07新增】給「生成影片」清單分組用：aiProcessed要求「全部照片」都改過
+    // 才算true（給狀態文字跟「只選未改圖」按鈕用），但分組時使用者確認「只要有任何
+    // 一張改過」就該歸進「已AI改圖」組，兩種語意不一樣，分開存不動到既有欄位的行為。
+    val anyAiEdited: Boolean
 )
 
 /**
@@ -456,7 +460,8 @@ private fun loadCapturedProducts(root: File): List<GenerateQueueItem> {
                 hasVideo = File(dir, "output.mp4").exists(),
                 selectionDone = File(dir, ".image_selection_done").exists(),
                 aiProcessed = images.isNotEmpty() && images.all { isImageAiDone(it) },
-                skipAiEdit = File(dir, ".skip_ai_edit").exists()
+                skipAiEdit = File(dir, ".skip_ai_edit").exists(),
+                anyAiEdited = images.any { isImageAiDone(it) }
             )
         }
         ?.sortedByDescending { it.folder.lastModified() }
@@ -1492,17 +1497,71 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                     }
                 }
                 Spacer(Modifier.height(8.dp))
-                products.forEach { product ->
-                    ProductSelectRow(
-                        product = product,
-                        checked = selectedIds.contains(product.folder.name),
-                        onCheckedChange = { checked ->
-                            selectedIds = if (checked) selectedIds + product.folder.name else selectedIds - product.folder.name
-                        },
-                        onClickImages = { imagePickerFolder = product.folder },
-                        onImagesChanged = { productsRefreshKey++ }
-                    )
-                    Spacer(Modifier.height(8.dp))
+                // 【2026-09-07新增】清單依處理狀態分成三組，原本全部混在一起很亂：
+                // 只用原圖（skipAiEdit）優先權最高，不管有沒有改過圖都歸這組；
+                // 已AI改圖＝沒設只用原圖、且至少有一張照片改過（不要求全部，使用者
+                // 確認過「有任何一張改過就算」）；剩下的歸待處理。三組都用同一個
+                // ProductSelectRow，只是外面多包一層分組標題，勾選/全選/刪除等操作
+                // 一樣是對全部商品生效，不分組。
+                val originalOnlyProducts = products.filter { it.skipAiEdit }
+                val aiEditedProducts = products.filter { !it.skipAiEdit && it.anyAiEdited }
+                val pendingProducts = products.filter { !it.skipAiEdit && !it.anyAiEdited }
+
+                @Composable
+                fun sectionHeader(title: String, count: Int, hint: String) {
+                    Text("$title（$count）", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = SimpleInk)
+                    Text(hint, fontSize = 11.sp, color = SimpleMuted)
+                    Spacer(Modifier.height(6.dp))
+                }
+
+                if (pendingProducts.isNotEmpty()) {
+                    sectionHeader("待處理", pendingProducts.size, "還沒選圖、還沒AI改圖、也沒設定只用原圖")
+                    pendingProducts.forEach { product ->
+                        ProductSelectRow(
+                            product = product,
+                            checked = selectedIds.contains(product.folder.name),
+                            onCheckedChange = { checked ->
+                                selectedIds = if (checked) selectedIds + product.folder.name else selectedIds - product.folder.name
+                            },
+                            onClickImages = { imagePickerFolder = product.folder },
+                            onImagesChanged = { productsRefreshKey++ }
+                        )
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    Spacer(Modifier.height(14.dp))
+                }
+
+                if (aiEditedProducts.isNotEmpty()) {
+                    sectionHeader("已AI改圖", aiEditedProducts.size, "已經送去AI換過背景，可以直接生成影片")
+                    aiEditedProducts.forEach { product ->
+                        ProductSelectRow(
+                            product = product,
+                            checked = selectedIds.contains(product.folder.name),
+                            onCheckedChange = { checked ->
+                                selectedIds = if (checked) selectedIds + product.folder.name else selectedIds - product.folder.name
+                            },
+                            onClickImages = { imagePickerFolder = product.folder },
+                            onImagesChanged = { productsRefreshKey++ }
+                        )
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    Spacer(Modifier.height(14.dp))
+                }
+
+                if (originalOnlyProducts.isNotEmpty()) {
+                    sectionHeader("只用原圖", originalOnlyProducts.size, "勾了「只用原圖」，永遠跳過AI改圖，直接用原圖生成")
+                    originalOnlyProducts.forEach { product ->
+                        ProductSelectRow(
+                            product = product,
+                            checked = selectedIds.contains(product.folder.name),
+                            onCheckedChange = { checked ->
+                                selectedIds = if (checked) selectedIds + product.folder.name else selectedIds - product.folder.name
+                            },
+                            onClickImages = { imagePickerFolder = product.folder },
+                            onImagesChanged = { productsRefreshKey++ }
+                        )
+                        Spacer(Modifier.height(8.dp))
+                    }
                 }
             }
             Spacer(Modifier.height(20.dp))
