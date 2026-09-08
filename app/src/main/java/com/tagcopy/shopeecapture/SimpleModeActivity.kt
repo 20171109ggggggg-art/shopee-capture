@@ -1503,9 +1503,9 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                 // 確認過「有任何一張改過就算」）；剩下的歸待處理。三組都用同一個
                 // ProductSelectRow，只是外面多包一層分組標題，勾選/全選/刪除等操作
                 // 一樣是對全部商品生效，不分組。
-                val originalOnlyProducts = products.filter { it.skipAiEdit }
-                val aiEditedProducts = products.filter { !it.skipAiEdit && it.anyAiEdited }
-                val pendingProducts = products.filter { !it.skipAiEdit && !it.anyAiEdited }
+                val originalOnlyProducts = remember(products) { products.filter { it.skipAiEdit } }
+                val aiEditedProducts = remember(products) { products.filter { !it.skipAiEdit && it.anyAiEdited } }
+                val pendingProducts = remember(products) { products.filter { !it.skipAiEdit && !it.anyAiEdited } }
 
                 @Composable
                 fun sectionHeader(title: String, count: Int, hint: String) {
@@ -1785,13 +1785,32 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
         }
     }
 
-        // 浮動跳轉按鈕：捲動位置在上半部就跳到最下面，在下半部（或還沒量出高度）
-        // 就跳回最上面；maxValue在還沒佈局完成時是0，這時預設顯示「跳到底部」圖示。
-        val nearTop = genScrollState.maxValue == 0 || genScrollState.value < genScrollState.maxValue / 2
+        // 【2026-09-07修正】原本nearTop直接在這個大畫面最外層讀取genScrollState.value，
+        // 導致滑動當下（value每一幀都在變）整個畫面（包含商品清單分組篩選）跟著重組，
+        // 商品一多就明顯卡頓。抽成獨立元件，讓「滑動」只讓這顆按鈕自己重組。
+        ScrollToTopBottomFab(genScrollState, genScrollScope)
+    }
+}
+
+/**
+ * 【2026-09-07新增】浮動跳轉按鈕，從外層畫面抽出來獨立成一個Composable——重點是
+ * 讀取genScrollState.value（捲動位置，滑動時每一幀都在變）的地方只在這個小元件裡，
+ * Compose只會重組這個小按鈕，不會連帶重組外層整個商品清單。
+ */
+@Composable
+private fun ScrollToTopBottomFab(
+    genScrollState: androidx.compose.foundation.ScrollState,
+    genScrollScope: kotlinx.coroutines.CoroutineScope
+) {
+    val nearTop = genScrollState.maxValue == 0 || genScrollState.value < genScrollState.maxValue / 2
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(20.dp),
+        contentAlignment = Alignment.BottomEnd
+    ) {
         Box(
             modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(20.dp)
                 .size(44.dp)
                 .clip(RoundedCornerShape(22.dp))
                 .background(SimpleInk)
