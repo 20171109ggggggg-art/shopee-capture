@@ -16,6 +16,8 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -1449,137 +1451,142 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
         return
     }
 
-    // 【2026-09-07新增】商品一多，要滑到最下面按「開始生成影片」、或滑回最上面看
-    // 別的商品，來回捲動很花時間。加一顆浮動按鈕：目前在上半部就跳到最下面、在下半部
-    // 就跳回最上面，圖示跟著切換方向，點一下不用手動滑。
-    val genScrollState = rememberScrollState()
+    // 【2026-09-07修正】原本用一般Column+verticalScroll，等於一進畫面就要把全部商品
+    // （含每個商品全部照片的縮圖）一次全部組合出來，商品一多，光是初次進場的組合成本
+    // 就很重，這是「剛進入頁面商品載入很慢」的根本原因，跟前面兩輪修的「重組」問題
+    // 不同。改成LazyColumn，只有畫面上實際看得到的商品才會被組合、縮圖才會開始解碼，
+    // 捲到哪裡才處理到哪裡，初次進場的成本從此跟商品總數脫鉤。
+    val genListState = rememberLazyListState()
     val genScrollScope = rememberCoroutineScope()
     Box(modifier = Modifier.fillMaxSize()) {
     Column(modifier = Modifier.fillMaxSize()) {
         SimpleTopBar(stringResource(R.string.simple_step2_title), onBack)
-        Column(
-            modifier = Modifier
-                .padding(horizontal = 20.dp)
-                .verticalScroll(genScrollState)
+        LazyColumn(
+            state = genListState,
+            modifier = Modifier.padding(horizontal = 20.dp)
         ) {
-            InstructionCard(
-                lines = listOf(
-                    stringResource(R.string.simple_generate_instr_1),
-                    stringResource(R.string.simple_generate_instr_2)
+            item {
+                InstructionCard(
+                    lines = listOf(
+                        stringResource(R.string.simple_generate_instr_1),
+                        stringResource(R.string.simple_generate_instr_2)
+                    )
                 )
-            )
-            Spacer(Modifier.height(24.dp))
+                Spacer(Modifier.height(24.dp))
 
-            // 【2026-08-29新增】商品清單：勾選要生成影片的商品，點整列（打勾框以外）進去選圖。
-            Text("已擷取商品", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = SimpleInk)
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "長按照片可換原圖或刪除；點商品其他地方進去選擇要保留的圖片，打勾要生成影片的商品後按下面的按鈕開始生成",
-                fontSize = 12.sp, color = SimpleMuted
-            )
-            Spacer(Modifier.height(12.dp))
-            if (products.isEmpty()) {
-                Text("目前沒有已擷取的商品", fontSize = 13.sp, color = SimpleMuted)
-            } else {
-                // 【2026-09-06新增】全選/全不選：原本要一個一個點打勾框，商品一多很花時間。
-                // 這排按鈕只動selectedIds這個勾選狀態，不碰縮圖/預覽相關的任何東西，
-                // 不會影響長按選單或單點放大預覽。
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = { selectedIds = products.map { it.folder.name }.toSet() }) {
-                        Text("全選", fontSize = 13.sp, color = SimpleInk)
-                    }
-                    TextButton(onClick = { selectedIds = emptySet() }) {
-                        Text("全不選", fontSize = 13.sp, color = SimpleInk)
-                    }
-                    TextButton(onClick = {
-                        selectedIds = products.filter { !it.aiProcessed }.map { it.folder.name }.toSet()
-                    }) {
-                        Text("只選未改圖", fontSize = 13.sp, color = SimpleInk)
-                    }
-                    // 【2026-09-07新增】批次刪除：勾選多個商品後按這顆，一次刪光勾選的商品
-                    // （照片+影片），不用一個一個長按。防重複紀錄不受影響，沿用跟長按刪除
-                    // 商品同一套邏輯。
-                    TextButton(
-                        onClick = { bulkDeleteConfirmOpen = true },
-                        enabled = selectedIds.isNotEmpty()
-                    ) {
-                        Text("刪除", fontSize = 13.sp, color = SimpleDanger)
-                    }
-                }
-                Spacer(Modifier.height(8.dp))
-                // 【2026-09-07新增】清單依處理狀態分成三組，原本全部混在一起很亂：
-                // 只用原圖（skipAiEdit）優先權最高，不管有沒有改過圖都歸這組；
-                // 已AI改圖＝沒設只用原圖、且至少有一張照片改過（不要求全部，使用者
-                // 確認過「有任何一張改過就算」）；剩下的歸待處理。三組都用同一個
-                // ProductSelectRow，只是外面多包一層分組標題，勾選/全選/刪除等操作
-                // 一樣是對全部商品生效，不分組。
-                val originalOnlyProducts = remember(products) { products.filter { it.skipAiEdit } }
-                val aiEditedProducts = remember(products) { products.filter { !it.skipAiEdit && it.anyAiEdited } }
-                val pendingProducts = remember(products) { products.filter { !it.skipAiEdit && !it.anyAiEdited } }
-
-                @Composable
-                fun sectionHeader(title: String, count: Int, hint: String) {
-                    Text("$title（$count）", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = SimpleInk)
-                    Text(hint, fontSize = 11.sp, color = SimpleMuted)
-                    Spacer(Modifier.height(6.dp))
-                }
-
-                if (pendingProducts.isNotEmpty()) {
-                    sectionHeader("待處理", pendingProducts.size, "還沒選圖、還沒AI改圖、也沒設定只用原圖")
-                    pendingProducts.forEach { product ->
-                        key(product.folder.name) {
-                            ProductSelectRow(
-                                product = product,
-                                checked = selectedIds.contains(product.folder.name),
-                                onCheckedChange = { checked ->
-                                    selectedIds = if (checked) selectedIds + product.folder.name else selectedIds - product.folder.name
-                                },
-                                onClickImages = { imagePickerFolder = product.folder },
-                                onImagesChanged = { productsRefreshKey++ }
-                            )
-                            Spacer(Modifier.height(8.dp))
+                // 【2026-08-29新增】商品清單：勾選要生成影片的商品，點整列（打勾框以外）進去選圖。
+                Text("已擷取商品", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = SimpleInk)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "長按照片可換原圖或刪除；點商品其他地方進去選擇要保留的圖片，打勾要生成影片的商品後按下面的按鈕開始生成",
+                    fontSize = 12.sp, color = SimpleMuted
+                )
+                Spacer(Modifier.height(12.dp))
+                if (products.isEmpty()) {
+                    Text("目前沒有已擷取的商品", fontSize = 13.sp, color = SimpleMuted)
+                } else {
+                    // 【2026-09-06新增】全選/全不選：原本要一個一個點打勾框，商品一多很花時間。
+                    // 這排按鈕只動selectedIds這個勾選狀態，不碰縮圖/預覽相關的任何東西，
+                    // 不會影響長按選單或單點放大預覽。
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = { selectedIds = products.map { it.folder.name }.toSet() }) {
+                            Text("全選", fontSize = 13.sp, color = SimpleInk)
+                        }
+                        TextButton(onClick = { selectedIds = emptySet() }) {
+                            Text("全不選", fontSize = 13.sp, color = SimpleInk)
+                        }
+                        TextButton(onClick = {
+                            selectedIds = products.filter { !it.aiProcessed }.map { it.folder.name }.toSet()
+                        }) {
+                            Text("只選未改圖", fontSize = 13.sp, color = SimpleInk)
+                        }
+                        // 【2026-09-07新增】批次刪除：勾選多個商品後按這顆，一次刪光勾選的商品
+                        // （照片+影片），不用一個一個長按。防重複紀錄不受影響，沿用跟長按刪除
+                        // 商品同一套邏輯。
+                        TextButton(
+                            onClick = { bulkDeleteConfirmOpen = true },
+                            enabled = selectedIds.isNotEmpty()
+                        ) {
+                            Text("刪除", fontSize = 13.sp, color = SimpleDanger)
                         }
                     }
-                    Spacer(Modifier.height(14.dp))
-                }
-
-                if (aiEditedProducts.isNotEmpty()) {
-                    sectionHeader("已AI改圖", aiEditedProducts.size, "已經送去AI換過背景，可以直接生成影片")
-                    aiEditedProducts.forEach { product ->
-                        key(product.folder.name) {
-                            ProductSelectRow(
-                                product = product,
-                                checked = selectedIds.contains(product.folder.name),
-                                onCheckedChange = { checked ->
-                                    selectedIds = if (checked) selectedIds + product.folder.name else selectedIds - product.folder.name
-                                },
-                                onClickImages = { imagePickerFolder = product.folder },
-                                onImagesChanged = { productsRefreshKey++ }
-                            )
-                            Spacer(Modifier.height(8.dp))
-                        }
-                    }
-                    Spacer(Modifier.height(14.dp))
-                }
-
-                if (originalOnlyProducts.isNotEmpty()) {
-                    sectionHeader("只用原圖", originalOnlyProducts.size, "勾了「只用原圖」，永遠跳過AI改圖，直接用原圖生成")
-                    originalOnlyProducts.forEach { product ->
-                        key(product.folder.name) {
-                            ProductSelectRow(
-                                product = product,
-                                checked = selectedIds.contains(product.folder.name),
-                                onCheckedChange = { checked ->
-                                    selectedIds = if (checked) selectedIds + product.folder.name else selectedIds - product.folder.name
-                                },
-                                onClickImages = { imagePickerFolder = product.folder },
-                                onImagesChanged = { productsRefreshKey++ }
-                            )
-                            Spacer(Modifier.height(8.dp))
-                        }
-                    }
+                    Spacer(Modifier.height(8.dp))
                 }
             }
+
+            // 【2026-09-07新增】清單依處理狀態分成三組，原本全部混在一起很亂：
+            // 只用原圖（skipAiEdit）優先權最高，不管有沒有改過圖都歸這組；
+            // 已AI改圖＝沒設只用原圖、且至少有一張照片改過（不要求全部，使用者
+            // 確認過「有任何一張改過就算」）；剩下的歸待處理。三組都用同一個
+            // ProductSelectRow，只是外面多包一層分組標題，勾選/全選/刪除等操作
+            // 一樣是對全部商品生效，不分組。
+            val originalOnlyProducts = remember(products) { products.filter { it.skipAiEdit } }
+            val aiEditedProducts = remember(products) { products.filter { !it.skipAiEdit && it.anyAiEdited } }
+            val pendingProducts = remember(products) { products.filter { !it.skipAiEdit && !it.anyAiEdited } }
+
+            if (pendingProducts.isNotEmpty()) {
+                item {
+                    Text("待處理（${pendingProducts.size}）", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = SimpleInk)
+                    Text("還沒選圖、還沒AI改圖、也沒設定只用原圖", fontSize = 11.sp, color = SimpleMuted)
+                    Spacer(Modifier.height(6.dp))
+                }
+                items(pendingProducts, key = { it.folder.name }) { product ->
+                    ProductSelectRow(
+                        product = product,
+                        checked = selectedIds.contains(product.folder.name),
+                        onCheckedChange = { checked ->
+                            selectedIds = if (checked) selectedIds + product.folder.name else selectedIds - product.folder.name
+                        },
+                        onClickImages = { imagePickerFolder = product.folder },
+                        onImagesChanged = { productsRefreshKey++ }
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
+                item { Spacer(Modifier.height(14.dp)) }
+            }
+
+            if (aiEditedProducts.isNotEmpty()) {
+                item {
+                    Text("已AI改圖（${aiEditedProducts.size}）", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = SimpleInk)
+                    Text("已經送去AI換過背景，可以直接生成影片", fontSize = 11.sp, color = SimpleMuted)
+                    Spacer(Modifier.height(6.dp))
+                }
+                items(aiEditedProducts, key = { it.folder.name }) { product ->
+                    ProductSelectRow(
+                        product = product,
+                        checked = selectedIds.contains(product.folder.name),
+                        onCheckedChange = { checked ->
+                            selectedIds = if (checked) selectedIds + product.folder.name else selectedIds - product.folder.name
+                        },
+                        onClickImages = { imagePickerFolder = product.folder },
+                        onImagesChanged = { productsRefreshKey++ }
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
+                item { Spacer(Modifier.height(14.dp)) }
+            }
+
+            if (originalOnlyProducts.isNotEmpty()) {
+                item {
+                    Text("只用原圖（${originalOnlyProducts.size}）", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = SimpleInk)
+                    Text("勾了「只用原圖」，永遠跳過AI改圖，直接用原圖生成", fontSize = 11.sp, color = SimpleMuted)
+                    Spacer(Modifier.height(6.dp))
+                }
+                items(originalOnlyProducts, key = { it.folder.name }) { product ->
+                    ProductSelectRow(
+                        product = product,
+                        checked = selectedIds.contains(product.folder.name),
+                        onCheckedChange = { checked ->
+                            selectedIds = if (checked) selectedIds + product.folder.name else selectedIds - product.folder.name
+                        },
+                        onClickImages = { imagePickerFolder = product.folder },
+                        onImagesChanged = { productsRefreshKey++ }
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
+            }
+
+            item {
             Spacer(Modifier.height(20.dp))
 
             if (bulkDeleteConfirmOpen) {
@@ -1798,27 +1805,31 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                 Spacer(Modifier.height(16.dp))
                 Text(it, fontSize = 15.sp, color = SimpleInk, fontWeight = FontWeight.Bold)
             }
+            }
         }
     }
 
         // 【2026-09-07修正】原本nearTop直接在這個大畫面最外層讀取genScrollState.value，
         // 導致滑動當下（value每一幀都在變）整個畫面（包含商品清單分組篩選）跟著重組，
         // 商品一多就明顯卡頓。抽成獨立元件，讓「滑動」只讓這顆按鈕自己重組。
-        ScrollToTopBottomFab(genScrollState, genScrollScope)
+        ScrollToTopBottomFab(genListState, genScrollScope)
     }
 }
 
 /**
- * 【2026-09-07新增】浮動跳轉按鈕，從外層畫面抽出來獨立成一個Composable——重點是
- * 讀取genScrollState.value（捲動位置，滑動時每一幀都在變）的地方只在這個小元件裡，
- * Compose只會重組這個小按鈕，不會連帶重組外層整個商品清單。
+ * 【2026-09-07新增，同日改用LazyListState】浮動跳轉按鈕，從外層畫面抽出來獨立成一個
+ * Composable——重點是讀取捲動位置（滑動時每一幀都在變）的地方只在這個小元件裡，
+ * Compose只會重組這個小按鈕，不會連帶重組外層整個商品清單。改用LazyListState是因為
+ * 商品清單本身也從一般Column改成LazyColumn了（見上方「剛進入頁面商品載入很慢」的修正），
+ * 用firstVisibleItemIndex（第幾個項目）判斷上下半部，取代原本ScrollState用像素位置判斷。
  */
 @Composable
 private fun ScrollToTopBottomFab(
-    genScrollState: androidx.compose.foundation.ScrollState,
+    genListState: LazyListState,
     genScrollScope: kotlinx.coroutines.CoroutineScope
 ) {
-    val nearTop = genScrollState.maxValue == 0 || genScrollState.value < genScrollState.maxValue / 2
+    val totalItems = genListState.layoutInfo.totalItemsCount
+    val nearTop = totalItems == 0 || genListState.firstVisibleItemIndex < totalItems / 2
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -1832,8 +1843,8 @@ private fun ScrollToTopBottomFab(
                 .background(SimpleInk)
                 .clickable {
                     genScrollScope.launch {
-                        if (nearTop) genScrollState.animateScrollTo(genScrollState.maxValue)
-                        else genScrollState.animateScrollTo(0)
+                        if (nearTop) genListState.animateScrollToItem((totalItems - 1).coerceAtLeast(0))
+                        else genListState.animateScrollToItem(0)
                     }
                 },
             contentAlignment = Alignment.Center
