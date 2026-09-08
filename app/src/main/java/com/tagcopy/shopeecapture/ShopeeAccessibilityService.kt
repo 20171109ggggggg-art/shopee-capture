@@ -308,6 +308,19 @@ class ShopeeAccessibilityService : AccessibilityService() {
             return ProcessResult.FILTERED
         }
 
+        // 【2026-09-07新增】排除關鍵字：商品名稱模糊比對（不分大小寫），符合就直接跳過，
+        // 放在跟「重複商品」判斷同一個時間點——一樣是越早判斷越省時間，不用等後面讀分潤率
+        // 這些比較花時間的步驟。常見用途是排除蝦皮分潤計畫零分潤/風險類別的商品（例如
+        // 官方明訂醫療器材任何購買都無法獲得分潤，擷取這類商品是白工）。
+        config.matchedExcludeKeyword(productName)?.let { matchedKeyword ->
+            appendDebugLog("商品：$productName | 結果=跳過（排除關鍵字：$matchedKeyword）")
+            onEvent(AutoCaptureEvent.Log("排除關鍵字「$matchedKeyword」，跳過：${productName ?: getString(R.string.auto_capture_unknown_product)}"))
+            delay(Random.nextLong(6000, 8001))
+            performBack()
+            delay(randomDelay(config))
+            return ProcessResult.FILTERED
+        }
+
         // 無論有沒有設篩選條件，都讀取一次四個參數的狀態並寫進除錯 log，方便排查「明明符合卻沒被擷取」這類問題
         var metrics = extractProductMetrics(detailRoot)
         if (!config.filter.isEmpty() && !hasRequiredFields(metrics, config.filter)) {

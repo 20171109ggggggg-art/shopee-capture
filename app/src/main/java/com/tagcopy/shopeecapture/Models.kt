@@ -154,8 +154,20 @@ data class AutoCaptureConfig(
     val filter: ProductFilterConfig = ProductFilterConfig(),
     val timeLimitMs: Long? = null,
     val maxAttemptsLimitEnabled: Boolean = true,
-    val timeLimitEnabled: Boolean = true
-)
+    val timeLimitEnabled: Boolean = true,
+    // 【2026-09-07新增】排除關鍵字：商品名稱只要包含清單裡任一關鍵字就直接跳過擷取
+    // （不分大小寫模糊比對），用來排除蝦皮分潤計畫明訂零分潤/風險類別的商品（例如
+    // 醫療器材官方明講任何購買都無法獲得分潤，擷取這類商品是白工），或使用者自己
+    // 基於經驗想排除的其他類別（例如保養品）。空清單代表不排除任何商品，行為不變。
+    val excludeKeywords: List<String> = emptyList()
+) {
+    /** 商品名稱符合任一排除關鍵字就回傳那個關鍵字（用於log顯示原因），都不符合回傳null。 */
+    fun matchedExcludeKeyword(productName: String?): String? {
+        if (productName.isNullOrBlank() || excludeKeywords.isEmpty()) return null
+        val lowerName = productName.lowercase()
+        return excludeKeywords.firstOrNull { it.isNotBlank() && lowerName.contains(it.trim().lowercase()) }
+    }
+}
 
 /** 自動擷取結束的原因，用來決定要不要跳出更明顯的提醒。 */
 enum class FinishReason {

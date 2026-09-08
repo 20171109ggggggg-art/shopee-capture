@@ -19,6 +19,7 @@ object AutoCapturePrefs {
     private const val KEY_TIME_LIMIT = "time_limit_ms"
     private const val KEY_MAX_ATTEMPTS_ENABLED = "max_attempts_enabled"
     private const val KEY_TIME_LIMIT_ENABLED = "time_limit_enabled"
+    private const val KEY_EXCLUDE_KEYWORDS = "exclude_keywords"
 
     /**
      * 讀取一個「可能是null（不限制）」的Double欄位，並正確分辨兩種情況：
@@ -72,7 +73,14 @@ object AutoCapturePrefs {
             filter = filter,
             timeLimitMs = sp.getLong(KEY_TIME_LIMIT, -1L).let { if (it <= 0L) null else it },
             maxAttemptsLimitEnabled = sp.getBoolean(KEY_MAX_ATTEMPTS_ENABLED, true),
-            timeLimitEnabled = sp.getBoolean(KEY_TIME_LIMIT_ENABLED, true)
+            timeLimitEnabled = sp.getBoolean(KEY_TIME_LIMIT_ENABLED, true),
+            // 【2026-09-07新增】用換行分隔存成一個字串，比每個關鍵字存一個key簡單，
+            // 讀出來時濾掉空白行。
+            excludeKeywords = sp.getString(KEY_EXCLUDE_KEYWORDS, "")
+                ?.split("\n")
+                ?.map { it.trim() }
+                ?.filter { it.isNotBlank() }
+                ?: emptyList()
         )
     }
 
@@ -84,6 +92,7 @@ object AutoCapturePrefs {
         editor.putLong(KEY_TIME_LIMIT, config.timeLimitMs ?: -1L)
         editor.putBoolean(KEY_MAX_ATTEMPTS_ENABLED, config.maxAttemptsLimitEnabled)
         editor.putBoolean(KEY_TIME_LIMIT_ENABLED, config.timeLimitEnabled)
+        editor.putString(KEY_EXCLUDE_KEYWORDS, config.excludeKeywords.joinToString("\n"))
         putDoubleOrNull(editor, KEY_MIN_COMMISSION, config.filter.minCommissionPercent)
         putDoubleOrNull(editor, KEY_MAX_COMMISSION, config.filter.maxCommissionPercent)
         putDoubleOrNull(editor, KEY_MIN_PRICE, config.filter.minPrice)

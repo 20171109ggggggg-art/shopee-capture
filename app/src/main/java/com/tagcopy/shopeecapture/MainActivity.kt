@@ -407,6 +407,8 @@ fun SettingsExportImportCard(context: android.content.Context, onImported: () ->
             put("maxSoldCount", autoCaptureCfg.filter.maxSoldCount ?: JSONObject.NULL)
             put("minPromoterCount", autoCaptureCfg.filter.minPromoterCount ?: JSONObject.NULL)
             put("maxPromoterCount", autoCaptureCfg.filter.maxPromoterCount ?: JSONObject.NULL)
+            // 【2026-09-07新增】排除關鍵字清單也一併匯出，換手機不用重打。
+            put("excludeKeywords", org.json.JSONArray(autoCaptureCfg.excludeKeywords))
         }
         val json = JSONObject().apply {
             put("account", account)
@@ -524,7 +526,11 @@ fun SettingsExportImportCard(context: android.content.Context, onImported: () ->
                                         ),
                                         timeLimitMs = if (ac.isNull("timeLimitMs")) null else ac.optLong("timeLimitMs"),
                                         maxAttemptsLimitEnabled = ac.optBoolean("maxAttemptsLimitEnabled", true),
-                                        timeLimitEnabled = ac.optBoolean("timeLimitEnabled", true)
+                                        timeLimitEnabled = ac.optBoolean("timeLimitEnabled", true),
+                                        // 【2026-09-07新增】對應匯出新增的排除關鍵字，舊格式沒有這個欄位
+                                        // 時optJSONArray回傳null，用空清單頂替，不影響其他欄位還原。
+                                        excludeKeywords = (0 until (ac.optJSONArray("excludeKeywords")?.length() ?: 0))
+                                            .map { i -> ac.optJSONArray("excludeKeywords")!!.optString(i) }
                                     )
                                 )
                             }
@@ -765,6 +771,8 @@ fun AutoCaptureSettingsCard(context: android.content.Context, reloadKey: Int = 0
     var timeLimitText by remember(reloadKey) { mutableStateOf(config.timeLimitMs?.let { (it / 60000).toString() } ?: "") }
     var maxAttemptsEnabled by remember(reloadKey) { mutableStateOf(config.maxAttemptsLimitEnabled) }
     var timeLimitEnabled by remember(reloadKey) { mutableStateOf(config.timeLimitEnabled) }
+    // 【2026-09-07新增】排除關鍵字：一行一個，商品名稱模糊比對到就跳過不擷取。
+    var excludeKeywordsText by remember(reloadKey) { mutableStateOf(config.excludeKeywords.joinToString("\n")) }
 
     fun persist() {
         val count = countText.toIntOrNull()?.coerceIn(1, 100) ?: config.targetCount
@@ -781,7 +789,8 @@ fun AutoCaptureSettingsCard(context: android.content.Context, reloadKey: Int = 0
             minPromoterCount = minPromoterText.toIntOrNull(),
             maxPromoterCount = maxPromoterText.toIntOrNull()
         )
-        config = AutoCaptureConfig(count, minD, maxD, filter, timeLimit, maxAttemptsEnabled, timeLimitEnabled)
+        val excludeKeywords = excludeKeywordsText.split("\n").map { it.trim() }.filter { it.isNotBlank() }
+        config = AutoCaptureConfig(count, minD, maxD, filter, timeLimit, maxAttemptsEnabled, timeLimitEnabled, excludeKeywords)
         AutoCapturePrefs.save(context, config)
     }
 
@@ -880,6 +889,25 @@ fun AutoCaptureSettingsCard(context: android.content.Context, reloadKey: Int = 0
         FilterRangeRow(stringResource(R.string.filter_promoter), minPromoterText, maxPromoterText,
             onMinChange = { minPromoterText = it; persist() },
             onMaxChange = { maxPromoterText = it; persist() }
+        )
+
+        Spacer(Modifier.height(16.dp))
+        // 【2026-09-07新增】排除關鍵字：商品名稱模糊比對到（不分大小寫）就直接跳過不擷取，
+        // 一行一個。跟上面的數字篩選是分開的兩套獨立條件，都要通過才會擷取。
+        Text("排除關鍵字", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = InkColor)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "商品名稱只要包含以下任一關鍵字就跳過不擷取，一行一個，不分大小寫。留空代表不排除任何商品。",
+            fontSize = 11.sp, color = MutedColor, lineHeight = 16.sp
+        )
+        Spacer(Modifier.height(6.dp))
+        OutlinedTextField(
+            value = excludeKeywordsText,
+            onValueChange = { excludeKeywordsText = it; persist() },
+            modifier = Modifier.fillMaxWidth(),
+            minLines = 3,
+            placeholder = { Text("例如：\n醫療\n保養品", fontSize = 12.sp) },
+            shape = RoundedCornerShape(0.dp)
         )
 
         Spacer(Modifier.height(16.dp))
