@@ -333,6 +333,16 @@ private fun buildDetailedResultText(context: Context, headerText: String, p: Ter
  * 【2026-08-29新增】「生成影片」畫面的商品清單資料：讀取CaptionQueue底下每個商品資料夾的
  * 基本資訊（名稱、圖片清單、是否已經選過圖、是否已經有影片），給下面的勾選清單跟人工選圖畫面用。
  */
+/**
+ * 【2026-09-07新增@Immutable】原本沒有標記，這個class裡包著File欄位，Compose沒辦法
+ * 判斷「這個物件到底有沒有真的變」，導致清單裡任何一個地方的狀態改變（點勾選框、
+ * 縮圖非同步載入完成、捲動等）都會讓每一列ProductSelectRow全部重新計算一次，不是
+ * 只有真的變動的那一列——這是點擊/滑動都覺得慢的根本原因。加上@Immutable明確告訴
+ * Compose「這個物件建立後內容不會變」（loadCapturedProducts()每次都是建立全新的
+ * GenerateQueueItem，從來不會就地修改內容，符合@Immutable的承諾），讓Compose可以
+ * 正確跳過沒有真的變動的那些列。
+ */
+@Immutable
 private data class GenerateQueueItem(
     val folder: File,
     val productName: String?,
@@ -1517,16 +1527,18 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                 if (pendingProducts.isNotEmpty()) {
                     sectionHeader("待處理", pendingProducts.size, "還沒選圖、還沒AI改圖、也沒設定只用原圖")
                     pendingProducts.forEach { product ->
-                        ProductSelectRow(
-                            product = product,
-                            checked = selectedIds.contains(product.folder.name),
-                            onCheckedChange = { checked ->
-                                selectedIds = if (checked) selectedIds + product.folder.name else selectedIds - product.folder.name
-                            },
-                            onClickImages = { imagePickerFolder = product.folder },
-                            onImagesChanged = { productsRefreshKey++ }
-                        )
-                        Spacer(Modifier.height(8.dp))
+                        key(product.folder.name) {
+                            ProductSelectRow(
+                                product = product,
+                                checked = selectedIds.contains(product.folder.name),
+                                onCheckedChange = { checked ->
+                                    selectedIds = if (checked) selectedIds + product.folder.name else selectedIds - product.folder.name
+                                },
+                                onClickImages = { imagePickerFolder = product.folder },
+                                onImagesChanged = { productsRefreshKey++ }
+                            )
+                            Spacer(Modifier.height(8.dp))
+                        }
                     }
                     Spacer(Modifier.height(14.dp))
                 }
@@ -1534,16 +1546,18 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                 if (aiEditedProducts.isNotEmpty()) {
                     sectionHeader("已AI改圖", aiEditedProducts.size, "已經送去AI換過背景，可以直接生成影片")
                     aiEditedProducts.forEach { product ->
-                        ProductSelectRow(
-                            product = product,
-                            checked = selectedIds.contains(product.folder.name),
-                            onCheckedChange = { checked ->
-                                selectedIds = if (checked) selectedIds + product.folder.name else selectedIds - product.folder.name
-                            },
-                            onClickImages = { imagePickerFolder = product.folder },
-                            onImagesChanged = { productsRefreshKey++ }
-                        )
-                        Spacer(Modifier.height(8.dp))
+                        key(product.folder.name) {
+                            ProductSelectRow(
+                                product = product,
+                                checked = selectedIds.contains(product.folder.name),
+                                onCheckedChange = { checked ->
+                                    selectedIds = if (checked) selectedIds + product.folder.name else selectedIds - product.folder.name
+                                },
+                                onClickImages = { imagePickerFolder = product.folder },
+                                onImagesChanged = { productsRefreshKey++ }
+                            )
+                            Spacer(Modifier.height(8.dp))
+                        }
                     }
                     Spacer(Modifier.height(14.dp))
                 }
@@ -1551,16 +1565,18 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                 if (originalOnlyProducts.isNotEmpty()) {
                     sectionHeader("只用原圖", originalOnlyProducts.size, "勾了「只用原圖」，永遠跳過AI改圖，直接用原圖生成")
                     originalOnlyProducts.forEach { product ->
-                        ProductSelectRow(
-                            product = product,
-                            checked = selectedIds.contains(product.folder.name),
-                            onCheckedChange = { checked ->
-                                selectedIds = if (checked) selectedIds + product.folder.name else selectedIds - product.folder.name
-                            },
-                            onClickImages = { imagePickerFolder = product.folder },
-                            onImagesChanged = { productsRefreshKey++ }
-                        )
-                        Spacer(Modifier.height(8.dp))
+                        key(product.folder.name) {
+                            ProductSelectRow(
+                                product = product,
+                                checked = selectedIds.contains(product.folder.name),
+                                onCheckedChange = { checked ->
+                                    selectedIds = if (checked) selectedIds + product.folder.name else selectedIds - product.folder.name
+                                },
+                                onClickImages = { imagePickerFolder = product.folder },
+                                onImagesChanged = { productsRefreshKey++ }
+                            )
+                            Spacer(Modifier.height(8.dp))
+                        }
                     }
                 }
             }
