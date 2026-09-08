@@ -629,7 +629,11 @@ private fun EditedThumbnail(
     file: File,
     canDelete: Boolean,
     onChanged: () -> Unit,
-    onPreview: () -> Unit
+    onPreview: () -> Unit,
+    selectMode: Boolean = false,
+    isSelected: Boolean = false,
+    onToggleSelect: () -> Unit = {},
+    onEnterSelectMode: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -645,10 +649,27 @@ private fun EditedThumbnail(
             modifier = Modifier
                 .clip(RoundedCornerShape(8.dp))
                 .combinedClickable(
-                    onClick = onPreview,
-                    onLongClick = { if (!reprocessing) menuOpen = true }
+                    onClick = { if (selectMode) onToggleSelect() else onPreview() },
+                    onLongClick = { if (!reprocessing && !selectMode) menuOpen = true }
                 )
         )
+        // 【2026-09-07新增】多選刪除模式：選取模式下縮圖右上角疊一個勾選圈，點縮圖
+        // 是切換選取狀態（不會跳放大預覽），跟平常模式的手勢分開，避免混淆。
+        if (selectMode) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(2.dp)
+                    .size(18.dp)
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(if (isSelected) SimpleAccent else Color.Black.copy(alpha = 0.35f)),
+                contentAlignment = Alignment.Center
+            ) {
+                if (isSelected) {
+                    Text("✓", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
         if (reprocessing) {
             Box(
                 modifier = Modifier
@@ -715,6 +736,16 @@ private fun EditedThumbnail(
                     }
                 }
             )
+            // 【2026-09-07新增】原本要刪多張照片只能一張一張長按，商品照片一多很花時間。
+            // 這裡進入「多選刪除」模式，這張直接被選取當第一張，接下來在同一列裡點其他
+            // 縮圖是切換選取（不會跳放大預覽），列下方會出現「刪除已選/取消」。
+            DropdownMenuItem(
+                text = { Text("多選刪除") },
+                onClick = {
+                    menuOpen = false
+                    onEnterSelectMode()
+                }
+            )
         }
     }
 }
@@ -730,6 +761,12 @@ private fun ProductSelectRow(
 ) {
     val context = LocalContext.current
     var previewIndex by remember { mutableStateOf<Int?>(null) }
+    // 【2026-09-07新增】多選刪除照片：進入模式後點縮圖是切換選取，跟平常「點縮圖看
+    // 放大圖」的手勢分開。selectedPhotoNames存檔名（不是File物件，避免物件相等性
+    // 在重組後對不起來）。
+    var photoSelectMode by remember { mutableStateOf(false) }
+    var selectedPhotoNames by remember { mutableStateOf(setOf<String>()) }
+    var photoDeleteConfirmOpen by remember { mutableStateOf(false) }
     // 【2026-09-07新增】商品列空白處長按可以直接刪除整個商品（照片+影片全刪），
     // 防重複紀錄（captured_names/captured_links這組SharedPreferences＋永久歷史
     // captured_history.jsonl）存在別的地方、跟商品資料夾完全分開，所以這裡只刪
@@ -766,8 +803,44 @@ private fun ProductSelectRow(
                         file = file,
                         canDelete = product.imagePaths.size > 1,
                         onChanged = onImagesChanged,
-                        onPreview = { previewIndex = index }
+                        onPreview = { previewIndex = index },
+                        selectMode = photoSelectMode,
+                        isSelected = selectedPhotoNames.contains(file.name),
+                        onToggleSelect = {
+                            selectedPhotoNames = if (selectedPhotoNames.contains(file.name)) {
+                                selectedPhotoNames - file.name
+                            } else {
+                                selectedPhotoNames + file.name
+                            }
+                        },
+                        onEnterSelectMode = {
+                            photoSelectMode = true
+                            selectedPhotoNames = setOf(file.name)
+                        }
                     )
+                }
+            }
+            if (photoSelectMode) {
+                Spacer(Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("已選${selectedPhotoNames.size}張", fontSize = 12.sp, color = SimpleMuted)
+                    Spacer(Modifier.width(12.dp))
+                    TextButton(
+                        onClick = { photoDeleteConfirmOpen = true },
+                        enabled = selectedPhotoNames.isNotEmpty() &&
+                            selectedPhotoNames.size < product.imagePaths.size
+                    ) {
+                        Text("刪除已選", fontSize = 12.sp, color = SimpleDanger)
+                    }
+                    TextButton(onClick = {
+                        photoSelectMode = false
+                        selectedPhotoNames = emptySet()
+                    }) {
+                        Text("取消", fontSize = 12.sp, color = SimpleInk)
+                    }
+                }
+                if (selectedPhotoNames.size >= product.imagePaths.size && product.imagePaths.isNotEmpty()) {
+                    Text("至少要留1張，不能全選刪除", fontSize = 11.sp, color = SimpleMuted)
                 }
             }
             Spacer(Modifier.height(6.dp))
@@ -831,6 +904,30 @@ private fun ProductSelectRow(
             },
             dismissButton = {
                 TextButton(onClick = { deleteConfirmOpen = false }) { Text("取消") }
+            }
+        )
+    }
+
+    if (photoDeleteConfirmOpen) {
+        AlertDialog(
+            onDismissRequest = { photoDeleteConfirmOpen = false },
+            title = { Text("刪除${selectedPhotoNames.size}張照片？") },
+            text = { Text("選取的照片（含備份、AI改圖紀錄）都會刪除，這個動作沒辦法復原。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    photoDeleteConfirmOpen = false
+                    product.imagePaths.filter { it.name in selectedPhotoNames }.forEach { file ->
+                        file.delete()
+                        File(file.parentFile, ".orig_${file.name}").delete()
+                        File(file.parentFile, ".ai_done_${file.name}").delete()
+                    }
+                    photoSelectMode = false
+                    selectedPhotoNames = emptySet()
+                    onImagesChanged()
+                }) { Text("刪除", color = SimpleDanger) }
+            },
+            dismissButton = {
+                TextButton(onClick = { photoDeleteConfirmOpen = false }) { Text("取消") }
             }
         )
     }
@@ -1337,12 +1434,18 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
         return
     }
 
+    // 【2026-09-07新增】商品一多，要滑到最下面按「開始生成影片」、或滑回最上面看
+    // 別的商品，來回捲動很花時間。加一顆浮動按鈕：目前在上半部就跳到最下面、在下半部
+    // 就跳回最上面，圖示跟著切換方向，點一下不用手動滑。
+    val genScrollState = rememberScrollState()
+    val genScrollScope = rememberCoroutineScope()
+    Box(modifier = Modifier.fillMaxSize()) {
     Column(modifier = Modifier.fillMaxSize()) {
         SimpleTopBar(stringResource(R.string.simple_step2_title), onBack)
         Column(
             modifier = Modifier
                 .padding(horizontal = 20.dp)
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(genScrollState)
         ) {
             InstructionCard(
                 lines = listOf(
@@ -1620,6 +1723,28 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                 Spacer(Modifier.height(16.dp))
                 Text(it, fontSize = 15.sp, color = SimpleInk, fontWeight = FontWeight.Bold)
             }
+        }
+    }
+
+        // 浮動跳轉按鈕：捲動位置在上半部就跳到最下面，在下半部（或還沒量出高度）
+        // 就跳回最上面；maxValue在還沒佈局完成時是0，這時預設顯示「跳到底部」圖示。
+        val nearTop = genScrollState.maxValue == 0 || genScrollState.value < genScrollState.maxValue / 2
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(20.dp)
+                .size(44.dp)
+                .clip(RoundedCornerShape(22.dp))
+                .background(SimpleInk)
+                .clickable {
+                    genScrollScope.launch {
+                        if (nearTop) genScrollState.animateScrollTo(genScrollState.maxValue)
+                        else genScrollState.animateScrollTo(0)
+                    }
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            Text(if (nearTop) "↓" else "↑", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
         }
     }
 }
