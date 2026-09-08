@@ -749,9 +749,14 @@ object RemoteVideoGenerator {
         val serverUrl = ServerPrefs.getServerUrl(context)
         if (serverUrl.isBlank()) return@withContext false
 
+        // 【2026-09-07新增】查詢時帶上目前帳號，讓筆電端能記錄「誰查詢、有沒有命中、
+        // 命中的話沿用了誰的圖」——之前這個查詢完全沒帶帳號，筆電端也沒有log，
+        // 沒辦法知道共用資料夾這個功能到底有沒有實際被沿用。
+        val account = AccountPrefs.getAccount(context)
         val url = "$serverUrl/check-shared-product" +
             "?region=${java.net.URLEncoder.encode(region, "UTF-8")}" +
-            "&product_link=${java.net.URLEncoder.encode(productLink, "UTF-8")}"
+            "&product_link=${java.net.URLEncoder.encode(productLink, "UTF-8")}" +
+            "&account=${java.net.URLEncoder.encode(account, "UTF-8")}"
         val request = Request.Builder().url(url).get().build()
 
         val zipBytes = try {
