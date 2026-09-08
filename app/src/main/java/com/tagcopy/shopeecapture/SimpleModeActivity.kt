@@ -1458,6 +1458,12 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
     // 捲到哪裡才處理到哪裡，初次進場的成本從此跟商品總數脫鉤。
     val genListState = rememberLazyListState()
     val genScrollScope = rememberCoroutineScope()
+    // 【2026-09-07修正】remember()是@Composable函式，一定要放在LazyColumn宣告之前
+    // （屬於一般@Composable上下文），不能放進LazyColumn的內容區塊裡——那裡是
+    // LazyListScope的DSL，不是@Composable上下文，直接呼叫remember會編譯失敗。
+    val originalOnlyProducts = remember(products) { products.filter { it.skipAiEdit } }
+    val aiEditedProducts = remember(products) { products.filter { !it.skipAiEdit && it.anyAiEdited } }
+    val pendingProducts = remember(products) { products.filter { !it.skipAiEdit && !it.anyAiEdited } }
     Box(modifier = Modifier.fillMaxSize()) {
     Column(modifier = Modifier.fillMaxSize()) {
         SimpleTopBar(stringResource(R.string.simple_step2_title), onBack)
@@ -1520,9 +1526,6 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
             // 確認過「有任何一張改過就算」）；剩下的歸待處理。三組都用同一個
             // ProductSelectRow，只是外面多包一層分組標題，勾選/全選/刪除等操作
             // 一樣是對全部商品生效，不分組。
-            val originalOnlyProducts = remember(products) { products.filter { it.skipAiEdit } }
-            val aiEditedProducts = remember(products) { products.filter { !it.skipAiEdit && it.anyAiEdited } }
-            val pendingProducts = remember(products) { products.filter { !it.skipAiEdit && !it.anyAiEdited } }
 
             if (pendingProducts.isNotEmpty()) {
                 item {
