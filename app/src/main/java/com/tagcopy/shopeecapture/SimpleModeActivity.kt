@@ -837,7 +837,7 @@ private fun EditedThumbnail(
                     menuOpen = false
                     if (canDelete) {
                         file.delete()
-                        backupFile.delete()
+                        backupFile?.delete()
                         onChanged()
                     }
                 }
