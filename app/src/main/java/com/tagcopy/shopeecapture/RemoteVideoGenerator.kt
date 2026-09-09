@@ -832,9 +832,15 @@ object RemoteVideoGenerator {
      * 回傳null代表失敗，原始檔案保持不動（不刪除、不覆蓋）。
      */
     suspend fun removeBackground(context: Context, imageFile: File): File? = withContext(Dispatchers.IO) {
-        if (!imageFile.exists()) return@withContext null
+        if (!imageFile.exists()) {
+            appendVideoLog("  → [去背] 檔案不存在，跳過：${imageFile.name}")
+            return@withContext null
+        }
         val serverUrl = ServerPrefs.getServerUrl(context)
-        if (serverUrl.isBlank()) return@withContext null
+        if (serverUrl.isBlank()) {
+            appendVideoLog("  → [去背] 尚未設定伺服器網址：${imageFile.name}")
+            return@withContext null
+        }
 
         try {
             val mediaType = when (imageFile.extension.lowercase()) {
@@ -852,10 +858,15 @@ object RemoteVideoGenerator {
 
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
-                    Log.w("RemoteVideoGenerator", "去背失敗：HTTP ${response.code} ${response.body?.string()?.take(200)}")
+                    val bodyText = response.body?.string()?.take(300)
+                    appendVideoLog("  → [去背] 失敗（${imageFile.name}）：HTTP ${response.code} $bodyText")
                     return@withContext null
                 }
-                val bytes = response.body?.bytes() ?: return@withContext null
+                val bytes = response.body?.bytes()
+                if (bytes == null) {
+                    appendVideoLog("  → [去背] 失敗（${imageFile.name}）：回應內容是空的")
+                    return@withContext null
+                }
                 val outputFile = File(imageFile.parentFile, "${imageFile.nameWithoutExtension}.png")
                 outputFile.writeBytes(bytes)
                 // 去背結果副檔名跟原檔不同時（原本是jpg），把舊檔刪掉，避免同一張圖
@@ -863,10 +874,11 @@ object RemoteVideoGenerator {
                 if (outputFile.path != imageFile.path) {
                     imageFile.delete()
                 }
+                appendVideoLog("  → [去背] 成功：${imageFile.name} -> ${outputFile.name}（${bytes.size}bytes）")
                 outputFile
             }
         } catch (e: Exception) {
-            Log.w("RemoteVideoGenerator", "去背發生例外：${e.javaClass.simpleName} ${e.message}")
+            appendVideoLog("  → [去背] 發生例外（${imageFile.name}）：${e.javaClass.simpleName} ${e.message}")
             null
         }
     }

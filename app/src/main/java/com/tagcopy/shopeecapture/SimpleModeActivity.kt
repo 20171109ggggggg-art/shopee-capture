@@ -898,7 +898,11 @@ private fun ProductSelectRow(
             Text(
                 buildString {
                     if (product.selectionDone) append("已選圖")
-                    if (product.selectionDone && GeminiApiPrefs.isEnabled(context)) {
+                    // 【2026-09-07新增】debgOnly走的是去背，不是AI改圖，狀態文字要分開講，
+                    // 不然「已AI改圖」會讓人誤以為背景是AI生成的情境圖，其實只是單純去背。
+                    if (product.debgOnly) {
+                        append(if (product.aiProcessed) " · 已去背" else " · 待去背")
+                    } else if (product.selectionDone && GeminiApiPrefs.isEnabled(context)) {
                         append(if (product.aiProcessed) " · 已AI改圖" else " · 待AI改圖")
                     }
                     if (product.hasVideo) append(" · 已有影片")
@@ -1315,6 +1319,7 @@ private suspend fun runAutoSelectAndEditPipeline(
             if (toProcess.isNotEmpty()) {
                 onStatus("$progressPrefix：去背中")
                 val updatedImages = currentImages.toMutableList()
+                var debgFailCount = 0
                 toProcess.forEach { targetFile ->
                     val debgResult = RemoteVideoGenerator.removeBackground(context, targetFile)
                     if (debgResult != null) {
@@ -1324,8 +1329,17 @@ private suspend fun runAutoSelectAndEditPipeline(
                     } else {
                         // 去背失敗就保留原圖繼續，不中斷整批，行為跟AI改圖失敗時一致；
                         // 標記完成避免這張圖每次批次都重試同一個失敗。
+                        // 【2026-09-07新增】原本失敗是完全靜默的（畫面上看起來就像
+                        // 「這張沒被處理到」，讓人搞不清楚是失敗還是本來就不用處理），
+                        // 改成加進failed清單讓使用者在畫面上直接看到哪些商品去背失敗，
+                        // 詳細原因（HTTP狀態碼/例外訊息）另外寫進RemoteVideoGenerator
+                        // 的video_gen_log持久記錄，這裡只顯示摘要。
+                        debgFailCount++
                         markImageAiDone(targetFile)
                     }
+                }
+                if (debgFailCount > 0) {
+                    failed.add(product.folder.name to "去背失敗：$debgFailCount 張圖片維持原圖，詳細原因看Download/ShopeeCaptureDebugLog/裡最新的video_gen_log記錄")
                 }
                 currentImages = updatedImages
             }
