@@ -831,25 +831,37 @@ object RemoteVideoGenerator {
      * 檔案路徑變了（副檔名不同），要用回傳值當新的檔案物件，不能沿用呼叫前的File。
      * 回傳null代表失敗，原始檔案保持不動（不刪除、不覆蓋）。
      */
-    suspend fun removeBackground(context: Context, imageFile: File): File? = withContext(Dispatchers.IO) {
-        if (!imageFile.exists()) {
-            appendVideoLog("  → [去背] 檔案不存在，跳過：${imageFile.name}")
-            return@withContext null
+    /**
+     * 【2026-09-07新增，同日重構】「只用原圖+去背」功能：把單張圖片送去筆電端
+     * `/remove-background`（用rembg本地去背，不用另外算API額度），成功就把結果PNG
+     * 寫到指定的outputFile路徑，回傳true/false。
+     *
+     * 【2026-09-07重構原因】原本簽章是`removeBackground(context, imageFile): File?`，
+     * 內部自己決定輸出檔名（副檔名固定改.png）並自動刪除輸入檔——這樣沒辦法支援
+     * 「重新去背」：重新去背要拿備份檔（.orig_開頭，副檔名可能是jpg）當來源上傳，
+     * 但輸出要蓋掉目前顯示的那個.png檔、不能把備份檔也跟著刪掉或依備份檔名輸出。
+     * 改成呼叫端自己決定sourceFile（上傳誰）跟outputFile（存成什麼路徑），
+     * 這支函式只單純負責「上傳、拿結果、寫檔」，檔案怎麼管理交給呼叫端。
+     */
+    suspend fun removeBackground(context: Context, sourceFile: File, outputFile: File): Boolean = withContext(Dispatchers.IO) {
+        if (!sourceFile.exists()) {
+            appendVideoLog("  → [去背] 來源檔案不存在，跳過：${sourceFile.name}")
+            return@withContext false
         }
         val serverUrl = ServerPrefs.getServerUrl(context)
         if (serverUrl.isBlank()) {
-            appendVideoLog("  → [去背] 尚未設定伺服器網址：${imageFile.name}")
-            return@withContext null
+            appendVideoLog("  → [去背] 尚未設定伺服器網址：${sourceFile.name}")
+            return@withContext false
         }
 
         try {
-            val mediaType = when (imageFile.extension.lowercase()) {
+            val mediaType = when (sourceFile.extension.lowercase()) {
                 "png" -> "image/png"
                 else -> "image/jpeg"
             }.toMediaType()
             val requestBody = MultipartBody.Builder()
                 .setType(MultipartBody.FORM)
-                .addFormDataPart("image", imageFile.name, imageFile.asRequestBody(mediaType))
+                .addFormDataPart("image", sourceFile.name, sourceFile.asRequestBody(mediaType))
                 .build()
             val request = Request.Builder()
                 .url("$serverUrl/remove-background")
@@ -859,27 +871,21 @@ object RemoteVideoGenerator {
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
                     val bodyText = response.body?.string()?.take(300)
-                    appendVideoLog("  → [去背] 失敗（${imageFile.name}）：HTTP ${response.code} $bodyText")
-                    return@withContext null
+                    appendVideoLog("  → [去背] 失敗（${sourceFile.name}）：HTTP ${response.code} $bodyText")
+                    return@withContext false
                 }
                 val bytes = response.body?.bytes()
                 if (bytes == null) {
-                    appendVideoLog("  → [去背] 失敗（${imageFile.name}）：回應內容是空的")
-                    return@withContext null
+                    appendVideoLog("  → [去背] 失敗（${sourceFile.name}）：回應內容是空的")
+                    return@withContext false
                 }
-                val outputFile = File(imageFile.parentFile, "${imageFile.nameWithoutExtension}.png")
                 outputFile.writeBytes(bytes)
-                // 去背結果副檔名跟原檔不同時（原本是jpg），把舊檔刪掉，避免同一張圖
-                // 同時存在.jpg跟.png兩份、後續掃描圖片時被當成兩張不同的圖。
-                if (outputFile.path != imageFile.path) {
-                    imageFile.delete()
-                }
-                appendVideoLog("  → [去背] 成功：${imageFile.name} -> ${outputFile.name}（${bytes.size}bytes）")
-                outputFile
+                appendVideoLog("  → [去背] 成功：${sourceFile.name} -> ${outputFile.name}（${bytes.size}bytes）")
+                true
             }
         } catch (e: Exception) {
-            appendVideoLog("  → [去背] 發生例外（${imageFile.name}）：${e.javaClass.simpleName} ${e.message}")
-            null
+            appendVideoLog("  → [去背] 發生例外（${sourceFile.name}）：${e.javaClass.simpleName} ${e.message}")
+            false
         }
     }
 }

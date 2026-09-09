@@ -369,6 +369,19 @@ private data class GenerateQueueItem(
  * 向下相容：舊資料只有商品層級的`.ai_processed`（這個功能上線前處理過的商品），
  * 沒有個別照片標記時，一樣視為「已完成」，不會被誤判成沒改過而整批重新處理一次。
  */
+/**
+ * 【2026-09-07新增】依副檔名無關的方式找備份檔——原本各處都是用`.orig_${file.name}`
+ * （含副檔名）直接比對，但去背會把副檔名從.jpg改成.png，導致後續任何用「目前檔名」
+ * 反查備份的邏輯（換原圖、重新AI改圖、重新去背、只用原圖/去背的還原邏輯）都會因為
+ * 副檔名對不起來而找不到備份，誤判成「沒有備份」。改成用`nameWithoutExtension`比對，
+ * 不管目前副檔名是什麼都能正確找到當初建立的備份。
+ */
+private fun findBackupFile(file: File): File? {
+    val dir = file.parentFile ?: return null
+    val prefix = ".orig_${file.nameWithoutExtension}."
+    return dir.listFiles { f -> f.name.startsWith(prefix) }?.firstOrNull()
+}
+
 private fun isImageAiDone(imageFile: File): Boolean =
     File(imageFile.parentFile, ".ai_done_${imageFile.name}").exists() ||
         File(imageFile.parentFile, ".ai_processed").exists()
@@ -396,10 +409,15 @@ private fun toggleSkipAiEdit(product: GenerateQueueItem, enabled: Boolean) {
         File(product.folder, ".skip_ai_edit_debg").delete()
         try { marker.createNewFile() } catch (e: Exception) { /* 標記失敗不影響下面的還原動作 */ }
         product.imagePaths.forEach { file ->
-            val backup = File(file.parentFile, ".orig_${file.name}")
-            if (backup.isFile) {
+            // 【2026-09-07修正】用findBackupFile()取代直接組`.orig_${file.name}`——
+            // 去背會把副檔名從.jpg改成.png，原本的組法找不到備份。還原時用備份自己的
+            // 副檔名寫回去（不是強塞回目前檔名的副檔名，內容格式會對不上）。
+            val backup = findBackupFile(file)
+            if (backup != null) {
                 try {
-                    backup.copyTo(file, overwrite = true)
+                    val restoredFile = File(file.parentFile, "${file.nameWithoutExtension}.${backup.extension}")
+                    backup.copyTo(restoredFile, overwrite = true)
+                    if (restoredFile.path != file.path) file.delete()
                     backup.delete()
                 } catch (e: Exception) { /* 這張還原失敗，維持現狀，不影響其他張 */ }
             }
@@ -422,10 +440,12 @@ private fun toggleDebgOnly(product: GenerateQueueItem, enabled: Boolean) {
         File(product.folder, ".skip_ai_edit").delete()
         try { marker.createNewFile() } catch (e: Exception) { /* 標記失敗不影響下面的還原動作 */ }
         product.imagePaths.forEach { file ->
-            val backup = File(file.parentFile, ".orig_${file.name}")
-            if (backup.isFile) {
+            val backup = findBackupFile(file)
+            if (backup != null) {
                 try {
-                    backup.copyTo(file, overwrite = true)
+                    val restoredFile = File(file.parentFile, "${file.nameWithoutExtension}.${backup.extension}")
+                    backup.copyTo(restoredFile, overwrite = true)
+                    if (restoredFile.path != file.path) file.delete()
                     backup.delete()
                 } catch (e: Exception) { /* 這張還原失敗，維持現狀，不影響其他張 */ }
             }
@@ -684,14 +704,19 @@ private fun EditedThumbnail(
     selectMode: Boolean = false,
     isSelected: Boolean = false,
     onToggleSelect: () -> Unit = {},
-    onEnterSelectMode: () -> Unit = {}
+    onEnterSelectMode: () -> Unit = {},
+    // 【2026-09-07新增】這張圖屬於「只用原圖+去背」商品時，長按選單的第二個選項要換成
+    // 「重新去背」而不是「重新AI改圖」，兩者呼叫的服務完全不同（rembg vs Gemini/ChatGPT）。
+    debgMode: Boolean = false
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var menuOpen by remember { mutableStateOf(false) }
     var reprocessing by remember { mutableStateOf(false) }
-    val backupFile = remember(file.path, file.lastModified()) { File(file.parentFile, ".orig_${file.name}") }
-    val hasBackup = backupFile.isFile
+    // 【2026-09-07修正】改用findBackupFile()，不再直接組`.orig_${file.name}`——
+    // 去背會把副檔名從.jpg改成.png，原本的組法找不到備份。
+    val backupFile = remember(file.path, file.lastModified()) { findBackupFile(file) }
+    val hasBackup = backupFile != null
 
     Box {
         AsyncThumbnailImage(
@@ -742,39 +767,69 @@ private fun EditedThumbnail(
                 enabled = hasBackup,
                 onClick = {
                     menuOpen = false
-                    try {
-                        backupFile.copyTo(file, overwrite = true)
-                        backupFile.delete()
-                        // 【2026-09-07修正】換回原圖後也要清掉這張的.ai_done_標記，不然
-                        // 明明內容已經是原圖了，卻還被當成「已改圖完成」，之後批次跑不會
-                        // 重新處理它——跟toggleSkipAiEdit()的還原邏輯保持一致。
-                        File(file.parentFile, ".ai_done_${file.name}").delete()
-                        onChanged()
-                    } catch (e: Exception) { /* 失敗就保留現狀，可以再長按重試 */ }
-                }
-            )
-            // 【2026-09-06新增】只重跑這一張，商品裡其他已經改滿意的照片不會被牽連
-            // 重改——用aiEditSingleImage()對真正的原圖（.orig_備份）重新送一次AI改圖，
-            // 不是拿目前這張已改過的結果再改一次。沒有備份代表這張從沒被AI改過，
-            // 沒有「重新」的意義，反灰停用，請改用「開始修改圖片」正常流程。
-            DropdownMenuItem(
-                text = { Text(if (hasBackup) "重新AI改圖" else "重新AI改圖（尚未改過）") },
-                enabled = hasBackup && !reprocessing,
-                onClick = {
-                    menuOpen = false
-                    reprocessing = true
-                    scope.launch {
-                        val provider = GeminiApiPrefs.getImageEditProvider(context)
-                        val apiKey = GeminiApiPrefs.getApiKey(context)
-                        val openAiApiKey = GeminiApiPrefs.getOpenAiApiKey(context)
-                        val editPrompt = GeminiApiPrefs.getPrompt(context)
-                        aiEditSingleImage(file, provider, apiKey, openAiApiKey, editPrompt)
-                        markImageAiDone(file)
-                        reprocessing = false
-                        onChanged()
+                    val backup = backupFile
+                    if (backup != null) {
+                        try {
+                            // 【2026-09-07修正】用備份自己的副檔名寫回去（不是強塞回目前
+                            // 檔名的副檔名），去背過的話目前是.png、備份是原本的.jpg，
+                            // 內容格式要對得起來。
+                            val restoredFile = File(file.parentFile, "${file.nameWithoutExtension}.${backup.extension}")
+                            backup.copyTo(restoredFile, overwrite = true)
+                            if (restoredFile.path != file.path) file.delete()
+                            backup.delete()
+                            File(file.parentFile, ".ai_done_${file.name}").delete()
+                            onChanged()
+                        } catch (e: Exception) { /* 失敗就保留現狀，可以再長按重試 */ }
                     }
                 }
             )
+            if (debgMode) {
+                // 【2026-09-07新增】「重新去背」：跟「重新AI改圖」是平行的概念，差別是
+                // 呼叫筆電的rembg而不是Gemini/ChatGPT。一定要拿備份（真正的原圖）當來源
+                // 上傳，不能拿目前已經去背過的圖再去背一次（背景已經沒了，沒東西可去）。
+                DropdownMenuItem(
+                    text = { Text(if (hasBackup) "重新去背" else "重新去背（尚未去背過）") },
+                    enabled = hasBackup && !reprocessing,
+                    onClick = {
+                        menuOpen = false
+                        val backup = backupFile
+                        if (backup != null) {
+                            reprocessing = true
+                            scope.launch {
+                                val outputFile = File(file.parentFile, "${file.nameWithoutExtension}.png")
+                                RemoteVideoGenerator.removeBackground(context, backup, outputFile)
+                                if (outputFile.path != file.path) file.delete()
+                                markImageAiDone(outputFile)
+                                reprocessing = false
+                                onChanged()
+                            }
+                        }
+                    }
+                )
+            } else {
+                // 【2026-09-06新增】只重跑這一張，商品裡其他已經改滿意的照片不會被牽連
+                // 重改——用aiEditSingleImage()對真正的原圖（.orig_備份）重新送一次AI改圖，
+                // 不是拿目前這張已改過的結果再改一次。沒有備份代表這張從沒被AI改過，
+                // 沒有「重新」的意義，反灰停用，請改用「開始修改圖片」正常流程。
+                DropdownMenuItem(
+                    text = { Text(if (hasBackup) "重新AI改圖" else "重新AI改圖（尚未改過）") },
+                    enabled = hasBackup && !reprocessing,
+                    onClick = {
+                        menuOpen = false
+                        reprocessing = true
+                        scope.launch {
+                            val provider = GeminiApiPrefs.getImageEditProvider(context)
+                            val apiKey = GeminiApiPrefs.getApiKey(context)
+                            val openAiApiKey = GeminiApiPrefs.getOpenAiApiKey(context)
+                            val editPrompt = GeminiApiPrefs.getPrompt(context)
+                            aiEditSingleImage(file, provider, apiKey, openAiApiKey, editPrompt)
+                            markImageAiDone(file)
+                            reprocessing = false
+                            onChanged()
+                        }
+                    }
+                )
+            }
             DropdownMenuItem(
                 text = { Text(if (canDelete) "刪除" else "刪除（至少留1張）", color = SimpleDanger) },
                 enabled = canDelete,
@@ -867,7 +922,8 @@ private fun ProductSelectRow(
                         onEnterSelectMode = {
                             photoSelectMode = true
                             selectedPhotoNames = setOf(file.name)
-                        }
+                        },
+                        debgMode = product.debgOnly
                     )
                 }
             }
@@ -1321,11 +1377,23 @@ private suspend fun runAutoSelectAndEditPipeline(
                 val updatedImages = currentImages.toMutableList()
                 var debgFailCount = 0
                 toProcess.forEach { targetFile ->
-                    val debgResult = RemoteVideoGenerator.removeBackground(context, targetFile)
-                    if (debgResult != null) {
+                    // 【2026-09-07新增】去背前先備份原圖（.orig_開頭）——不然背景一旦被
+                    // 去掉，原始內容就永久遺失，之後沒辦法「重新去背」或「換回原圖」。
+                    // 跟AI改圖前備份.orig_是同樣的邏輯，只在備份還不存在時才備份一次。
+                    val backupFile = File(targetFile.parentFile, ".orig_${targetFile.name}")
+                    if (!backupFile.isFile) {
+                        try { targetFile.copyTo(backupFile, overwrite = false) }
+                        catch (e: Exception) { /* 備份失敗不影響去背本身，只是之後不能重新去背/換回原圖 */ }
+                    }
+                    val outputFile = File(targetFile.parentFile, "${targetFile.nameWithoutExtension}.png")
+                    val ok = RemoteVideoGenerator.removeBackground(context, targetFile, outputFile)
+                    if (ok) {
+                        // 去背結果副檔名跟原檔不同時（原本是jpg），把舊檔刪掉，避免同一張圖
+                        // 同時存在.jpg跟.png兩份、後續掃描圖片時被當成兩張不同的圖。
+                        if (outputFile.path != targetFile.path) targetFile.delete()
                         val idx = updatedImages.indexOf(targetFile)
-                        if (idx >= 0) updatedImages[idx] = debgResult
-                        markImageAiDone(debgResult)
+                        if (idx >= 0) updatedImages[idx] = outputFile
+                        markImageAiDone(outputFile)
                     } else {
                         // 去背失敗就保留原圖繼續，不中斷整批，行為跟AI改圖失敗時一致；
                         // 標記完成避免這張圖每次批次都重試同一個失敗。
