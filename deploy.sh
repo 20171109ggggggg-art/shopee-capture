@@ -46,7 +46,7 @@ if [ -z "$current_code" ] || [ -z "$current_name" ]; then
     exit 1
 fi
 new_code=$((current_code + 1))
-new_name=$(echo "$current_name" | awk -F. '{$NF=$NF+1; print}' OFS=.)
+new_name=$(echo "$current_name" | awk -F. '{ w=length($NF); $NF=sprintf("%0" w "d", $NF+1); print }' OFS=.)
 echo "版本號：$current_code ($current_name) -> $new_code ($new_name)"
 echo ""
 
