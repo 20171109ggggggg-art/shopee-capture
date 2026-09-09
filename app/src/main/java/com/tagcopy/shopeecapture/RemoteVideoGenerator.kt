@@ -822,4 +822,52 @@ object RemoteVideoGenerator {
             Log.w("RemoteVideoGenerator", "寫入進度檔案失敗：${e.javaClass.simpleName} ${e.message}")
         }
     }
+
+    /**
+     * 【2026-09-07新增】「只用原圖+去背」功能：把單張圖片送去筆電端`/remove-background`
+     * （用rembg本地去背，不用另外算API額度），成功就把回傳的PNG覆蓋寫回原本的檔案
+     * 路徑（副檔名改成.png，因為去背結果一定是帶透明通道的PNG，不能硬存成.jpg——
+     * jpg不支援透明通道，硬存會讓透明背景變黑底）。呼叫端要記得：這個函式成功後
+     * 檔案路徑變了（副檔名不同），要用回傳值當新的檔案物件，不能沿用呼叫前的File。
+     * 回傳null代表失敗，原始檔案保持不動（不刪除、不覆蓋）。
+     */
+    suspend fun removeBackground(context: Context, imageFile: File): File? = withContext(Dispatchers.IO) {
+        if (!imageFile.exists()) return@withContext null
+        val serverUrl = ServerPrefs.getServerUrl(context)
+        if (serverUrl.isBlank()) return@withContext null
+
+        try {
+            val mediaType = when (imageFile.extension.lowercase()) {
+                "png" -> "image/png"
+                else -> "image/jpeg"
+            }.toMediaType()
+            val requestBody = MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart("image", imageFile.name, imageFile.asRequestBody(mediaType))
+                .build()
+            val request = Request.Builder()
+                .url("$serverUrl/remove-background")
+                .post(requestBody)
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    Log.w("RemoteVideoGenerator", "去背失敗：HTTP ${response.code} ${response.body?.string()?.take(200)}")
+                    return@withContext null
+                }
+                val bytes = response.body?.bytes() ?: return@withContext null
+                val outputFile = File(imageFile.parentFile, "${imageFile.nameWithoutExtension}.png")
+                outputFile.writeBytes(bytes)
+                // 去背結果副檔名跟原檔不同時（原本是jpg），把舊檔刪掉，避免同一張圖
+                // 同時存在.jpg跟.png兩份、後續掃描圖片時被當成兩張不同的圖。
+                if (outputFile.path != imageFile.path) {
+                    imageFile.delete()
+                }
+                outputFile
+            }
+        } catch (e: Exception) {
+            Log.w("RemoteVideoGenerator", "去背發生例外：${e.javaClass.simpleName} ${e.message}")
+            null
+        }
+    }
 }

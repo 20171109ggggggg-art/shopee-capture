@@ -353,6 +353,9 @@ private data class GenerateQueueItem(
     val selectionDone: Boolean,
     val aiProcessed: Boolean,
     val skipAiEdit: Boolean,
+    // 【2026-09-07新增】「只用原圖+去背」開關，跟skipAiEdit互斥（一次只能選一種）。
+    // 勾起來的商品會跳過AI改圖，改呼叫筆電端rembg去背，不做背景生成/合成。
+    val debgOnly: Boolean,
     // 【2026-09-07新增】給「生成影片」清單分組用：aiProcessed要求「全部照片」都改過
     // 才算true（給狀態文字跟「只選未改圖」按鈕用），但分組時使用者確認「只要有任何
     // 一張改過」就該歸進「已AI改圖」組，兩種語意不一樣，分開存不動到既有欄位的行為。
@@ -383,10 +386,40 @@ private fun markImageAiDone(imageFile: File) {
  * 對應的`.ai_done_`標記也清掉，維持狀態一致——之後如果取消勾選、想重新用AI改圖，
  * 批次流程會正確認得出「這些是還沒改過的原圖」，不會誤判成已經改過而跳過。
  * 取消勾選只是刪掉標記本身，不會對照片內容做任何事（維持目前是什麼樣子就是什麼樣子）。
+ *
+ * 【2026-09-07新增互斥】跟「只用原圖+去背」（.skip_ai_edit_debg）互斥，勾這個要先
+ * 清掉另一個的標記，避免兩個模式同時生效互相打架。
  */
 private fun toggleSkipAiEdit(product: GenerateQueueItem, enabled: Boolean) {
     val marker = File(product.folder, ".skip_ai_edit")
     if (enabled) {
+        File(product.folder, ".skip_ai_edit_debg").delete()
+        try { marker.createNewFile() } catch (e: Exception) { /* 標記失敗不影響下面的還原動作 */ }
+        product.imagePaths.forEach { file ->
+            val backup = File(file.parentFile, ".orig_${file.name}")
+            if (backup.isFile) {
+                try {
+                    backup.copyTo(file, overwrite = true)
+                    backup.delete()
+                } catch (e: Exception) { /* 這張還原失敗，維持現狀，不影響其他張 */ }
+            }
+            File(file.parentFile, ".ai_done_${file.name}").delete()
+        }
+    } else {
+        marker.delete()
+    }
+}
+
+/**
+ * 【2026-09-07新增】「只用原圖+去背」開關：跟toggleSkipAiEdit()互斥，勾起來一樣會先
+ * 把已經AI改過、還留著`.orig_`備份的照片還原回原圖（去背要處理的是原圖，不是AI改
+ * 過背景的版本），寫`.skip_ai_edit_debg`標記讓批次流程改呼叫筆電rembg去背，不跑
+ * Gemini/ChatGPT。取消勾選只刪標記，不動照片內容（不會把已經去背的結果復原）。
+ */
+private fun toggleDebgOnly(product: GenerateQueueItem, enabled: Boolean) {
+    val marker = File(product.folder, ".skip_ai_edit_debg")
+    if (enabled) {
+        File(product.folder, ".skip_ai_edit").delete()
         try { marker.createNewFile() } catch (e: Exception) { /* 標記失敗不影響下面的還原動作 */ }
         product.imagePaths.forEach { file ->
             val backup = File(file.parentFile, ".orig_${file.name}")
@@ -473,6 +506,7 @@ private fun loadCapturedProducts(root: File): List<GenerateQueueItem> {
                 selectionDone = File(dir, ".image_selection_done").exists(),
                 aiProcessed = images.isNotEmpty() && images.all { isImageAiDone(it) },
                 skipAiEdit = File(dir, ".skip_ai_edit").exists(),
+                debgOnly = File(dir, ".skip_ai_edit_debg").exists(),
                 anyAiEdited = images.any { isImageAiDone(it) }
             )
         }
@@ -873,25 +907,49 @@ private fun ProductSelectRow(
             )
             // 【2026-09-07新增】「只用原圖」：勾起來這個商品永遠跳過AI改圖，不管全域
             // 開關是開是關；勾的當下也會把已經改過的照片還原回原圖（見toggleSkipAiEdit）。
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .padding(top = 2.dp)
-                    .clickable {
+            // 【2026-09-07新增】「只用原圖+去背」：跟「只用原圖」互斥（toggle函式已經
+            // 處理好互斥邏輯），勾起來呼叫筆電rembg去背，不跑Gemini/ChatGPT改圖。
+            // 兩個各自獨立一個小Row、各自掛自己的clickable，不能共用同一個外層clickable
+            // ——不然點「只用原圖+去背」那幾個字的範圍，會落在外層clickable的觸發區域
+            // 裡，誤觸另一個開關。
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.clickable {
                         toggleSkipAiEdit(product, !product.skipAiEdit)
                         onImagesChanged()
                     }
-            ) {
-                Checkbox(
-                    checked = product.skipAiEdit,
-                    onCheckedChange = {
-                        toggleSkipAiEdit(product, it)
+                ) {
+                    Checkbox(
+                        checked = product.skipAiEdit,
+                        onCheckedChange = {
+                            toggleSkipAiEdit(product, it)
+                            onImagesChanged()
+                        },
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("只用原圖", fontSize = 11.sp, color = SimpleMuted)
+                }
+                Spacer(Modifier.width(16.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.clickable {
+                        toggleDebgOnly(product, !product.debgOnly)
                         onImagesChanged()
-                    },
-                    modifier = Modifier.size(20.dp)
-                )
-                Spacer(Modifier.width(6.dp))
-                Text("只用原圖", fontSize = 11.sp, color = SimpleMuted)
+                    }
+                ) {
+                    Checkbox(
+                        checked = product.debgOnly,
+                        onCheckedChange = {
+                            toggleDebgOnly(product, it)
+                            onImagesChanged()
+                        },
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("只用原圖+去背", fontSize = 11.sp, color = SimpleMuted)
+                }
             }
         }
     }
@@ -1246,9 +1304,33 @@ private suspend fun runAutoSelectAndEditPipeline(
             justSelected = true
         }
 
+        // 【2026-09-07新增】product.debgOnly（「只用原圖+去背」開關）優先權比skipAiEdit高
+        // （兩者互斥，toggle函式已經保證不會同時是true），呼叫筆電rembg去背，不跑
+        // Gemini/ChatGPT改圖。去背結果副檔名會變成.png（見removeBackground()），
+        // currentImages要同步更新成新路徑，不然後面生成影片會找不到檔案。
         // 【2026-09-07新增】product.skipAiEdit（「只用原圖」開關）勾起來的商品，
         // 不管全域AI改圖開關是開是關，一律跳過AI改圖這一步，直接拿目前的圖生成影片。
-        val imagesToProcess = if (!usedSharedProduct && aiEnabled && !product.skipAiEdit) {
+        if (product.debgOnly) {
+            val toProcess = currentImages.filter { !isImageAiDone(it) }
+            if (toProcess.isNotEmpty()) {
+                onStatus("$progressPrefix：去背中")
+                val updatedImages = currentImages.toMutableList()
+                toProcess.forEach { targetFile ->
+                    val debgResult = RemoteVideoGenerator.removeBackground(context, targetFile)
+                    if (debgResult != null) {
+                        val idx = updatedImages.indexOf(targetFile)
+                        if (idx >= 0) updatedImages[idx] = debgResult
+                        markImageAiDone(debgResult)
+                    } else {
+                        // 去背失敗就保留原圖繼續，不中斷整批，行為跟AI改圖失敗時一致；
+                        // 標記完成避免這張圖每次批次都重試同一個失敗。
+                        markImageAiDone(targetFile)
+                    }
+                }
+                currentImages = updatedImages
+            }
+        }
+        val imagesToProcess = if (!usedSharedProduct && aiEnabled && !product.skipAiEdit && !product.debgOnly) {
             currentImages.filter { !isImageAiDone(it) }
         } else emptyList()
         if (imagesToProcess.isNotEmpty()) {
@@ -1461,9 +1543,11 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
     // 【2026-09-07修正】remember()是@Composable函式，一定要放在LazyColumn宣告之前
     // （屬於一般@Composable上下文），不能放進LazyColumn的內容區塊裡——那裡是
     // LazyListScope的DSL，不是@Composable上下文，直接呼叫remember會編譯失敗。
-    val originalOnlyProducts = remember(products) { products.filter { it.skipAiEdit } }
-    val aiEditedProducts = remember(products) { products.filter { !it.skipAiEdit && it.anyAiEdited } }
-    val pendingProducts = remember(products) { products.filter { !it.skipAiEdit && !it.anyAiEdited } }
+    // 【2026-09-07新增】debgOnly（只用原圖+去背）跟skipAiEdit互斥，分組時一起歸進
+    // 「只用原圖」這組顯示（兩者都是「跳過正常AI改圖」的概念，暫不另外拆一組）。
+    val originalOnlyProducts = remember(products) { products.filter { it.skipAiEdit || it.debgOnly } }
+    val aiEditedProducts = remember(products) { products.filter { !it.skipAiEdit && !it.debgOnly && it.anyAiEdited } }
+    val pendingProducts = remember(products) { products.filter { !it.skipAiEdit && !it.debgOnly && !it.anyAiEdited } }
     Box(modifier = Modifier.fillMaxSize()) {
     Column(modifier = Modifier.fillMaxSize()) {
         SimpleTopBar(stringResource(R.string.simple_step2_title), onBack)
