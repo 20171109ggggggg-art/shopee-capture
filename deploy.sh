@@ -10,6 +10,8 @@
 #
 # 腳本會自動：
 # 1. 從 ~/storage/downloads 找對應檔名，比對repo裡實際路徑（用find找，不用手動打路徑）
+#    【2026-09-09新增】檔名可以帶版本號後綴（例如SimpleModeActivity_v1.076.kt），
+#    會自動忽略"_vX.XXX"這段還原成原始檔名再去repo裡找，不用手動改名
 # 2. 複製前後核對bytes數，對不上直接中止（不會硬幹下去，避免複製到不完整/舊快取的檔案）
 # 3. 自動讀取build.gradle.kts目前的versionCode/versionName，自動+1
 #    （不用每次手動指定舊/新字串，避免比對不到「靜默不生效」這個踩過的坑）
@@ -55,9 +57,15 @@ for f in "${files[@]}"; do
         echo "❌ Download資料夾裡找不到 $f，中止部署（沒有動任何東西）"
         exit 1
     fi
-    dest=$(find app/src/main/java -name "$f" | head -n 1)
+    # 檔名若帶版本號後綴（例如 SimpleModeActivity_v1.076.kt），
+    # 比對repo時忽略這段後綴，還原成SimpleModeActivity.kt再找
+    ext="${f##*.}"
+    name_noext="${f%.*}"
+    base_name=$(echo "$name_noext" | sed -E 's/_v[0-9]+(\.[0-9]+)*$//')
+    base="${base_name}.${ext}"
+    dest=$(find app/src/main/java -name "$base" | head -n 1)
     if [ -z "$dest" ]; then
-        echo "❌ repo裡找不到叫 $f 的檔案，中止部署（沒有動任何東西）"
+        echo "❌ repo裡找不到叫 $base 的檔案（由 $f 還原），中止部署（沒有動任何東西）"
         exit 1
     fi
     src_size=$(wc -c < "$src")
