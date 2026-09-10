@@ -11,8 +11,8 @@ android {
         applicationId = "com.tagcopy.shopeecapture"
         minSdk = 30
         targetSdk = 34
-        versionCode = 68
-        versionName = "1.076"
+        versionCode = 69
+        versionName = "1.077"
     }
 
     // 【2026-09-05新增】固定簽章設定，解決每次GitHub Actions重新編譯apk都用Gradle預設

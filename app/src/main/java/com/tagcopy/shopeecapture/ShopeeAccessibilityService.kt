@@ -1799,8 +1799,8 @@ class ShopeeAccessibilityService : AccessibilityService() {
         val filteredRowTexts = rowTexts.filterNot { it in knownChromeTexts }
         val matchedInvalidKeyword = invalidKeywords.firstOrNull { kw -> filteredRowTexts.any { it.contains(kw) } }
         if (matchedInvalidKeyword != null) {
-            appendDebugLog("  → [${candidate.folder.name}] 清單第一筆內容包含「$matchedInvalidKeyword」，判定商品已無效/售完，標記跳過不重試")
-            markProductInvalid(candidate.folder, "上架時偵測到清單標記：$matchedInvalidKeyword")
+            appendDebugLog("  → [${candidate.folder.name}] 清單第一筆內容包含「$matchedInvalidKeyword」，判定商品已無效/售完，刪除本地資料夾並跳過")
+            candidate.folder.deleteRecursively()
             return UploadCandidateResult.INVALID_SKIP
         }
         if (!clickNodeBestEffort(firstCheckbox)) {
