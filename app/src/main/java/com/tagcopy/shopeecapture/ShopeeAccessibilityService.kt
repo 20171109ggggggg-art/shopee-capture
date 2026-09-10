@@ -1796,7 +1796,18 @@ class ShopeeAccessibilityService : AccessibilityService() {
             "Sort by", "Newest", "Higher Commission", "Invalid Products",
             "Sort By Newest", "Better Offer", "Invalid", "Replace All"
         )
-        val filteredRowTexts = rowTexts.filterNot { it in knownChromeTexts }
+        // 【2026-09-10修正】原本用filterNot對整個清單做「值比對」排除，如果同一批文字裡
+        // 「Invalid」這個字出現兩次（一次是固定頁籤、一次是商品本身真的被標記無效），
+        // filterNot會把兩次都濾掉，導致真正無效的商品也比對不到關鍵字、被當正常商品
+        // 繼續處理下去（debug log實際證據：清單第一筆內容裡「Invalid」出現了兩次，
+        // 一次在「Better Offer」後面（固定頁籤），一次在「Replace All」後面、緊接著商品
+        // 名稱前面（商品本身的無效標記），照樣被整批濾掉）。修法：每個固定頁籤文字只排除
+        // 「第一次出現」的那一筆，商品本身額外的無效標記文字保留下來讓後面的關鍵字比對抓到。
+        val filteredRowTexts = rowTexts.toMutableList()
+        for (chromeText in knownChromeTexts) {
+            val idx = filteredRowTexts.indexOf(chromeText)
+            if (idx >= 0) filteredRowTexts.removeAt(idx)
+        }
         val matchedInvalidKeyword = invalidKeywords.firstOrNull { kw -> filteredRowTexts.any { it.contains(kw) } }
         if (matchedInvalidKeyword != null) {
             appendDebugLog("  → [${candidate.folder.name}] 清單第一筆內容包含「$matchedInvalidKeyword」，判定商品已無效/售完，刪除本地資料夾並跳過")
