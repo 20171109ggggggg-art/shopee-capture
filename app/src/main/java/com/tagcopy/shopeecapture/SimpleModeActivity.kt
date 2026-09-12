@@ -646,6 +646,7 @@ private suspend fun aiEditSingleImage(
 
     // 改圖本身就失敗（沒有結果可以驗證），沿用原本「保留目前的圖繼續用，不中斷
     // 流程」的行為，不需要跑驗證這一步。
+    var finalVerifyResult: RemoteVideoGenerator.VerifyEditResult? = null
     if (editSuccess && editedBitmap != null) {
         val geminiKeyForVerify = GeminiApiPrefs.getApiKey(context)
         var attemptCount = 1
@@ -655,7 +656,10 @@ private suspend fun aiEditSingleImage(
 
         if (!verifyResult.passed) {
             val retryPrompt = editPrompt + "\n\n上一次結果有以下問題，請修正：\n" +
-                verifyResult.failedReasons.joinToString("\n") { "- $it" }
+                verifyResult.failedReasons.joinToString("\n") { "- $it" } +
+                "\n\n特別提醒：如果上面提到logo/商標/品牌文字的問題，這次如果還是無法做到" +
+                "清晰完整可辨識，請直接把它完全移除乾淨（不留模糊或殘缺痕跡），不要再嘗試" +
+                "保留一個看不清楚的版本。"
             val (retrySuccess, retryBitmap, _) = callEdit(retryPrompt)
             attemptCount = 2
             if (retrySuccess && retryBitmap != null) {
@@ -670,12 +674,23 @@ private suspend fun aiEditSingleImage(
         if (!verifyResult.passed) {
             markAiEditNeedsReview(targetFile.parentFile, targetFile.name, verifyResult.failedReasons, qcFolder?.absolutePath)
         }
+        finalVerifyResult = verifyResult
     }
 
-    // 改圖失敗就保留目前的圖繼續用，不中斷流程，行為跟之前一致。
+    // 【2026-09-13新增】驗證重試後仍不通過，不要用失敗的改圖結果覆蓋掉照片——
+    // 保留原圖（從sourcePath，也就是.orig_備份或原始檔案複製回targetFile），
+    // 「生成影片」清單顯示、之後如果直接生成影片都會用這張安全的原圖，不會不小心
+    // 把有問題的改圖結果用掉。使用者要靠這張原圖跟QC記錄資料夾裡的改圖結果比對，
+    // 才知道問題出在哪、決定怎麼處理。
+    // 改圖本身就失敗（editSuccess=false）沿用原本行為：targetFile從沒被動過，本來
+    // 就還是原圖，不用特別處理。
     if (editSuccess && editedBitmap != null) {
-        java.io.FileOutputStream(targetFile).use { out ->
-            editedBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, out)
+        if (finalVerifyResult != null && !finalVerifyResult.passed) {
+            File(sourcePath).copyTo(targetFile, overwrite = true)
+        } else {
+            java.io.FileOutputStream(targetFile).use { out ->
+                editedBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, out)
+            }
         }
     }
 }
@@ -1248,7 +1263,11 @@ private fun ProductSelectRow(
             onDismissRequest = { reviewDialogOpen = false },
             title = { Text("待審核：${product.productName ?: product.folder.name}") },
             text = {
-                Column {
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 420.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
                     Text("AI改圖重試1次後仍不通過的問題：", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(6.dp))
                     reasons.forEach { (imageFile, imageReasons) ->
