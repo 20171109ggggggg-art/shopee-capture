@@ -359,7 +359,14 @@ private data class GenerateQueueItem(
     // 【2026-09-07新增】給「生成影片」清單分組用：aiProcessed要求「全部照片」都改過
     // 才算true（給狀態文字跟「只選未改圖」按鈕用），但分組時使用者確認「只要有任何
     // 一張改過」就該歸進「已AI改圖」組，兩種語意不一樣，分開存不動到既有欄位的行為。
-    val anyAiEdited: Boolean
+    val anyAiEdited: Boolean,
+    // 【2026-09-12新增】排序改用meta.json的capturedAt（擷取當下寫入、之後不會變動），
+    // 不再用folder.lastModified()——後者會因為刪除圖片這類操作更新資料夾的最後修改
+    // 時間，導致商品在清單裡無故跳到最上面（使用者實際回報過的行為異常）。
+    val capturedAt: Long,
+    // 【2026-09-12新增】AI改圖驗證重試後仍不通過，讀取meta.json的aiEditNeedsReview
+    // 欄位，清單UI用來標示「待審核」、排到最前面方便使用者優先處理。
+    val needsReview: Boolean
 )
 
 /**
@@ -457,14 +464,153 @@ private fun toggleDebgOnly(product: GenerateQueueItem, enabled: Boolean) {
 }
 
 /**
+ * 【2026-09-12新增】把改圖結果（或失敗原因）存進QC記錄資料夾，不管驗證通過與否
+ * 都留存，供之後回頭查閱「這張圖當初為什麼被判定失敗」或統計常見問題類型。
+ * 路徑：Download/AIEditQC/<日期YYYYMMDD>/<時間戳記>_<商品資料夾名稱>_<圖片檔名>/
+ * 存original.jpg／edited.jpg／verify_result.json三個檔案。寫檔失敗只忽略，
+ * 不影響改圖本身的主流程（跟debug log一貫的容錯原則一致）。
+ */
+private fun saveAiEditQcRecord(
+    productFolder: File,
+    imageFile: File,
+    original: android.graphics.Bitmap,
+    edited: android.graphics.Bitmap?,
+    verifyResult: RemoteVideoGenerator.VerifyEditResult?,
+    attemptCount: Int
+): File? {
+    return try {
+        val dateStr = java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.US).format(java.util.Date())
+        val timeStr = java.text.SimpleDateFormat("HHmmss", java.util.Locale.US).format(java.util.Date())
+        val recordDir = File(
+            android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
+            "AIEditQC/$dateStr/${timeStr}_${productFolder.name}_${imageFile.nameWithoutExtension}"
+        )
+        recordDir.mkdirs()
+        java.io.FileOutputStream(File(recordDir, "original.jpg")).use { out ->
+            original.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, out)
+        }
+        if (edited != null) {
+            java.io.FileOutputStream(File(recordDir, "edited.jpg")).use { out ->
+                edited.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, out)
+            }
+        }
+        val resultJson = JSONObject().apply {
+            put("passed", verifyResult?.passed ?: false)
+            put("failedReasons", org.json.JSONArray(verifyResult?.failedReasons ?: emptyList<String>()))
+            put("attemptCount", attemptCount)
+            put("verifiedAt", java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US).format(java.util.Date()))
+        }
+        File(recordDir, "verify_result.json").writeText(resultJson.toString(2))
+        recordDir
+    } catch (e: Exception) {
+        // QC記錄純粹是事後查閱用，寫檔失敗不該影響改圖主流程
+        null
+    }
+}
+
+/**
+ * 【2026-09-12新增】驗證重試1次後仍不通過，寫入meta.json的aiEditNeedsReview標記，
+ * 供「生成影片」清單畫面標示「待審核」、排到最前面。已經是true的話用陣列累加失敗
+ * 原因（同一商品可能不只一張圖有問題），不會覆蓋掉之前其他張圖記錄的原因。
+ */
+private fun markAiEditNeedsReview(productFolder: File, imageFileName: String, reasons: List<String>, qcFolderPath: String?) {
+    try {
+        val metaFile = File(productFolder, "meta.json")
+        if (!metaFile.exists()) return
+        val json = JSONObject(metaFile.readText())
+        json.put("aiEditNeedsReview", true)
+        val existing = json.optJSONArray("aiEditNeedsReviewDetails") ?: org.json.JSONArray()
+        existing.put(JSONObject().apply {
+            put("imageFile", imageFileName)
+            put("reasons", org.json.JSONArray(reasons))
+            put("qcFolder", qcFolderPath ?: "")
+            put("flaggedAt", java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US).format(java.util.Date()))
+        })
+        json.put("aiEditNeedsReviewDetails", existing)
+        metaFile.writeText(json.toString(2))
+    } catch (e: Exception) {
+        // 標記失敗不影響改圖主流程，只是這張問題圖不會出現在待審核清單裡
+    }
+}
+
+/**
+ * 【2026-09-12新增】讀取meta.json的aiEditNeedsReviewDetails，回傳(圖片檔名, 原因清單)
+ * 的清單，供「待審核」對話框顯示。讀取失敗（檔案不存在/格式錯誤）回傳空清單，
+ * 對話框就只會顯示標題沒有細節，不會讓整個畫面崩潰。
+ */
+private fun readNeedsReviewReasons(productFolder: File): List<Pair<String, List<String>>> {
+    return try {
+        val metaFile = File(productFolder, "meta.json")
+        if (!metaFile.exists()) return emptyList()
+        val json = JSONObject(metaFile.readText())
+        val details = json.optJSONArray("aiEditNeedsReviewDetails") ?: return emptyList()
+        (0 until details.length()).map { i ->
+            val entry = details.getJSONObject(i)
+            val imageFile = entry.optString("imageFile", "?")
+            val reasonsArray = entry.optJSONArray("reasons")
+            val reasons = (0 until (reasonsArray?.length() ?: 0)).map { reasonsArray!!.getString(it) }
+            imageFile to reasons
+        }
+    } catch (e: Exception) {
+        emptyList()
+    }
+}
+
+/**
+ * 【2026-09-12新增】使用者在「待審核」清單處理完問題後呼叫：把處理方式寫進每個
+ * 相關QC記錄資料夾的user_decision.json，再清掉meta.json的aiEditNeedsReview標記
+ * （連同details一起清掉，避免下次又顯示同一批舊紀錄）。
+ */
+private fun resolveNeedsReview(productFolder: File, decisionText: String) {
+    try {
+        val metaFile = File(productFolder, "meta.json")
+        if (!metaFile.exists()) return
+        val json = JSONObject(metaFile.readText())
+        val details = json.optJSONArray("aiEditNeedsReviewDetails")
+        if (details != null) {
+            for (i in 0 until details.length()) {
+                val qcFolder = details.getJSONObject(i).optString("qcFolder", "")
+                if (qcFolder.isNotBlank()) {
+                    try {
+                        File(qcFolder, "user_decision.json").writeText(
+                            JSONObject().apply {
+                                put("decision", decisionText)
+                                put("decidedAt", java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US).format(java.util.Date()))
+                            }.toString(2)
+                        )
+                    } catch (e: Exception) { /* 單一筆寫入失敗不影響其他筆繼續處理 */ }
+                }
+            }
+        }
+        json.put("aiEditNeedsReview", false)
+        json.remove("aiEditNeedsReviewDetails")
+        metaFile.writeText(json.toString(2))
+    } catch (e: Exception) {
+        // 清除標記失敗的話，商品會繼續留在待審核清單裡，使用者可以再試一次
+    }
+}
+
+private fun bitmapToJpegBytes(bitmap: android.graphics.Bitmap): ByteArray {
+    val stream = java.io.ByteArrayOutputStream()
+    bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, stream)
+    return stream.toByteArray()
+}
+
+/**
  * 【2026-09-06新增】單張圖片送去AI改圖的共用邏輯，批次流程(runAutoSelectAndEditPipeline)
  * 跟長按選單「重新AI改圖」都呼叫這支，避免兩處各寫一份、改一邊忘了改另一邊。
  * 如果`.orig_`備份已經存在（代表這張至少改過一次），會從備份（真正的原圖）重新讀取
  * 內容送去改圖，不是拿「目前已改圖的結果」再改一次——後者會疊加變形，改越多次結果
  * 越奇怪。備份本身不會被刪除，改完之後「換原圖」「重新AI改圖」都還能繼續用同一份
  * 備份操作。
+ *
+ * 【2026-09-12新增】改圖成功後，接一道AI品質驗證（呼叫筆電端/verify-edit，比對
+ * DEFAULT_PROMPT裡的規則），不通過就把問題接進提示詞自動重試一次同供應商改圖，
+ * 重試後仍不通過才標記aiEditNeedsReview轉人工處理。不管通過與否都會把這次的
+ * 原圖/改圖結果/驗證結果存進Download/AIEditQC/供事後查閱。
  */
 private suspend fun aiEditSingleImage(
+    context: Context,
     targetFile: File,
     provider: ImageEditProvider,
     apiKey: String,
@@ -482,16 +628,50 @@ private suspend fun aiEditSingleImage(
         targetFile.path
     }
     val original = android.graphics.BitmapFactory.decodeFile(sourcePath) ?: return
-    val (editSuccess, editedBitmap, _) = when (provider) {
-        ImageEditProvider.GEMINI -> {
-            val r = GeminiImageEditor.editBackground(original, apiKey, editPrompt)
-            Triple(r.success, r.editedBitmap, r.errorMessage)
-        }
-        ImageEditProvider.CHATGPT -> {
-            val r = OpenAiImageEditor.editBackground(original, openAiApiKey, editPrompt)
-            Triple(r.success, r.editedBitmap, r.errorMessage)
+
+    suspend fun callEdit(prompt: String): Triple<Boolean, android.graphics.Bitmap?, String?> {
+        return when (provider) {
+            ImageEditProvider.GEMINI -> {
+                val r = GeminiImageEditor.editBackground(original, apiKey, prompt)
+                Triple(r.success, r.editedBitmap, r.errorMessage)
+            }
+            ImageEditProvider.CHATGPT -> {
+                val r = OpenAiImageEditor.editBackground(original, openAiApiKey, prompt)
+                Triple(r.success, r.editedBitmap, r.errorMessage)
+            }
         }
     }
+
+    var (editSuccess, editedBitmap, _) = callEdit(editPrompt)
+
+    // 改圖本身就失敗（沒有結果可以驗證），沿用原本「保留目前的圖繼續用，不中斷
+    // 流程」的行為，不需要跑驗證這一步。
+    if (editSuccess && editedBitmap != null) {
+        val geminiKeyForVerify = GeminiApiPrefs.getApiKey(context)
+        var attemptCount = 1
+        var verifyResult = RemoteVideoGenerator.verifyAiEdit(
+            context, bitmapToJpegBytes(original), bitmapToJpegBytes(editedBitmap), geminiKeyForVerify
+        )
+
+        if (!verifyResult.passed) {
+            val retryPrompt = editPrompt + "\n\n上一次結果有以下問題，請修正：\n" +
+                verifyResult.failedReasons.joinToString("\n") { "- $it" }
+            val (retrySuccess, retryBitmap, _) = callEdit(retryPrompt)
+            attemptCount = 2
+            if (retrySuccess && retryBitmap != null) {
+                editedBitmap = retryBitmap
+                verifyResult = RemoteVideoGenerator.verifyAiEdit(
+                    context, bitmapToJpegBytes(original), bitmapToJpegBytes(retryBitmap), geminiKeyForVerify
+                )
+            }
+        }
+
+        val qcFolder = saveAiEditQcRecord(targetFile.parentFile, targetFile, original, editedBitmap, verifyResult, attemptCount)
+        if (!verifyResult.passed) {
+            markAiEditNeedsReview(targetFile.parentFile, targetFile.name, verifyResult.failedReasons, qcFolder?.absolutePath)
+        }
+    }
+
     // 改圖失敗就保留目前的圖繼續用，不中斷流程，行為跟之前一致。
     if (editSuccess && editedBitmap != null) {
         java.io.FileOutputStream(targetFile).use { out ->
@@ -507,11 +687,12 @@ private fun loadCapturedProducts(root: File): List<GenerateQueueItem> {
         ?.mapNotNull { dir ->
             val metaFile = File(dir, "meta.json")
             if (!metaFile.exists()) return@mapNotNull null
-            val name = try {
-                JSONObject(metaFile.readText()).optString("productName", null)
+            val metaJson = try {
+                JSONObject(metaFile.readText())
             } catch (e: Exception) {
                 null
             }
+            val name = metaJson?.optString("productName", null)
             val images = (1..20).mapNotNull { i ->
                 listOf("jpg", "jpeg", "png")
                     .map { ext -> File(dir, "image_$i.$ext") }
@@ -527,10 +708,14 @@ private fun loadCapturedProducts(root: File): List<GenerateQueueItem> {
                 aiProcessed = images.isNotEmpty() && images.all { isImageAiDone(it) },
                 skipAiEdit = File(dir, ".skip_ai_edit").exists(),
                 debgOnly = File(dir, ".skip_ai_edit_debg").exists(),
-                anyAiEdited = images.any { isImageAiDone(it) }
+                anyAiEdited = images.any { isImageAiDone(it) },
+                // capturedAt讀不到（例如更早期沒有這個欄位的舊資料）就退回folder.lastModified()，
+                // 至少不會讓這幾筆舊資料整批消失或排序整個亂掉，只是行為退回原本那樣。
+                capturedAt = metaJson?.optLong("capturedAt", 0L)?.takeIf { it > 0L } ?: dir.lastModified(),
+                needsReview = metaJson?.optBoolean("aiEditNeedsReview", false) ?: false
             )
         }
-        ?.sortedByDescending { it.folder.lastModified() }
+        ?.sortedWith(compareByDescending<GenerateQueueItem> { it.needsReview }.thenByDescending { it.capturedAt })
         ?: emptyList()
 }
 
@@ -822,7 +1007,7 @@ private fun EditedThumbnail(
                             val apiKey = GeminiApiPrefs.getApiKey(context)
                             val openAiApiKey = GeminiApiPrefs.getOpenAiApiKey(context)
                             val editPrompt = GeminiApiPrefs.getPrompt(context)
-                            aiEditSingleImage(file, provider, apiKey, openAiApiKey, editPrompt)
+                            aiEditSingleImage(context, file, provider, apiKey, openAiApiKey, editPrompt)
                             markImageAiDone(file)
                             reprocessing = false
                             onChanged()
@@ -878,6 +1063,10 @@ private fun ProductSelectRow(
     // captured_history.jsonl）存在別的地方、跟商品資料夾完全分開，所以這裡只刪
     // 資料夾本身就天生不會動到防重複紀錄——之後同一個商品不會被重複擷取進來。
     var deleteConfirmOpen by remember { mutableStateOf(false) }
+    // 【2026-09-12新增】「待審核」標示的處理對話框：顯示這個商品所有被標記過的
+    // 問題原因，使用者填處理方式後寫進對應QC記錄資料夾的user_decision.json，
+    // 同時清掉meta.json的aiEditNeedsReview標記。
+    var reviewDialogOpen by remember { mutableStateOf(false) }
     Row(
         verticalAlignment = Alignment.Top,
         modifier = Modifier
@@ -897,6 +1086,15 @@ private fun ProductSelectRow(
                 fontSize = 13.sp, color = SimpleInk, fontWeight = FontWeight.Bold,
                 maxLines = 2
             )
+            if (product.needsReview) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "⚠ 待審核（AI改圖重試後仍不通過，點這裡查看）",
+                    fontSize = 12.sp,
+                    color = Color(0xFFD32F2F),
+                    modifier = Modifier.clickable { reviewDialogOpen = true }
+                )
+            }
             Spacer(Modifier.height(8.dp))
             // 【2026-09-06新增】不用點進去，直接把這個商品目前的照片（AI改圖後的成果）
             // 全部排出來；長按單張可以換原圖/刪除，取代原本獨立的「檢查修圖結果」畫面。
@@ -1039,6 +1237,47 @@ private fun ProductSelectRow(
             },
             dismissButton = {
                 TextButton(onClick = { deleteConfirmOpen = false }) { Text("取消") }
+            }
+        )
+    }
+
+    if (reviewDialogOpen) {
+        var decisionText by remember { mutableStateOf("") }
+        val reasons = remember(product.folder) { readNeedsReviewReasons(product.folder) }
+        AlertDialog(
+            onDismissRequest = { reviewDialogOpen = false },
+            title = { Text("待審核：${product.productName ?: product.folder.name}") },
+            text = {
+                Column {
+                    Text("AI改圖重試1次後仍不通過的問題：", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(6.dp))
+                    reasons.forEach { (imageFile, imageReasons) ->
+                        Text("【$imageFile】", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        imageReasons.forEach { r -> Text("· $r", fontSize = 12.sp, color = Color.Gray) }
+                        Spacer(Modifier.height(6.dp))
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text("你打算怎麼處理？（例如：換原圖、重新生成、手動修圖）", fontSize = 12.sp)
+                    OutlinedTextField(
+                        value = decisionText,
+                        onValueChange = { decisionText = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = false
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = decisionText.isNotBlank(),
+                    onClick = {
+                        resolveNeedsReview(product.folder, decisionText)
+                        reviewDialogOpen = false
+                        onImagesChanged()
+                    }
+                ) { Text("標記已處理") }
+            },
+            dismissButton = {
+                TextButton(onClick = { reviewDialogOpen = false }) { Text("先關閉") }
             }
         )
     }
@@ -1418,7 +1657,7 @@ private suspend fun runAutoSelectAndEditPipeline(
         if (imagesToProcess.isNotEmpty()) {
             onStatus("$progressPrefix：AI改圖中")
             imagesToProcess.forEach { targetFile ->
-                aiEditSingleImage(targetFile, imageEditProvider, apiKey, openAiApiKey, editPrompt)
+                aiEditSingleImage(context, targetFile, imageEditProvider, apiKey, openAiApiKey, editPrompt)
                 markImageAiDone(targetFile)
             }
             justSelected = true

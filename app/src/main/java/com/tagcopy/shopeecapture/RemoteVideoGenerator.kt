@@ -888,4 +888,65 @@ object RemoteVideoGenerator {
             false
         }
     }
+
+    /**
+     * 【2026-09-12新增】AI改圖品質驗證：把「原圖」跟「AI改圖後結果」的位元組資料
+     * 一起上傳給筆電端/verify-edit，取得逐項規則比對結果。刻意放在筆電端執行
+     * （不是手機本地呼叫Gemini驗證），考量跟去背功能一致：這個動作雖然不算重，
+     * 但每天170支影片、每商品1~3張圖累積下來還是會佔用手機資源，筆電規格普遍
+     * 比手機好，也不用擔心佔用手機電量/效能。
+     *
+     * 網路連線失敗、逾時、伺服器端未預期錯誤等，一律回傳passed=false（fail-safe，
+     * 不是fail-open）——這個功能的目的是攔住有問題的圖片，驗證管道本身斷線卻被
+     * 當成「通過」放行，等於白做這層防護。
+     */
+    data class VerifyEditResult(val passed: Boolean, val failedReasons: List<String>)
+
+    suspend fun verifyAiEdit(
+        context: Context,
+        originalBytes: ByteArray,
+        editedBytes: ByteArray,
+        geminiApiKey: String
+    ): VerifyEditResult = withContext(Dispatchers.IO) {
+        val serverUrl = ServerPrefs.getServerUrl(context)
+        if (serverUrl.isBlank()) {
+            appendVideoLog("  → [AI改圖驗證] 尚未設定伺服器網址")
+            return@withContext VerifyEditResult(false, listOf("尚未設定筆電伺服器網址，無法驗證"))
+        }
+        if (geminiApiKey.isBlank()) {
+            appendVideoLog("  → [AI改圖驗證] 尚未設定Gemini API Key")
+            return@withContext VerifyEditResult(false, listOf("尚未設定Gemini API Key，無法驗證"))
+        }
+
+        try {
+            val jpegType = "image/jpeg".toMediaType()
+            val requestBody = MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart("original_image", "original.jpg", originalBytes.toRequestBody(jpegType))
+                .addFormDataPart("edited_image", "edited.jpg", editedBytes.toRequestBody(jpegType))
+                .addFormDataPart("gemini_api_key", geminiApiKey)
+                .build()
+            val request = Request.Builder()
+                .url("$serverUrl/verify-edit")
+                .post(requestBody)
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                val bodyText = response.body?.string()
+                if (!response.isSuccessful || bodyText.isNullOrBlank()) {
+                    appendVideoLog("  → [AI改圖驗證] 失敗：HTTP ${response.code} ${bodyText?.take(300)}")
+                    return@withContext VerifyEditResult(false, listOf("驗證連線失敗（HTTP ${response.code}），視為不通過保守處理"))
+                }
+                val json = JSONObject(bodyText)
+                val passed = json.optBoolean("passed", false)
+                val reasonsArray = json.optJSONArray("failed_reasons")
+                val reasons = (0 until (reasonsArray?.length() ?: 0)).map { reasonsArray!!.getString(it) }
+                appendVideoLog("  → [AI改圖驗證] 結果：${if (passed) "通過" else "不通過（${reasons.size}項問題）"}")
+                VerifyEditResult(passed, reasons)
+            }
+        } catch (e: Exception) {
+            appendVideoLog("  → [AI改圖驗證] 發生例外：${e.javaClass.simpleName} ${e.message}")
+            VerifyEditResult(false, listOf("驗證呼叫發生例外，視為不通過保守處理：${e.javaClass.simpleName}"))
+        }
+    }
 }
