@@ -363,10 +363,7 @@ private data class GenerateQueueItem(
     // 【2026-09-12新增】排序改用meta.json的capturedAt（擷取當下寫入、之後不會變動），
     // 不再用folder.lastModified()——後者會因為刪除圖片這類操作更新資料夾的最後修改
     // 時間，導致商品在清單裡無故跳到最上面（使用者實際回報過的行為異常）。
-    val capturedAt: Long,
-    // 【2026-09-12新增】AI改圖驗證重試後仍不通過，讀取meta.json的aiEditNeedsReview
-    // 欄位，清單UI用來標示「待審核」、排到最前面方便使用者優先處理。
-    val needsReview: Boolean
+    val capturedAt: Long
 )
 
 /**
@@ -464,139 +461,6 @@ private fun toggleDebgOnly(product: GenerateQueueItem, enabled: Boolean) {
 }
 
 /**
- * 【2026-09-12新增】把改圖結果（或失敗原因）存進QC記錄資料夾，不管驗證通過與否
- * 都留存，供之後回頭查閱「這張圖當初為什麼被判定失敗」或統計常見問題類型。
- * 路徑：Download/AIEditQC/<日期YYYYMMDD>/<時間戳記>_<商品資料夾名稱>_<圖片檔名>/
- * 存original.jpg／edited.jpg／verify_result.json三個檔案。寫檔失敗只忽略，
- * 不影響改圖本身的主流程（跟debug log一貫的容錯原則一致）。
- */
-private fun saveAiEditQcRecord(
-    productFolder: File,
-    imageFile: File,
-    original: android.graphics.Bitmap,
-    edited: android.graphics.Bitmap?,
-    verifyResult: RemoteVideoGenerator.VerifyEditResult?,
-    attemptCount: Int
-): File? {
-    return try {
-        val dateStr = java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.US).format(java.util.Date())
-        val timeStr = java.text.SimpleDateFormat("HHmmss", java.util.Locale.US).format(java.util.Date())
-        val recordDir = File(
-            android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
-            "AIEditQC/$dateStr/${timeStr}_${productFolder.name}_${imageFile.nameWithoutExtension}"
-        )
-        recordDir.mkdirs()
-        java.io.FileOutputStream(File(recordDir, "original.jpg")).use { out ->
-            original.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, out)
-        }
-        if (edited != null) {
-            java.io.FileOutputStream(File(recordDir, "edited.jpg")).use { out ->
-                edited.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, out)
-            }
-        }
-        val resultJson = JSONObject().apply {
-            put("passed", verifyResult?.passed ?: false)
-            put("failedReasons", org.json.JSONArray(verifyResult?.failedReasons ?: emptyList<String>()))
-            put("attemptCount", attemptCount)
-            put("verifiedAt", java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US).format(java.util.Date()))
-        }
-        File(recordDir, "verify_result.json").writeText(resultJson.toString(2))
-        recordDir
-    } catch (e: Exception) {
-        // QC記錄純粹是事後查閱用，寫檔失敗不該影響改圖主流程
-        null
-    }
-}
-
-/**
- * 【2026-09-12新增】驗證重試1次後仍不通過，寫入meta.json的aiEditNeedsReview標記，
- * 供「生成影片」清單畫面標示「待審核」、排到最前面。已經是true的話用陣列累加失敗
- * 原因（同一商品可能不只一張圖有問題），不會覆蓋掉之前其他張圖記錄的原因。
- */
-private fun markAiEditNeedsReview(productFolder: File, imageFileName: String, reasons: List<String>, qcFolderPath: String?) {
-    try {
-        val metaFile = File(productFolder, "meta.json")
-        if (!metaFile.exists()) return
-        val json = JSONObject(metaFile.readText())
-        json.put("aiEditNeedsReview", true)
-        val existing = json.optJSONArray("aiEditNeedsReviewDetails") ?: org.json.JSONArray()
-        existing.put(JSONObject().apply {
-            put("imageFile", imageFileName)
-            put("reasons", org.json.JSONArray(reasons))
-            put("qcFolder", qcFolderPath ?: "")
-            put("flaggedAt", java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US).format(java.util.Date()))
-        })
-        json.put("aiEditNeedsReviewDetails", existing)
-        metaFile.writeText(json.toString(2))
-    } catch (e: Exception) {
-        // 標記失敗不影響改圖主流程，只是這張問題圖不會出現在待審核清單裡
-    }
-}
-
-/**
- * 【2026-09-12新增】讀取meta.json的aiEditNeedsReviewDetails，回傳(圖片檔名, 原因清單)
- * 的清單，供「待審核」對話框顯示。讀取失敗（檔案不存在/格式錯誤）回傳空清單，
- * 對話框就只會顯示標題沒有細節，不會讓整個畫面崩潰。
- */
-private fun readNeedsReviewReasons(productFolder: File): List<Pair<String, List<String>>> {
-    return try {
-        val metaFile = File(productFolder, "meta.json")
-        if (!metaFile.exists()) return emptyList()
-        val json = JSONObject(metaFile.readText())
-        val details = json.optJSONArray("aiEditNeedsReviewDetails") ?: return emptyList()
-        (0 until details.length()).map { i ->
-            val entry = details.getJSONObject(i)
-            val imageFile = entry.optString("imageFile", "?")
-            val reasonsArray = entry.optJSONArray("reasons")
-            val reasons = (0 until (reasonsArray?.length() ?: 0)).map { reasonsArray!!.getString(it) }
-            imageFile to reasons
-        }
-    } catch (e: Exception) {
-        emptyList()
-    }
-}
-
-/**
- * 【2026-09-12新增】使用者在「待審核」清單處理完問題後呼叫：把處理方式寫進每個
- * 相關QC記錄資料夾的user_decision.json，再清掉meta.json的aiEditNeedsReview標記
- * （連同details一起清掉，避免下次又顯示同一批舊紀錄）。
- */
-private fun resolveNeedsReview(productFolder: File, decisionText: String) {
-    try {
-        val metaFile = File(productFolder, "meta.json")
-        if (!metaFile.exists()) return
-        val json = JSONObject(metaFile.readText())
-        val details = json.optJSONArray("aiEditNeedsReviewDetails")
-        if (details != null) {
-            for (i in 0 until details.length()) {
-                val qcFolder = details.getJSONObject(i).optString("qcFolder", "")
-                if (qcFolder.isNotBlank()) {
-                    try {
-                        File(qcFolder, "user_decision.json").writeText(
-                            JSONObject().apply {
-                                put("decision", decisionText)
-                                put("decidedAt", java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US).format(java.util.Date()))
-                            }.toString(2)
-                        )
-                    } catch (e: Exception) { /* 單一筆寫入失敗不影響其他筆繼續處理 */ }
-                }
-            }
-        }
-        json.put("aiEditNeedsReview", false)
-        json.remove("aiEditNeedsReviewDetails")
-        metaFile.writeText(json.toString(2))
-    } catch (e: Exception) {
-        // 清除標記失敗的話，商品會繼續留在待審核清單裡，使用者可以再試一次
-    }
-}
-
-private fun bitmapToJpegBytes(bitmap: android.graphics.Bitmap): ByteArray {
-    val stream = java.io.ByteArrayOutputStream()
-    bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, stream)
-    return stream.toByteArray()
-}
-
-/**
  * 【2026-09-06新增】單張圖片送去AI改圖的共用邏輯，批次流程(runAutoSelectAndEditPipeline)
  * 跟長按選單「重新AI改圖」都呼叫這支，避免兩處各寫一份、改一邊忘了改另一邊。
  * 如果`.orig_`備份已經存在（代表這張至少改過一次），會從備份（真正的原圖）重新讀取
@@ -629,71 +493,29 @@ private suspend fun aiEditSingleImage(
     }
     val original = android.graphics.BitmapFactory.decodeFile(sourcePath) ?: return
 
-    suspend fun callEdit(prompt: String): Triple<Boolean, android.graphics.Bitmap?, String?> {
-        return when (provider) {
-            ImageEditProvider.GEMINI -> {
-                val r = GeminiImageEditor.editBackground(original, apiKey, prompt)
-                Triple(r.success, r.editedBitmap, r.errorMessage)
-            }
-            ImageEditProvider.CHATGPT -> {
-                val r = OpenAiImageEditor.editBackground(original, openAiApiKey, prompt)
-                Triple(r.success, r.editedBitmap, r.errorMessage)
-            }
+    // 【2026-09-13移除】原本這裡改圖成功後會接一道AI品質驗證（呼叫筆電端/verify-edit）、
+    // 不通過重試1次、重試後仍不通過標記待審核。使用者實測後認為這道驗證機制本身不穩定
+    // （驗證模型自己也會誤判），加上多一次AI呼叫增加失敗環節，已確認拿掉，改回單純
+    // 「改圖成功就直接存檔」，不穩定的部分交給人工事後抽查取代自動判斷。
+    val (editSuccess, editedBitmap, _) = when (provider) {
+        ImageEditProvider.GEMINI -> {
+            val r = GeminiImageEditor.editBackground(original, apiKey, editPrompt)
+            Triple(r.success, r.editedBitmap, r.errorMessage)
+        }
+        ImageEditProvider.CHATGPT -> {
+            val r = OpenAiImageEditor.editBackground(original, openAiApiKey, editPrompt)
+            Triple(r.success, r.editedBitmap, r.errorMessage)
         }
     }
 
-    var (editSuccess, editedBitmap, _) = callEdit(editPrompt)
-
-    // 改圖本身就失敗（沒有結果可以驗證），沿用原本「保留目前的圖繼續用，不中斷
-    // 流程」的行為，不需要跑驗證這一步。
-    var finalVerifyResult: RemoteVideoGenerator.VerifyEditResult? = null
+    // 改圖失敗：保留目前的圖繼續用，不中斷流程（targetFile從沒被動過，本來就還是原圖）。
     if (editSuccess && editedBitmap != null) {
-        val geminiKeyForVerify = GeminiApiPrefs.getApiKey(context)
-        var attemptCount = 1
-        var verifyResult = RemoteVideoGenerator.verifyAiEdit(
-            context, bitmapToJpegBytes(original), bitmapToJpegBytes(editedBitmap), geminiKeyForVerify
-        )
-
-        if (!verifyResult.passed) {
-            val retryPrompt = editPrompt + "\n\n上一次結果有以下問題，請修正：\n" +
-                verifyResult.failedReasons.joinToString("\n") { "- $it" } +
-                "\n\n特別提醒：如果上面提到logo/商標/品牌文字的問題，這次如果還是無法做到" +
-                "清晰完整可辨識，請直接把它完全移除乾淨（不留模糊或殘缺痕跡），不要再嘗試" +
-                "保留一個看不清楚的版本。"
-            val (retrySuccess, retryBitmap, _) = callEdit(retryPrompt)
-            attemptCount = 2
-            if (retrySuccess && retryBitmap != null) {
-                editedBitmap = retryBitmap
-                verifyResult = RemoteVideoGenerator.verifyAiEdit(
-                    context, bitmapToJpegBytes(original), bitmapToJpegBytes(retryBitmap), geminiKeyForVerify
-                )
-            }
-        }
-
-        val qcFolder = saveAiEditQcRecord(targetFile.parentFile, targetFile, original, editedBitmap, verifyResult, attemptCount)
-        if (!verifyResult.passed) {
-            markAiEditNeedsReview(targetFile.parentFile, targetFile.name, verifyResult.failedReasons, qcFolder?.absolutePath)
-        }
-        finalVerifyResult = verifyResult
-    }
-
-    // 【2026-09-13新增】驗證重試後仍不通過，不要用失敗的改圖結果覆蓋掉照片——
-    // 保留原圖（從sourcePath，也就是.orig_備份或原始檔案複製回targetFile），
-    // 「生成影片」清單顯示、之後如果直接生成影片都會用這張安全的原圖，不會不小心
-    // 把有問題的改圖結果用掉。使用者要靠這張原圖跟QC記錄資料夾裡的改圖結果比對，
-    // 才知道問題出在哪、決定怎麼處理。
-    // 改圖本身就失敗（editSuccess=false）沿用原本行為：targetFile從沒被動過，本來
-    // 就還是原圖，不用特別處理。
-    if (editSuccess && editedBitmap != null) {
-        if (finalVerifyResult != null && !finalVerifyResult.passed) {
-            File(sourcePath).copyTo(targetFile, overwrite = true)
-        } else {
-            java.io.FileOutputStream(targetFile).use { out ->
-                editedBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, out)
-            }
+        java.io.FileOutputStream(targetFile).use { out ->
+            editedBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, out)
         }
     }
 }
+
 
 private fun loadCapturedProducts(root: File): List<GenerateQueueItem> {
     if (!root.exists()) return emptyList()
@@ -726,11 +548,10 @@ private fun loadCapturedProducts(root: File): List<GenerateQueueItem> {
                 anyAiEdited = images.any { isImageAiDone(it) },
                 // capturedAt讀不到（例如更早期沒有這個欄位的舊資料）就退回folder.lastModified()，
                 // 至少不會讓這幾筆舊資料整批消失或排序整個亂掉，只是行為退回原本那樣。
-                capturedAt = metaJson?.optLong("capturedAt", 0L)?.takeIf { it > 0L } ?: dir.lastModified(),
-                needsReview = metaJson?.optBoolean("aiEditNeedsReview", false) ?: false
+                capturedAt = metaJson?.optLong("capturedAt", 0L)?.takeIf { it > 0L } ?: dir.lastModified()
             )
         }
-        ?.sortedWith(compareByDescending<GenerateQueueItem> { it.needsReview }.thenByDescending { it.capturedAt })
+        ?.sortedByDescending { it.capturedAt }
         ?: emptyList()
 }
 
@@ -913,6 +734,8 @@ private fun EditedThumbnail(
     val scope = rememberCoroutineScope()
     var menuOpen by remember { mutableStateOf(false) }
     var reprocessing by remember { mutableStateOf(false) }
+    // 【2026-09-13新增】「從候選圖選一張改圖代替」選圖對話框開關。
+    var candidatePickerOpen by remember { mutableStateOf(false) }
     // 【2026-09-07修正】改用findBackupFile()，不再直接組`.orig_${file.name}`——
     // 去背會把副檔名從.jpg改成.png，原本的組法找不到備份。
     val backupFile = remember(file.path, file.lastModified()) { findBackupFile(file) }
@@ -1029,6 +852,18 @@ private fun EditedThumbnail(
                         }
                     }
                 )
+                // 【2026-09-13新增】AI選圖上限改成1張後，其餘候選圖不再被刪除，改保留
+                // 在候選圖池——這張AI改圖結果不理想時，不用重新擷取，直接從候選圖池
+                // 換另一張原圖重新走AI改圖。跟「重新去背」是平行概念，只在AI改圖模式
+                // （非debgMode）才有意義。
+                DropdownMenuItem(
+                    text = { Text("從候選圖選一張改圖代替") },
+                    enabled = !reprocessing,
+                    onClick = {
+                        menuOpen = false
+                        candidatePickerOpen = true
+                    }
+                )
             }
             DropdownMenuItem(
                 text = { Text(if (canDelete) "刪除" else "刪除（至少留1張）", color = SimpleDanger) },
@@ -1052,6 +887,78 @@ private fun EditedThumbnail(
                     onEnterSelectMode()
                 }
             )
+        }
+    }
+
+    // 【2026-09-13新增】候選圖選圖對話框：換好圖之後直接接著跑AI改圖（跟「重新
+    // AI改圖」用同一套呼叫方式），不用等下次「開始生成影片」批次才處理到。
+    if (candidatePickerOpen) {
+        val candidates = remember(candidatePickerOpen) { listCandidateImages(file.parentFile) }
+        CandidateImagePickerDialog(
+            candidates = candidates,
+            onPick = { chosen ->
+                candidatePickerOpen = false
+                reprocessing = true
+                scope.launch {
+                    val newActiveFile = withContext(Dispatchers.IO) { swapToCandidateImage(file, chosen) }
+                    if (newActiveFile != null) {
+                        val provider = GeminiApiPrefs.getImageEditProvider(context)
+                        val apiKey = GeminiApiPrefs.getApiKey(context)
+                        val openAiApiKey = GeminiApiPrefs.getOpenAiApiKey(context)
+                        val editPrompt = GeminiApiPrefs.getPrompt(context)
+                        aiEditSingleImage(context, newActiveFile, provider, apiKey, openAiApiKey, editPrompt)
+                        markImageAiDone(newActiveFile)
+                    }
+                    reprocessing = false
+                    onChanged()
+                }
+            },
+            onDismiss = { candidatePickerOpen = false }
+        )
+    }
+}
+
+/**
+ * 【2026-09-13新增】「從候選圖選一張改圖代替」的選圖對話框，顯示這個商品目前
+ * 保留在候選圖池裡的原圖縮圖，點一張就觸發onPick換圖+重新AI改圖。
+ */
+@Composable
+private fun CandidateImagePickerDialog(
+    candidates: List<File>,
+    onPick: (File) -> Unit,
+    onDismiss: () -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .background(Color.White, RoundedCornerShape(12.dp))
+                .padding(16.dp)
+        ) {
+            Text("選一張候選圖代替目前這張", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = SimpleInk)
+            Spacer(Modifier.height(10.dp))
+            if (candidates.isEmpty()) {
+                Text("這個商品沒有其他候選圖了", fontSize = 13.sp, color = SimpleMuted)
+            } else {
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(3),
+                    modifier = Modifier.heightIn(max = 300.dp)
+                ) {
+                    items(candidates) { candidate ->
+                        AsyncThumbnailImage(
+                            file = candidate,
+                            sizeDp = 84.dp,
+                            modifier = Modifier
+                                .padding(4.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { onPick(candidate) }
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) {
+                Text("取消")
+            }
         }
     }
 }
@@ -1078,10 +985,6 @@ private fun ProductSelectRow(
     // captured_history.jsonl）存在別的地方、跟商品資料夾完全分開，所以這裡只刪
     // 資料夾本身就天生不會動到防重複紀錄——之後同一個商品不會被重複擷取進來。
     var deleteConfirmOpen by remember { mutableStateOf(false) }
-    // 【2026-09-12新增】「待審核」標示的處理對話框：顯示這個商品所有被標記過的
-    // 問題原因，使用者填處理方式後寫進對應QC記錄資料夾的user_decision.json，
-    // 同時清掉meta.json的aiEditNeedsReview標記。
-    var reviewDialogOpen by remember { mutableStateOf(false) }
     Row(
         verticalAlignment = Alignment.Top,
         modifier = Modifier
@@ -1101,15 +1004,6 @@ private fun ProductSelectRow(
                 fontSize = 13.sp, color = SimpleInk, fontWeight = FontWeight.Bold,
                 maxLines = 2
             )
-            if (product.needsReview) {
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "⚠ 待審核（AI改圖重試後仍不通過，點這裡查看）",
-                    fontSize = 12.sp,
-                    color = Color(0xFFD32F2F),
-                    modifier = Modifier.clickable { reviewDialogOpen = true }
-                )
-            }
             Spacer(Modifier.height(8.dp))
             // 【2026-09-06新增】不用點進去，直接把這個商品目前的照片（AI改圖後的成果）
             // 全部排出來；長按單張可以換原圖/刪除，取代原本獨立的「檢查修圖結果」畫面。
@@ -1252,51 +1146,6 @@ private fun ProductSelectRow(
             },
             dismissButton = {
                 TextButton(onClick = { deleteConfirmOpen = false }) { Text("取消") }
-            }
-        )
-    }
-
-    if (reviewDialogOpen) {
-        var decisionText by remember { mutableStateOf("") }
-        val reasons = remember(product.folder) { readNeedsReviewReasons(product.folder) }
-        AlertDialog(
-            onDismissRequest = { reviewDialogOpen = false },
-            title = { Text("待審核：${product.productName ?: product.folder.name}") },
-            text = {
-                Column(
-                    modifier = Modifier
-                        .heightIn(max = 420.dp)
-                        .verticalScroll(rememberScrollState())
-                ) {
-                    Text("AI改圖重試1次後仍不通過的問題：", fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(6.dp))
-                    reasons.forEach { (imageFile, imageReasons) ->
-                        Text("【$imageFile】", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        imageReasons.forEach { r -> Text("· $r", fontSize = 12.sp, color = Color.Gray) }
-                        Spacer(Modifier.height(6.dp))
-                    }
-                    Spacer(Modifier.height(4.dp))
-                    Text("你打算怎麼處理？（例如：換原圖、重新生成、手動修圖）", fontSize = 12.sp)
-                    OutlinedTextField(
-                        value = decisionText,
-                        onValueChange = { decisionText = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = false
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    enabled = decisionText.isNotBlank(),
-                    onClick = {
-                        resolveNeedsReview(product.folder, decisionText)
-                        reviewDialogOpen = false
-                        onImagesChanged()
-                    }
-                ) { Text("標記已處理") }
-            },
-            dismissButton = {
-                TextButton(onClick = { reviewDialogOpen = false }) { Text("先關閉") }
             }
         )
     }
@@ -1468,7 +1317,14 @@ private fun applyImageSelection(
     val kept = mutableListOf<File>()
     for (file in allImages) {
         if (file.name !in chosenNames) {
-            file.delete()
+            // 【2026-09-13修正】原本沒被選中的候選圖直接刪除，改成用.candidate_前綴
+            // 標記保留在原資料夾（不重新命名檔名裡的編號，只加前綴），供「從候選圖
+            // 選一張改圖代替」功能使用；改名失敗（極少見）保守起見直接刪除，避免
+            // 殘留成一般圖片被loadCapturedProducts()誤判成正式使用中的圖。
+            val candidateFile = File(file.parentFile, ".candidate_${file.name}")
+            if (!file.renameTo(candidateFile)) {
+                file.delete()
+            }
             File(file.parentFile, ".orig_${file.name}").delete()
             File(file.parentFile, ".ai_done_${file.name}").delete()
         } else {
@@ -1504,6 +1360,64 @@ private fun applyImageSelection(
     File(folder, ".ai_processed").delete()
 }
 
+/**
+ * 【2026-09-13新增】列出這個商品資料夾裡還留著的候選圖（AI選圖時沒被選中、
+ * 用.candidate_前綴保留下來的原圖），供「從候選圖選一張改圖代替」畫面顯示。
+ * 依檔名排序（含原本的編號），沒有候選圖回傳空清單。
+ */
+private fun listCandidateImages(folder: File): List<File> {
+    return folder.listFiles { f -> f.name.startsWith(".candidate_image_") }
+        ?.sortedBy { it.name }
+        ?: emptyList()
+}
+
+/**
+ * 【2026-09-13新增】找出資料夾裡目前用掉的.candidate_image_N編號中最大的N，
+ * 回傳N+1當作下一個可用編號——用來把「目前使用中」的圖換回候選圖池時，
+ * 取一個不會跟既有候選圖檔名衝突的編號（既有候選圖是原始擷取編號，可能有
+ * 缺口，例如只剩2、3，不能直接假設從1開始找空位）。
+ */
+private fun nextCandidateIndex(folder: File): Int {
+    val regex = Regex("""^\.candidate_image_(\d+)\.""")
+    val maxExisting = folder.listFiles()
+        ?.mapNotNull { regex.find(it.name)?.groupValues?.get(1)?.toIntOrNull() }
+        ?.maxOrNull() ?: 0
+    return maxExisting + 1
+}
+
+/**
+ * 【2026-09-13新增】用候選圖池裡的另一張圖，取代目前使用中的這張（image_1），
+ * 讓使用者在AI改圖結果不理想時，不用重新擷取，直接换另一張原圖重新走AI改圖。
+ * 目前使用中這張的「真正原圖」內容（有.orig_備份就用備份，沒有代表從沒被
+ * AI改過，activeFile本身就是原圖）會被放回候選圖池保留，不會遺失，之後
+ * 還能再换回來用。
+ * 回傳換好之後的新檔案（給呼叫端接著送去AI改圖），任何一步失敗回傳null、
+ * 且不會留下半套結果（已寫入的部分會盡量清掉復原）。
+ */
+private fun swapToCandidateImage(activeFile: File, candidateFile: File): File? {
+    val folder = activeFile.parentFile ?: return null
+    val activeBackup = findBackupFile(activeFile)
+    val activeOriginalSource = activeBackup ?: activeFile
+    val returnFile = File(folder, ".candidate_image_${nextCandidateIndex(folder)}.${activeOriginalSource.extension.ifBlank { "jpg" }}")
+    return try {
+        activeOriginalSource.copyTo(returnFile, overwrite = false)
+        val newActiveFile = File(folder, "image_1.${candidateFile.extension.ifBlank { "jpg" }}")
+        if (!candidateFile.renameTo(newActiveFile)) {
+            returnFile.delete()
+            return null
+        }
+        // 舊的image_1如果副檔名不同（例如原本已經去背變成.png）要清掉，不然會
+        // 同時存在image_1.png跟image_1.jpg兩份，掃描時被當成兩張不同的圖。
+        if (activeFile.path != newActiveFile.path) activeFile.delete()
+        activeBackup?.delete()
+        File(folder, ".ai_done_${activeFile.name}").delete()
+        newActiveFile
+    } catch (e: Exception) {
+        returnFile.delete()
+        null
+    }
+}
+
 
 /**
  * AI改圖的整合流程，取代原本「手動九宮格選圖」+「浮球AI改圖批次按鈕」兩個分開的
@@ -1533,6 +1447,10 @@ private fun applyImageSelection(
  * 回傳(成功可以送去生成影片的資料夾名稱清單, 失敗清單(資料夾名稱, 原因))。
  */
 private const val SHARED_IMAGE_POOL_SIZE = 3
+// 【2026-09-13新增】AI辨識選圖上限獨立成自己的常數，跟SHARED_IMAGE_POOL_SIZE
+// （共用資料夾一次沿用幾張圖，跟這裡是不同語意）分開，避免改AI選圖張數時
+// 不小心連共用資料夾功能的行為也一起變了。
+private const val AI_SELECT_IMAGE_LIMIT = 1
 
 private suspend fun runAutoSelectAndEditPipeline(
     context: Context,
@@ -1607,8 +1525,8 @@ private suspend fun runAutoSelectAndEditPipeline(
             }
             val nonNullBitmaps: List<android.graphics.Bitmap> = bitmaps.filterNotNull()
             val result = when (imageSelectProvider) {
-                ImageSelectProvider.GEMINI -> GeminiImageSelector.selectBestImages(nonNullBitmaps, selectApiKey, SHARED_IMAGE_POOL_SIZE)
-                ImageSelectProvider.CHATGPT -> OpenAiImageSelector.selectBestImages(nonNullBitmaps, selectApiKey, SHARED_IMAGE_POOL_SIZE)
+                ImageSelectProvider.GEMINI -> GeminiImageSelector.selectBestImages(nonNullBitmaps, selectApiKey, AI_SELECT_IMAGE_LIMIT)
+                ImageSelectProvider.CHATGPT -> OpenAiImageSelector.selectBestImages(nonNullBitmaps, selectApiKey, AI_SELECT_IMAGE_LIMIT)
             }
             if (!result.success || result.selectedIndexes.isEmpty()) {
                 failed.add(product.folder.name to "辨識圖片失敗（使用${imageSelectProvider.label}）：${result.errorMessage ?: "未知錯誤"}")
