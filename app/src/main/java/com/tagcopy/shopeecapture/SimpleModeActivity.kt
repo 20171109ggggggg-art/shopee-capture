@@ -664,7 +664,6 @@ private fun FullScreenAsyncImage(file: File, modifier: Modifier = Modifier) {
     }
 }
 
-@Composable
 /**
  * 【2026-09-14新增】預覽用的一頁：檔案本身＋標籤（「改圖後」或「原圖」），
  * 用來在全螢幕預覽裡標示目前滑到的是哪一張，方便比對修圖前後差異。
@@ -686,6 +685,7 @@ private fun buildPreviewPages(imagePaths: List<File>): List<PreviewPage> {
     return pages
 }
 
+@Composable
 private fun ImagePreviewDialog(pages: List<PreviewPage>, initialIndex: Int, onDismiss: () -> Unit) {
     val pagerState = rememberPagerState(initialPage = initialIndex) { pages.size }
     Dialog(
