@@ -665,8 +665,29 @@ private fun FullScreenAsyncImage(file: File, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun ImagePreviewDialog(images: List<File>, initialIndex: Int, onDismiss: () -> Unit) {
-    val pagerState = rememberPagerState(initialPage = initialIndex) { images.size }
+/**
+ * 【2026-09-14新增】預覽用的一頁：檔案本身＋標籤（「改圖後」或「原圖」），
+ * 用來在全螢幕預覽裡標示目前滑到的是哪一張，方便比對修圖前後差異。
+ */
+private data class PreviewPage(val file: File, val label: String)
+
+/**
+ * 【2026-09-14新增】把商品的照片清單，展開成「改圖後、原圖、改圖後、原圖...」
+ * 這樣一對一對排列的預覽頁面清單——有.orig_備份的才會插入對應的原圖頁，
+ * 從沒被AI改過的圖（沒有備份）就只有「改圖後」這一頁（其實就是原圖本身，
+ * 沒有必要重複放兩次一樣的內容）。
+ */
+private fun buildPreviewPages(imagePaths: List<File>): List<PreviewPage> {
+    val pages = mutableListOf<PreviewPage>()
+    imagePaths.forEach { file ->
+        pages.add(PreviewPage(file, "改圖後"))
+        findBackupFile(file)?.let { backup -> pages.add(PreviewPage(backup, "原圖")) }
+    }
+    return pages
+}
+
+private fun ImagePreviewDialog(pages: List<PreviewPage>, initialIndex: Int, onDismiss: () -> Unit) {
+    val pagerState = rememberPagerState(initialPage = initialIndex) { pages.size }
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -678,20 +699,32 @@ private fun ImagePreviewDialog(images: List<File>, initialIndex: Int, onDismiss:
         ) {
             HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
                 FullScreenAsyncImage(
-                    file = images[page],
+                    file = pages[page].file,
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(16.dp)
                 )
             }
-            if (images.size > 1) {
+            // 【2026-09-14新增】「改圖後／原圖」標籤，讓滑動比對時清楚知道目前看的是哪一張，
+            // 兩種標籤用不同背景色區分，不用細看內容細節也能一眼分辨。
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 18.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(if (pages[pagerState.currentPage].label == "原圖") Color(0xFF616161) else Color(0xFFFF5722))
+                    .padding(horizontal = 14.dp, vertical = 6.dp)
+            ) {
+                Text(pages[pagerState.currentPage].label, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            }
+            if (pages.size > 1) {
                 Text(
-                    "${pagerState.currentPage + 1} / ${images.size}",
+                    "${pagerState.currentPage + 1} / ${pages.size}",
                     color = Color.White,
                     fontSize = 13.sp,
                     modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(top = 18.dp)
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 24.dp)
                 )
             }
             Box(
@@ -1123,9 +1156,17 @@ private fun ProductSelectRow(
 
     val previewedIndex = previewIndex
     if (previewedIndex != null) {
+        // 【2026-09-14新增】把previewIndex（在product.imagePaths裡第幾張）轉換成在
+        // 展開後pages清單裡的位置——每張圖如果有原圖備份會多插入一頁，所以不能直接
+        // 拿previewedIndex當pages的index，要往前累加每張圖各自展開成幾頁。
+        val pages = buildPreviewPages(product.imagePaths)
+        var pageIndex = 0
+        for (i in 0 until previewedIndex) {
+            pageIndex += if (findBackupFile(product.imagePaths[i]) != null) 2 else 1
+        }
         ImagePreviewDialog(
-            images = product.imagePaths,
-            initialIndex = previewedIndex,
+            pages = pages,
+            initialIndex = pageIndex.coerceIn(0, (pages.size - 1).coerceAtLeast(0)),
             onDismiss = { previewIndex = null }
         )
     }
