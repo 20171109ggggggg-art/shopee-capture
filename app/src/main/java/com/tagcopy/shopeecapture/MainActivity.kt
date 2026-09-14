@@ -407,6 +407,8 @@ fun SettingsExportImportCard(context: android.content.Context, onImported: () ->
             put("maxSoldCount", autoCaptureCfg.filter.maxSoldCount ?: JSONObject.NULL)
             put("minPromoterCount", autoCaptureCfg.filter.minPromoterCount ?: JSONObject.NULL)
             put("maxPromoterCount", autoCaptureCfg.filter.maxPromoterCount ?: JSONObject.NULL)
+            // 【2026-09-14新增】已售出/已推廣者倍數門檻也一併匯出。
+            put("minSoldPerPromoterRatio", autoCaptureCfg.filter.minSoldPerPromoterRatio ?: JSONObject.NULL)
             // 【2026-09-07新增】排除關鍵字清單也一併匯出，換手機不用重打。
             put("excludeKeywords", org.json.JSONArray(autoCaptureCfg.excludeKeywords))
         }
@@ -522,7 +524,8 @@ fun SettingsExportImportCard(context: android.content.Context, onImported: () ->
                                             minSoldCount = iOrNull("minSoldCount"),
                                             maxSoldCount = iOrNull("maxSoldCount"),
                                             minPromoterCount = iOrNull("minPromoterCount"),
-                                            maxPromoterCount = iOrNull("maxPromoterCount")
+                                            maxPromoterCount = iOrNull("maxPromoterCount"),
+                                            minSoldPerPromoterRatio = iOrNull("minSoldPerPromoterRatio")
                                         ),
                                         timeLimitMs = if (ac.isNull("timeLimitMs")) null else ac.optLong("timeLimitMs"),
                                         maxAttemptsLimitEnabled = ac.optBoolean("maxAttemptsLimitEnabled", true),
@@ -768,6 +771,8 @@ fun AutoCaptureSettingsCard(context: android.content.Context, reloadKey: Int = 0
     var maxSoldText by remember(reloadKey) { mutableStateOf(config.filter.maxSoldCount?.toString() ?: "") }
     var minPromoterText by remember(reloadKey) { mutableStateOf(config.filter.minPromoterCount?.toString() ?: "") }
     var maxPromoterText by remember(reloadKey) { mutableStateOf(config.filter.maxPromoterCount?.toString() ?: "") }
+    // 【2026-09-14新增】已售出至少是已推廣者的幾倍，單一數字（不是最低/最高兩格）。
+    var minSoldPerPromoterRatioText by remember(reloadKey) { mutableStateOf(config.filter.minSoldPerPromoterRatio?.toString() ?: "") }
     var timeLimitText by remember(reloadKey) { mutableStateOf(config.timeLimitMs?.let { (it / 60000).toString() } ?: "") }
     var maxAttemptsEnabled by remember(reloadKey) { mutableStateOf(config.maxAttemptsLimitEnabled) }
     var timeLimitEnabled by remember(reloadKey) { mutableStateOf(config.timeLimitEnabled) }
@@ -787,7 +792,8 @@ fun AutoCaptureSettingsCard(context: android.content.Context, reloadKey: Int = 0
             minSoldCount = minSoldText.toIntOrNull(),
             maxSoldCount = maxSoldText.toIntOrNull(),
             minPromoterCount = minPromoterText.toIntOrNull(),
-            maxPromoterCount = maxPromoterText.toIntOrNull()
+            maxPromoterCount = maxPromoterText.toIntOrNull(),
+            minSoldPerPromoterRatio = minSoldPerPromoterRatioText.toIntOrNull()
         )
         val excludeKeywords = excludeKeywordsText.split("\n").map { it.trim() }.filter { it.isNotBlank() }
         config = AutoCaptureConfig(count, minD, maxD, filter, timeLimit, maxAttemptsEnabled, timeLimitEnabled, excludeKeywords)
@@ -890,6 +896,29 @@ fun AutoCaptureSettingsCard(context: android.content.Context, reloadKey: Int = 0
             onMinChange = { minPromoterText = it; persist() },
             onMaxChange = { maxPromoterText = it; persist() }
         )
+
+        Spacer(Modifier.height(10.dp))
+        // 【2026-09-14新增】已售出/已推廣者倍數門檻：跟上面兩組獨立的最低/最高範圍不衝突，
+        // 可以同時設定，抓「賣得動但推廣的人相對少」這種高機率分潤的商品。
+        Column {
+            Text("已售出至少是已推廣者的幾倍", fontSize = 12.sp, color = InkColor, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "例如填10：已推廣者2人、已售出需≥20才通過。已推廣者剛好是0人時視為最佳情況，一律通過。",
+                fontSize = 11.sp,
+                color = MutedColor,
+                lineHeight = 15.sp
+            )
+            Spacer(Modifier.height(6.dp))
+            OutlinedTextField(
+                value = minSoldPerPromoterRatioText,
+                onValueChange = { minSoldPerPromoterRatioText = it; persist() },
+                modifier = Modifier.fillMaxWidth(0.5f),
+                singleLine = true,
+                label = { Text("倍數，留空代表不限制") },
+                shape = RoundedCornerShape(0.dp)
+            )
+        }
 
         Spacer(Modifier.height(16.dp))
         // 【2026-09-07新增】排除關鍵字：商品名稱模糊比對到（不分大小寫）就直接跳過不擷取，

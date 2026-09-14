@@ -82,7 +82,13 @@ data class ProductFilterConfig(
     val minSoldCount: Int? = null,
     val maxSoldCount: Int? = null,
     val minPromoterCount: Int? = null,
-    val maxPromoterCount: Int? = null
+    val maxPromoterCount: Int? = null,
+    // 【2026-09-14新增】已售出數量至少是已推廣者數量的幾倍——比起分別設「已售出最低」
+    // 「已推廣者最低/最高」兩組獨立門檻，這條直接抓兩者的相對關係，篩選「賣得動但
+    // 推廣的人相對少」這種高機率分潤的商品。已推廣者剛好是0時，0乘以任何倍數都是0，
+    // 只要已售出讀得到就一定通過——這正好符合「0個推廣者+有銷量＝最佳機會」的直覺，
+    // 不用另外處理除以0的例外狀況。
+    val minSoldPerPromoterRatio: Int? = null
 ) {
     /**
      * 只要有設限制的欄位，metrics 裡對應數值必須存在且落在範圍內才算通過；
@@ -97,6 +103,10 @@ data class ProductFilterConfig(
         if (maxSoldCount != null && (metrics.soldCount == null || metrics.soldCount > maxSoldCount)) return false
         if (minPromoterCount != null && (metrics.promoterCount == null || metrics.promoterCount < minPromoterCount)) return false
         if (maxPromoterCount != null && (metrics.promoterCount == null || metrics.promoterCount > maxPromoterCount)) return false
+        if (minSoldPerPromoterRatio != null &&
+            (metrics.soldCount == null || metrics.promoterCount == null ||
+                metrics.soldCount < metrics.promoterCount * minSoldPerPromoterRatio)
+        ) return false
         return true
     }
 
@@ -104,7 +114,8 @@ data class ProductFilterConfig(
         minCommissionPercent == null && maxCommissionPercent == null &&
             minPrice == null && maxPrice == null &&
             minSoldCount == null && maxSoldCount == null &&
-            minPromoterCount == null && maxPromoterCount == null
+            minPromoterCount == null && maxPromoterCount == null &&
+            minSoldPerPromoterRatio == null
 
     /**
      * 回傳「哪個欄位、為什麼」沒通過，符合就回傳 null。
@@ -128,6 +139,14 @@ data class ProductFilterConfig(
             return "已推廣者${metrics.promoterCount ?: "讀不到"} < 最低 $minPromoterCount"
         if (maxPromoterCount != null && (metrics.promoterCount == null || metrics.promoterCount > maxPromoterCount))
             return "已推廣者${metrics.promoterCount ?: "讀不到"} > 最高 $maxPromoterCount"
+        if (minSoldPerPromoterRatio != null &&
+            (metrics.soldCount == null || metrics.promoterCount == null ||
+                metrics.soldCount < metrics.promoterCount * minSoldPerPromoterRatio)
+        ) {
+            val soldText = metrics.soldCount?.toString() ?: "讀不到"
+            val promoterText = metrics.promoterCount?.toString() ?: "讀不到"
+            return "已售出$soldText / 已推廣者$promoterText，未達最低 $minSoldPerPromoterRatio 倍"
+        }
         return null
     }
 }
