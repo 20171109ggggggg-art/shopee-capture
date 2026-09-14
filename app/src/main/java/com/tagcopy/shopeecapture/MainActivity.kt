@@ -897,7 +897,7 @@ fun AutoCaptureSettingsCard(context: android.content.Context, reloadKey: Int = 0
         Text("排除關鍵字", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = InkColor)
         Spacer(Modifier.height(4.dp))
         Text(
-            "商品名稱只要包含以下任一關鍵字就跳過不擷取，一行一個，不分大小寫。留空代表不排除任何商品。",
+            "商品名稱或賣場名稱只要包含以下任一關鍵字就跳過不擷取，一行一個，不分大小寫。留空代表不排除任何商品。",
             fontSize = 11.sp, color = MutedColor, lineHeight = 16.sp
         )
         Spacer(Modifier.height(6.dp))

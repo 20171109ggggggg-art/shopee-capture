@@ -321,6 +321,22 @@ class ShopeeAccessibilityService : AccessibilityService() {
             return ProcessResult.FILTERED
         }
 
+        // 【2026-09-14新增】排除關鍵字：賣場名稱模糊比對，重用同一份排除關鍵字清單（不分
+        // 開兩個欄位維護），用來排除特定賣場的商品。賣場名稱只有商品詳情頁才讀得到（清單
+        // 卡片上沒有），所以這個判斷必須排在點進商品頁、讀完商品名稱之後才能做，不像商品
+        // 名稱排除那樣能在點進頁面前就先擋掉——但圖片還沒開始擷取，省下的時間跟商品名稱
+        // 排除差不多。讀不到賣場名稱（例如頁面版型不同、還沒渲染完）就當作沒有賣場名稱可
+        // 比對，直接放行不影響原本流程。
+        val shopName = readShopNameFromProductPage(rootInActiveWindow ?: detailRoot)
+        config.matchedExcludeKeyword(shopName)?.let { matchedKeyword ->
+            appendDebugLog("商品：$productName | 賣場=$shopName | 結果=跳過（排除關鍵字，命中賣場名稱：$matchedKeyword）")
+            onEvent(AutoCaptureEvent.Log("排除關鍵字「$matchedKeyword」命中賣場名稱，跳過：${productName ?: getString(R.string.auto_capture_unknown_product)}"))
+            delay(Random.nextLong(6000, 8001))
+            performBack()
+            delay(randomDelay(config))
+            return ProcessResult.FILTERED
+        }
+
         // 無論有沒有設篩選條件，都讀取一次四個參數的狀態並寫進除錯 log，方便排查「明明符合卻沒被擷取」這類問題
         var metrics = extractProductMetrics(detailRoot)
         if (!config.filter.isEmpty() && !hasRequiredFields(metrics, config.filter)) {
@@ -2840,6 +2856,33 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 found = node
                 return
             }
+            for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
+        }
+        walk(root, 0)
+        return found
+    }
+
+    /**
+     * 【2026-09-14新增】從商品詳情頁讀取賣場名稱，用來配合「排除關鍵字」功能排除特定賣場
+     * 的商品。錨點是賣場頭像固定id AN_ShopHeader_Image_Img（dump確認：賣場名稱的可點擊
+     * ViewGroup跟頭像是同一層的相鄰兄弟節點，頭像本身沒有文字），從頭像節點的父層開始，
+     * 找畫面上第一個非空白文字，就是賣場名稱本身（後面接著的最高分潤率、逛逛等文字，
+     * dump裡都標記[不可見]，就算真的可見，文件順序上也排在賣場名稱之後，不影響判斷）。
+     * 找不到錨點或找不到文字都回傳null，不影響原本擷取流程。
+     */
+    private fun readShopNameFromProductPage(root: AccessibilityNodeInfo): String? {
+        val avatarNode = findFirstNodeById(root, "AN_ShopHeader_Image_Img") ?: return null
+        val container = avatarNode.parent ?: return null
+        return findFirstNonBlankText(container)
+    }
+
+    /** 從節點往下深度優先找第一個文字不是空白的節點的文字內容，都沒有回傳null。 */
+    private fun findFirstNonBlankText(root: AccessibilityNodeInfo): String? {
+        var found: String? = null
+        fun walk(node: AccessibilityNodeInfo?, depth: Int) {
+            if (node == null || found != null || depth > 10) return
+            val t = node.text?.toString()
+            if (!t.isNullOrBlank()) { found = t.trim(); return }
             for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
         }
         walk(root, 0)

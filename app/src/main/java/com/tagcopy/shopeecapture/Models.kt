@@ -159,9 +159,11 @@ data class AutoCaptureConfig(
     // （不分大小寫模糊比對），用來排除蝦皮分潤計畫明訂零分潤/風險類別的商品（例如
     // 醫療器材官方明講任何購買都無法獲得分潤，擷取這類商品是白工），或使用者自己
     // 基於經驗想排除的其他類別（例如保養品）。空清單代表不排除任何商品，行為不變。
+    // 【2026-09-14新增】同一份清單也拿來比對賣場名稱（見ShopeeAccessibilityService.kt
+    // 的readShopNameFromProductPage），用來排除特定賣場的商品，不分開兩個欄位維護。
     val excludeKeywords: List<String> = emptyList()
 ) {
-    /** 商品名稱符合任一排除關鍵字就回傳那個關鍵字（用於log顯示原因），都不符合回傳null。 */
+    /** 商品名稱或賣場名稱符合任一排除關鍵字就回傳那個關鍵字（用於log顯示原因），都不符合回傳null。 */
     fun matchedExcludeKeyword(productName: String?): String? {
         if (productName.isNullOrBlank() || excludeKeywords.isEmpty()) return null
         val lowerName = productName.lowercase()
