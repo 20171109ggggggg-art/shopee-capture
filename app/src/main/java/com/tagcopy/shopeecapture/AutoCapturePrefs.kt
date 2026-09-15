@@ -16,6 +16,8 @@ object AutoCapturePrefs {
     private const val KEY_MAX_SOLD = "max_sold"
     private const val KEY_MIN_PROMOTER = "min_promoter"
     private const val KEY_MAX_PROMOTER = "max_promoter"
+    // 【2026-09-14新增】已售出至少是已推廣者的幾倍。
+    private const val KEY_MIN_SOLD_PER_PROMOTER_RATIO = "min_sold_per_promoter_ratio"
     private const val KEY_TIME_LIMIT = "time_limit_ms"
     private const val KEY_MAX_ATTEMPTS_ENABLED = "max_attempts_enabled"
     private const val KEY_TIME_LIMIT_ENABLED = "time_limit_enabled"
@@ -64,7 +66,8 @@ object AutoCapturePrefs {
             minSoldCount = getIntOrNullWithDefault(sp, KEY_MIN_SOLD, 10),
             maxSoldCount = getIntOrNullWithDefault(sp, KEY_MAX_SOLD, null),
             minPromoterCount = getIntOrNullWithDefault(sp, KEY_MIN_PROMOTER, null),
-            maxPromoterCount = getIntOrNullWithDefault(sp, KEY_MAX_PROMOTER, null)
+            maxPromoterCount = getIntOrNullWithDefault(sp, KEY_MAX_PROMOTER, null),
+            minSoldPerPromoterRatio = getIntOrNullWithDefault(sp, KEY_MIN_SOLD_PER_PROMOTER_RATIO, null)
         )
         return AutoCaptureConfig(
             targetCount = sp.getInt(KEY_TARGET_COUNT, 20),
@@ -101,6 +104,7 @@ object AutoCapturePrefs {
         putIntOrNull(editor, KEY_MAX_SOLD, config.filter.maxSoldCount)
         putIntOrNull(editor, KEY_MIN_PROMOTER, config.filter.minPromoterCount)
         putIntOrNull(editor, KEY_MAX_PROMOTER, config.filter.maxPromoterCount)
+        putIntOrNull(editor, KEY_MIN_SOLD_PER_PROMOTER_RATIO, config.filter.minSoldPerPromoterRatio)
         editor.apply()
     }
 }
