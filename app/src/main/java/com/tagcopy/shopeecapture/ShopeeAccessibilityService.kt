@@ -582,8 +582,10 @@ class ShopeeAccessibilityService : AccessibilityService() {
         val soldRegex = Regex("已售出\\s*([\\d,]+\\.?[\\d]*)\\s*(萬)?\\+?")
         val soldAbbrevRegex = Regex("([\\d.]+)\\s*([KM])?\\+?\\s*[Ss]old")
 
-        // 已推廣者：中文「64 位推廣者」「2萬+ 位推廣者」或英文「11.5K+ Affiliates Promoted」
-        val promoterRegex = Regex("([\\d,]+\\.?[\\d]*)\\s*(萬)?\\s*位推廣者")
+        // 已推廣者：中文「64 位推廣者」「2萬+ 位推廣者」「2,201+ 位推廣者已推廣」或英文「11.5K+ Affiliates Promoted」
+        // 【2026-09-16修正】原本漏了「+?」比對數字後面的+號（例如「2,201+」這種近似值格式），
+        // soldRegex早就有加，promoterRegex這裡當初漏掉，導致這類熱門商品的已推廣者永遠讀不到。
+        val promoterRegex = Regex("([\\d,]+\\.?[\\d]*)\\+?\\s*(萬)?\\+?\\s*位推廣者")
         val promoterAbbrevRegex = Regex("([\\d.]+)\\s*([KM])?\\+?\\s*Affiliates?\\s*Promoted", RegexOption.IGNORE_CASE)
 
         // 價格：$ ₱ ฿ ₫ 等貨幣符號開頭的數字（範圍價格如 ₱17.00-₱66.00 只取第一個數字當代表值）
