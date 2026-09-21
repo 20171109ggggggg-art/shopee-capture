@@ -868,8 +868,8 @@ private fun EditedThumbnail(
                 // 不是拿目前這張已改過的結果再改一次。沒有備份代表這張從沒被AI改過，
                 // 沒有「重新」的意義，反灰停用，請改用「開始修改圖片」正常流程。
                 DropdownMenuItem(
-                    text = { Text(if (hasBackup) "重新AI改圖" else "重新AI改圖（尚未改過）") },
-                    enabled = hasBackup && !reprocessing,
+                    text = { Text(if (hasBackup || isImageAiDone(file)) "重新AI改圖" else "重新AI改圖（尚未改過）") },
+                    enabled = !reprocessing,
                     onClick = {
                         menuOpen = false
                         reprocessing = true
@@ -1694,6 +1694,13 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
     // productsRefreshKey遞增就觸發重新讀取，畫面先進去、資料非同步補上不擋UI。
     var products by remember { mutableStateOf<List<GenerateQueueItem>>(emptyList()) }
     var productsRefreshKey by remember { mutableStateOf(0) }
+    // 【2026-09-21修正】genListState/genScrollScope原本宣告在「pickedProduct != null」
+    // 提前return之後——進選圖畫面時會提前return，導致這兩個remember完全沒被執行到；
+    // 從選圖畫面返回時，Compose的slot table對不上原本位置，等於視為全新的remember，
+    // 捲動位置被重置成頂端，使用者要重新往下滑找剛剛在看的商品。搬到提前return之前，
+    // 確保不管有沒有進選圖畫面，每次組合都會執行到，捲動位置才能跨畫面切換保留下來。
+    val genListState = rememberLazyListState()
+    val genScrollScope = rememberCoroutineScope()
     LaunchedEffect(productsRefreshKey) {
         products = withContext(Dispatchers.IO) { loadCapturedProducts(captionQueueDir) }
     }
@@ -1837,8 +1844,6 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
     // 就很重，這是「剛進入頁面商品載入很慢」的根本原因，跟前面兩輪修的「重組」問題
     // 不同。改成LazyColumn，只有畫面上實際看得到的商品才會被組合、縮圖才會開始解碼，
     // 捲到哪裡才處理到哪裡，初次進場的成本從此跟商品總數脫鉤。
-    val genListState = rememberLazyListState()
-    val genScrollScope = rememberCoroutineScope()
     // 【2026-09-07修正】remember()是@Composable函式，一定要放在LazyColumn宣告之前
     // （屬於一般@Composable上下文），不能放進LazyColumn的內容區塊裡——那裡是
     // LazyListScope的DSL，不是@Composable上下文，直接呼叫remember會編譯失敗。
