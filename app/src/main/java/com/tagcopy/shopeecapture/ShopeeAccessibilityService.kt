@@ -430,6 +430,19 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 galleryImages = downloaded
             }
         }
+        // 截圖版跟下載版兩種擷取都試過後，圖片張數仍是0張：不繼續往下走複製連結/複製資訊，
+        // 直接標記失敗返回。避免依賴後面「保底截圖」機制——那個機制是在分享面板還開著的當下
+        // 對整個畫面截圖，拍到的是分享面板本身（分潤分享彈窗、懸浮視窗等），不是真正的商品圖，
+        // 卻會被當成有效圖片存檔、讓這個商品被誤判為「結果=成功」。
+        if (galleryImages.isEmpty()) {
+            appendDebugLog("商品：${productName ?: "未知"} | 結果=失敗（無法擷取圖片，截圖版與下載版皆為0張）")
+            performBack()
+            delay(randomDelay(config))
+            performBack()
+            delay(randomDelay(config))
+            return ProcessResult.FAILED
+        }
+
         val copyLinkNode = sheetRoot?.let { findNodeByTexts(it, matchRules.copyLinkButtonTexts) }
         if (copyLinkNode == null) {
             onEvent(AutoCaptureEvent.Log(getString(R.string.auto_capture_no_copy_link_button)))
@@ -476,10 +489,6 @@ class ShopeeAccessibilityService : AccessibilityService() {
             appendDebugLog("  → 候選字串：${matchRules.copyInfoButtonTexts}")
             copyInfoRoot?.let { dumpClickableNodesToLog(it) }
         }
-
-        val bitmap = if (galleryImages.isEmpty() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            withTimeoutOrNull(4000) { captureScreenshotSuspend() }
-        } else null
 
         // 關閉分享面板並回到搜尋結果列表。
         // 使用者多數情況下實測確認：這個分享面板跟商品詳情頁是合併成同一層的，只要按「一次」
@@ -531,7 +540,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
             return ProcessResult.FILTERED
         }
 
-        return when (val result = saveResult(productName, link, caption, galleryImages.ifEmpty { listOfNotNull(bitmap) }, metrics)) {
+        return when (val result = saveResult(productName, link, caption, galleryImages, metrics)) {
             is CaptureResult.Success -> {
                 markAsCaptured(productName, link)
                 onEvent(AutoCaptureEvent.Log(getString(R.string.auto_capture_captured, productName ?: getString(R.string.auto_capture_unknown_product))))
