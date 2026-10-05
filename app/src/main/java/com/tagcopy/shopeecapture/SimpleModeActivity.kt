@@ -50,6 +50,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 // 簡易模式專用色票，跟MainActivity的開發設定畫面各自獨立，故意不共用避免耦合。
 private val SimpleInk = Color(0xFF1C2331)
@@ -300,8 +303,20 @@ private fun isStaleProgress(p: TermuxRunner.BatchProgress?): Boolean {
  * 失敗的商品名稱＋原因清單。讓使用者一眼看出「這次到底是重新生成了還是全部跳過」，
  * 不用再靠猜的。每類清單超過DETAIL_LIST_MAX_ITEMS筆就截斷、改顯示還剩幾筆。
  */
+// 【2026-10-05新增】完成訊息要附上日期時間，讓使用者把App切到背景跑完一段時間後
+// 回來看結果，知道這批到底是什麼時候跑完的（只看「耗時N分N秒」不夠，不知道是剛跑完
+// 還是很久以前就跑完了）。格式統一用「yyyy/MM/dd HH:mm」，本機時區。
+private val finishTimeFormat = SimpleDateFormat("yyyy/MM/dd HH:mm", Locale.TAIWAN)
+
+private fun formatFinishTime(epochSeconds: Double): String =
+    finishTimeFormat.format(Date((epochSeconds * 1000).toLong()))
+
+private fun formatFinishTimeNow(): String =
+    finishTimeFormat.format(Date())
+
 private fun buildDetailedResultText(context: Context, headerText: String, p: TermuxRunner.BatchProgress): String {
     val sb = StringBuilder(headerText)
+    sb.append("\n").append("完成時間：").append(formatFinishTime(p.updatedAt))
     p.elapsedSeconds?.let { elapsed ->
         val minutes = (elapsed / 60).toInt()
         val seconds = (elapsed % 60).toInt()
@@ -1726,6 +1741,11 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
     var isImageEditing by remember { mutableStateOf(false) }
     var imageEditingStatus by remember { mutableStateOf("") }
     var imageEditErrors by remember { mutableStateOf(emptyList<Pair<String, String>>()) }
+    // 【2026-10-05新增】「開始修改圖片」跑完後顯示一行完成訊息＋完成時間，
+    // 跟「開始生成影片」的完成訊息是同一套用意：App切到背景跑完一段時間後
+    // 回來看，知道這批是什麼時候做完的。這個流程是跑在畫面自己的coroutineScope上
+    // （不是獨立背景服務），跑完當下就是真正完成的時間，直接用formatFinishTimeNow()即可。
+    var imageEditDoneText by remember { mutableStateOf("") }
 
     // 進畫面當下先讀一次目前實際的進度檔案，用它來決定畫面初始狀態——
     // Termux背景執行不受App畫面切換影響，之前的版本每次重進畫面isRunning都從false
@@ -2005,6 +2025,7 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                 enabled = !isImageEditing && !isPreparing && !isRunning && selectedIds.isNotEmpty(),
                 onClick = {
                     imageEditErrors = emptyList()
+                    imageEditDoneText = ""
                     coroutineScope.launch {
                         isImageEditing = true
                         val selectedProducts = products.filter { it.folder.name in selectedIds }
@@ -2014,10 +2035,16 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                         imageEditErrors = errors
                         productsRefreshKey++
                         isImageEditing = false
+                        imageEditDoneText = "修改圖片完成\n完成時間：${formatFinishTimeNow()}"
                     }
                 }
             )
             Spacer(Modifier.height(10.dp))
+
+            if (imageEditDoneText.isNotEmpty()) {
+                Text(imageEditDoneText, fontSize = 12.sp, color = SimpleInk)
+                Spacer(Modifier.height(10.dp))
+            }
 
             if (imageEditErrors.isNotEmpty()) {
                 Text(
@@ -2050,6 +2077,7 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                     resultText = null
                     progress = null
                     prepareErrors = emptyList()
+                    imageEditDoneText = ""
                     stopRequested = false
                     coroutineScope.launch {
                         isPreparing = true
