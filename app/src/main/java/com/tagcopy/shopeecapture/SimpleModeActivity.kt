@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -41,9 +42,12 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.core.content.FileProvider
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -67,6 +71,7 @@ private enum class SimpleScreen { HOME, CAPTURE, GENERATE, REVIEW, UPLOAD }
 class SimpleModeActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        DuplicateImageReuse.initSince(this)
         setContent {
             MaterialTheme {
                 SimpleModeRoot()
@@ -378,7 +383,11 @@ private data class GenerateQueueItem(
     // 【2026-09-12新增】排序改用meta.json的capturedAt（擷取當下寫入、之後不會變動），
     // 不再用folder.lastModified()——後者會因為刪除圖片這類操作更新資料夾的最後修改
     // 時間，導致商品在清單裡無故跳到最上面（使用者實際回報過的行為異常）。
-    val capturedAt: Long
+    val capturedAt: Long,
+    // 【2026-10-13新增】這個商品「最後一次完成AI改圖」的時間（取各張照片.ai_done_標記檔
+    // 的最新修改時間），給「已AI改圖」區排序用：剛改完的商品排最前面，不用再從
+    // 擷取時間排序的清單裡翻找。沒有任何標記檔（舊資料）就是0，排在最後面。
+    val lastAiEditedAt: Long = 0L
 )
 
 /**
@@ -407,7 +416,11 @@ private fun isImageAiDone(imageFile: File): Boolean =
 
 private fun markImageAiDone(imageFile: File) {
     try {
-        File(imageFile.parentFile, ".ai_done_${imageFile.name}").createNewFile()
+        val marker = File(imageFile.parentFile, ".ai_done_${imageFile.name}")
+        marker.createNewFile()
+        // 【2026-10-13修正】createNewFile()在標記檔已存在時（重新AI改圖的情況）不會更新
+        // 檔案時間，導致「最後改圖時間」排序抓不到這次重改；每次都強制蓋成現在時間。
+        marker.setLastModified(System.currentTimeMillis())
     } catch (e: Exception) { /* 標記失敗頂多下次多重跑一次這張，不影響這次改圖結果 */ }
 }
 
@@ -563,7 +576,8 @@ private fun loadCapturedProducts(root: File): List<GenerateQueueItem> {
                 anyAiEdited = images.any { isImageAiDone(it) },
                 // capturedAt讀不到（例如更早期沒有這個欄位的舊資料）就退回folder.lastModified()，
                 // 至少不會讓這幾筆舊資料整批消失或排序整個亂掉，只是行為退回原本那樣。
-                capturedAt = metaJson?.optLong("capturedAt", 0L)?.takeIf { it > 0L } ?: dir.lastModified()
+                capturedAt = metaJson?.optLong("capturedAt", 0L)?.takeIf { it > 0L } ?: dir.lastModified(),
+                lastAiEditedAt = images.maxOfOrNull { File(dir, ".ai_done_${it.name}").lastModified() } ?: 0L
             )
         }
         ?.sortedByDescending { it.capturedAt }
@@ -759,6 +773,138 @@ private fun ImagePreviewDialog(pages: List<PreviewPage>, initialIndex: Int, onDi
 }
 
 /**
+ * 【2026-10-13新增】清單裡「檢查圖片」的放大預覽：外層上下滑切換商品，內層左右滑
+ * 切換同一個商品的圖片（改圖後／原圖）。商品清單是開啟當下依畫面順序拍的快照，
+ * 避免預覽中途有商品改圖完成、清單重新排序，讓目前頁面莫名跳走。
+ * onDismiss回報離開時正在看的商品資料夾名稱，讓清單捲動定位到那個商品。
+ */
+private data class PreviewProduct(val item: GenerateQueueItem, val sectionLabel: String, val number: Int)
+
+@Composable
+private fun ProductPreviewDialog(
+    products: List<PreviewProduct>,
+    startProductIndex: Int,
+    startImageIndex: Int,
+    onDismiss: (String) -> Unit
+) {
+    val productPager = rememberPagerState(initialPage = startProductIndex) { products.size }
+    val current = products[productPager.currentPage.coerceIn(0, products.size - 1)]
+    val dismiss = { onDismiss(current.item.folder.name) }
+    Dialog(
+        onDismissRequest = dismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+            VerticalPager(state = productPager, modifier = Modifier.fillMaxSize()) { productPage ->
+                val entry = products[productPage]
+                val pages = remember(entry.item.folder.path, entry.item.imagePaths) {
+                    buildPreviewPages(entry.item.imagePaths)
+                }
+                // 只有「一開始點進來的那個商品」要定位到被點的那張圖，滑到別的商品從第一張開始。
+                var initialPage = 0
+                if (productPage == startProductIndex) {
+                    for (i in 0 until startImageIndex.coerceAtMost(entry.item.imagePaths.size)) {
+                        initialPage += if (findBackupFile(entry.item.imagePaths[i]) != null) 2 else 1
+                    }
+                }
+                val imagePager = rememberPagerState(
+                    initialPage = initialPage.coerceIn(0, (pages.size - 1).coerceAtLeast(0))
+                ) { pages.size }
+                Box(modifier = Modifier.fillMaxSize()) {
+                    HorizontalPager(state = imagePager, modifier = Modifier.fillMaxSize()) { page ->
+                        FullScreenAsyncImage(
+                            file = pages[page].file,
+                            modifier = Modifier.fillMaxSize().padding(16.dp)
+                        )
+                    }
+                    val label = pages[imagePager.currentPage.coerceIn(0, pages.size - 1)].label
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 18.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(if (label == "原圖") Color(0xFF616161) else Color(0xFFFF5722))
+                            .padding(horizontal = 14.dp, vertical = 6.dp)
+                    ) {
+                        Text(label, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    }
+                    if (pages.size > 1) {
+                        Text(
+                            "${imagePager.currentPage + 1} / ${pages.size}",
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 44.dp)
+                        )
+                    }
+                }
+            }
+            Text(
+                "${current.sectionLabel} ${current.number}．${current.item.productName ?: current.item.folder.name}",
+                color = Color.White,
+                fontSize = 12.sp,
+                maxLines = 1,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(start = 14.dp, top = 62.dp, end = 60.dp)
+            )
+            Text(
+                "上下滑切換商品（${productPager.currentPage + 1}/${products.size}）",
+                color = Color.White.copy(alpha = 0.7f),
+                fontSize = 11.sp,
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 16.dp)
+            )
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(12.dp)
+                    .size(32.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Color.White.copy(alpha = 0.2f))
+                    .clickable { dismiss() },
+                contentAlignment = Alignment.Center
+            ) {
+                Text("✕", color = Color.White, fontSize = 16.sp)
+            }
+        }
+    }
+}
+
+/**
+ * 【2026-10-13新增】單張「重新AI改圖／重新去背／換候選圖改圖」的進行中追蹤器。
+ * 原本這些工作是跑在EditedThumbnail自己的rememberCoroutineScope()上，進度旗標也是
+ * 縮圖元件自己的remember——使用者一點進別的商品（整個清單畫面被換成選圖畫面）或清單
+ * 捲動讓縮圖離開組合，元件一被回收，coroutine就跟著被取消，改到一半的圖就中斷了。
+ * 改成跑在App層級、不跟任何畫面綁定的scope，進度旗標也存在這裡（用檔案路徑當key），
+ * 縮圖元件只負責讀取：不管畫面怎麼切換，工作都會跑完，回到清單時轉圈圈狀態也正確。
+ * finishedTick每完成一筆就+1，清單畫面監聽它來重新載入商品（改完圖自動置頂）。
+ */
+private object ReprocessTracker {
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val active = mutableStateMapOf<String, Boolean>()
+    val finishedTick = mutableStateOf(0)
+
+    private fun keyOf(file: File): String = "${file.parentFile?.path}/${file.nameWithoutExtension}"
+
+    fun isActive(file: File): Boolean = active.containsKey(keyOf(file))
+
+    fun launch(file: File, block: suspend () -> Unit) {
+        val key = keyOf(file)
+        if (active.containsKey(key)) return
+        active[key] = true
+        appScope.launch {
+            try {
+                block()
+            } catch (e: Exception) {
+                /* 單張失敗不影響其他工作，保留現有圖片 */
+            } finally {
+                active.remove(key)
+                finishedTick.value = finishedTick.value + 1
+            }
+        }
+    }
+}
+
+/**
  * 【2026-09-06新增】單張縮圖＋長按選單：長按跳出「換原圖」（有.orig_備份才能按，
  * 邏輯完全比照原本「檢查修圖結果」畫面）跟「刪除」（商品至少留1張才能按）。
  * 這兩個操作原本獨立成一個畫面，現在直接整合進清單，該畫面已拿掉。
@@ -779,9 +925,9 @@ private fun EditedThumbnail(
     debgMode: Boolean = false
 ) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     var menuOpen by remember { mutableStateOf(false) }
-    var reprocessing by remember { mutableStateOf(false) }
+    // 【2026-10-13修改】進行中狀態改讀App層級的ReprocessTracker，不再綁在這個元件上。
+    val reprocessing = ReprocessTracker.isActive(file)
     // 【2026-09-13新增】「從候選圖選一張改圖代替」選圖對話框開關。
     var candidatePickerOpen by remember { mutableStateOf(false) }
     // 【2026-09-07修正】改用findBackupFile()，不再直接組`.orig_${file.name}`——
@@ -865,14 +1011,12 @@ private fun EditedThumbnail(
                         menuOpen = false
                         val backup = backupFile
                         if (backup != null) {
-                            reprocessing = true
-                            scope.launch {
+                            val appContext = context.applicationContext
+                            ReprocessTracker.launch(file) {
                                 val outputFile = File(file.parentFile, "${file.nameWithoutExtension}.png")
-                                RemoteVideoGenerator.removeBackground(context, backup, outputFile)
+                                RemoteVideoGenerator.removeBackground(appContext, backup, outputFile)
                                 if (outputFile.path != file.path) file.delete()
                                 markImageAiDone(outputFile)
-                                reprocessing = false
-                                onChanged()
                             }
                         }
                     }
@@ -887,16 +1031,14 @@ private fun EditedThumbnail(
                     enabled = !reprocessing,
                     onClick = {
                         menuOpen = false
-                        reprocessing = true
-                        scope.launch {
-                            val provider = GeminiApiPrefs.getImageEditProvider(context)
-                            val apiKey = GeminiApiPrefs.getApiKey(context)
-                            val openAiApiKey = GeminiApiPrefs.getOpenAiApiKey(context)
-                            val editPrompt = GeminiApiPrefs.getPrompt(context)
-                            aiEditSingleImage(context, file, provider, apiKey, openAiApiKey, editPrompt)
+                        val appContext = context.applicationContext
+                        ReprocessTracker.launch(file) {
+                            val provider = GeminiApiPrefs.getImageEditProvider(appContext)
+                            val apiKey = GeminiApiPrefs.getApiKey(appContext)
+                            val openAiApiKey = GeminiApiPrefs.getOpenAiApiKey(appContext)
+                            val editPrompt = GeminiApiPrefs.getPrompt(appContext)
+                            aiEditSingleImage(appContext, file, provider, apiKey, openAiApiKey, editPrompt)
                             markImageAiDone(file)
-                            reprocessing = false
-                            onChanged()
                         }
                     }
                 )
@@ -946,19 +1088,17 @@ private fun EditedThumbnail(
             candidates = candidates,
             onPick = { chosen ->
                 candidatePickerOpen = false
-                reprocessing = true
-                scope.launch {
+                val appContext = context.applicationContext
+                ReprocessTracker.launch(file) {
                     val newActiveFile = withContext(Dispatchers.IO) { swapToCandidateImage(file, chosen) }
                     if (newActiveFile != null) {
-                        val provider = GeminiApiPrefs.getImageEditProvider(context)
-                        val apiKey = GeminiApiPrefs.getApiKey(context)
-                        val openAiApiKey = GeminiApiPrefs.getOpenAiApiKey(context)
-                        val editPrompt = GeminiApiPrefs.getPrompt(context)
-                        aiEditSingleImage(context, newActiveFile, provider, apiKey, openAiApiKey, editPrompt)
+                        val provider = GeminiApiPrefs.getImageEditProvider(appContext)
+                        val apiKey = GeminiApiPrefs.getApiKey(appContext)
+                        val openAiApiKey = GeminiApiPrefs.getOpenAiApiKey(appContext)
+                        val editPrompt = GeminiApiPrefs.getPrompt(appContext)
+                        aiEditSingleImage(appContext, newActiveFile, provider, apiKey, openAiApiKey, editPrompt)
                         markImageAiDone(newActiveFile)
                     }
-                    reprocessing = false
-                    onChanged()
                 }
             },
             onDismiss = { candidatePickerOpen = false }
@@ -1015,13 +1155,17 @@ private fun CandidateImagePickerDialog(
 @Composable
 private fun ProductSelectRow(
     product: GenerateQueueItem,
+    // 【2026-10-13新增】商品編號：每個分組（待處理／已AI改圖／只用原圖）各自從1開始。
+    number: Int,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
     onClickImages: () -> Unit,
+    // 【2026-10-13修改】放大預覽改由畫面層級統一管理（才能上下滑切換到別的商品），
+    // 這裡只回報「點了這個商品的第幾張圖」。
+    onPreview: (Int) -> Unit,
     onImagesChanged: () -> Unit
 ) {
     val context = LocalContext.current
-    var previewIndex by remember { mutableStateOf<Int?>(null) }
     // 【2026-09-07新增】多選刪除照片：進入模式後點縮圖是切換選取，跟平常「點縮圖看
     // 放大圖」的手勢分開。selectedPhotoNames存檔名（不是File物件，避免物件相等性
     // 在重組後對不起來）。
@@ -1048,7 +1192,7 @@ private fun ProductSelectRow(
         Spacer(Modifier.width(4.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                product.productName ?: product.folder.name,
+                "$number. ${product.productName ?: product.folder.name}",
                 fontSize = 13.sp, color = SimpleInk, fontWeight = FontWeight.Bold,
                 maxLines = 2
             )
@@ -1064,7 +1208,7 @@ private fun ProductSelectRow(
                         file = file,
                         canDelete = product.imagePaths.size > 1,
                         onChanged = onImagesChanged,
-                        onPreview = { previewIndex = index },
+                        onPreview = { onPreview(index) },
                         selectMode = photoSelectMode,
                         isSelected = selectedPhotoNames.contains(file.name),
                         onToggleSelect = {
@@ -1167,23 +1311,6 @@ private fun ProductSelectRow(
                 }
             }
         }
-    }
-
-    val previewedIndex = previewIndex
-    if (previewedIndex != null) {
-        // 【2026-09-14新增】把previewIndex（在product.imagePaths裡第幾張）轉換成在
-        // 展開後pages清單裡的位置——每張圖如果有原圖備份會多插入一頁，所以不能直接
-        // 拿previewedIndex當pages的index，要往前累加每張圖各自展開成幾頁。
-        val pages = buildPreviewPages(product.imagePaths)
-        var pageIndex = 0
-        for (i in 0 until previewedIndex) {
-            pageIndex += if (findBackupFile(product.imagePaths[i]) != null) 2 else 1
-        }
-        ImagePreviewDialog(
-            pages = pages,
-            initialIndex = pageIndex.coerceIn(0, (pages.size - 1).coerceAtLeast(0)),
-            onDismiss = { previewIndex = null }
-        )
     }
 
     if (deleteConfirmOpen) {
@@ -1502,6 +1629,138 @@ private fun swapToCandidateImage(activeFile: File, candidateFile: File): File? {
  * onStatus：即時回報目前處理到哪個商品、哪個步驟，給UI顯示簡短文字用。
  * 回傳(成功可以送去生成影片的資料夾名稱清單, 失敗清單(資料夾名稱, 原因))。
  */
+/**
+ * 【2026-10-13新增】「不同賣場、同一個商品、圖片也一樣」只改一次圖：
+ * 擷取後第一次跑選圖前，替商品所有候選圖算「圖片指紋」（dHash，縮成9x8灰階比相鄰
+ * 像素亮度，抗重新壓縮/縮放，不像檔案MD5只要位元組有一點不同就認不出來）存進
+ * meta.json的candidateHashes。之後新商品的候選圖指紋，如果和某個「已經選圖＋AI改圖
+ * 完成」的商品有至少2張對得上（任一邊只有1張時1張就算），就直接把那個商品改好的圖
+ * 複製過來、標記完成，跳過辨識選圖和AI改圖。影片和腳本一樣各自生成，不共用。
+ * 只套用在「功能上線之後才擷取」的新商品（capturedAt >= 第一次啟動新版的時間）。
+ */
+private object DuplicateImageReuse {
+    private const val PREFS = "dup_image_reuse"
+    private const val MAX_DISTANCE = 6
+
+    class Entry(val folder: File, val hashes: List<Long>)
+
+    /** 第一次啟動新版時記錄時間，之後擷取的商品才會套用共用。 */
+    fun initSince(context: Context) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (prefs.getLong("since", 0L) == 0L) prefs.edit().putLong("since", System.currentTimeMillis()).apply()
+    }
+
+    fun since(context: Context): Long {
+        val v = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong("since", 0L)
+        return if (v == 0L) Long.MAX_VALUE else v
+    }
+
+    fun computeDHash(file: File): Long? {
+        return try {
+            val bmp = decodeSampledBitmap(file.path, 64).first ?: return null
+            val small = android.graphics.Bitmap.createScaledBitmap(bmp, 9, 8, true)
+            fun gray(c: Int): Int =
+                (android.graphics.Color.red(c) * 299 + android.graphics.Color.green(c) * 587 +
+                    android.graphics.Color.blue(c) * 114) / 1000
+            var hash = 0L
+            var bit = 0
+            for (y in 0 until 8) {
+                for (x in 0 until 8) {
+                    if (gray(small.getPixel(x, y)) > gray(small.getPixel(x + 1, y))) hash = hash or (1L shl bit)
+                    bit++
+                }
+            }
+            hash
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun readHashes(folder: File): List<Long>? = try {
+        val arr = JSONObject(File(folder, "meta.json").readText()).optJSONArray("candidateHashes")
+        arr?.let { a -> (0 until a.length()).mapNotNull { a.optString(it).toULongOrNull(16)?.toLong() } }
+    } catch (e: Exception) {
+        null
+    }
+
+    /** 沒存過指紋就現算並寫進meta.json（只在還沒選圖、候選圖都還在時呼叫）。 */
+    fun ensureHashes(folder: File, images: List<File>): List<Long> {
+        readHashes(folder)?.let { return it }
+        val hashes = images.mapNotNull { computeDHash(it) }
+        try {
+            val metaFile = File(folder, "meta.json")
+            val json = JSONObject(metaFile.readText())
+            val arr = org.json.JSONArray()
+            hashes.forEach { arr.put(it.toULong().toString(16)) }
+            json.put("candidateHashes", arr)
+            metaFile.writeText(json.toString())
+        } catch (e: Exception) { /* 寫不進去頂多這個商品不參與比對 */ }
+        return hashes
+    }
+
+    fun buildIndex(root: File?): MutableList<Entry> {
+        val list = mutableListOf<Entry>()
+        root?.listFiles { f -> f.isDirectory }?.forEach { dir ->
+            readHashes(dir)?.takeIf { it.isNotEmpty() }?.let { list.add(Entry(dir, it)) }
+        }
+        return list
+    }
+
+    private fun currentImagesOf(folder: File): List<File> = (1..20).mapNotNull { i ->
+        listOf("jpg", "jpeg", "png").map { ext -> File(folder, "image_$i.$ext") }.firstOrNull { it.exists() }
+    }
+
+    private fun isSourceReady(folder: File): Boolean {
+        if (!File(folder, ".image_selection_done").exists()) return false
+        if (File(folder, ".skip_ai_edit").exists() || File(folder, ".skip_ai_edit_debg").exists()) return false
+        val images = currentImagesOf(folder)
+        return images.isNotEmpty() && images.all { isImageAiDone(it) }
+    }
+
+    private fun matches(a: List<Long>, b: List<Long>): Boolean {
+        val hit = a.count { x -> b.any { y -> java.lang.Long.bitCount(x xor y) <= MAX_DISTANCE } }
+        val need = if (a.size <= 1 || b.size <= 1) 1 else 2
+        return hit >= need
+    }
+
+    /** 找到可沿用的來源商品就複製改好的圖過來，回傳來源資料夾名稱；沒有回傳null。 */
+    fun tryReuse(target: GenerateQueueItem, targetHashes: List<Long>, index: List<Entry>): String? {
+        if (targetHashes.isEmpty()) return null
+        val source = index.firstOrNull { e ->
+            e.folder.path != target.folder.path && isSourceReady(e.folder) && matches(targetHashes, e.hashes)
+        } ?: return null
+        return try {
+            val dest = target.folder
+            // 目標商品原本擷取的圖改名放進候選圖池（.candidate_），之後仍可用「從候選圖選一張
+            // 改圖代替」；同時避免殘留成一般圖片被誤當成使用中的圖。
+            currentImagesOf(dest).forEach { f ->
+                if (!f.renameTo(File(dest, ".candidate_${f.name}"))) f.delete()
+            }
+            dest.listFiles { f -> f.name.startsWith(".orig_image_") || f.name.startsWith(".ai_done_image_") }
+                ?.forEach { it.delete() }
+            File(dest, ".ai_processed").delete()
+            currentImagesOf(source.folder).forEach { src ->
+                val copied = File(dest, src.name)
+                src.copyTo(copied, overwrite = true)
+                findBackupFile(src)?.let { backup ->
+                    backup.copyTo(File(dest, ".orig_${src.nameWithoutExtension}.${backup.extension}"), overwrite = true)
+                }
+                markImageAiDone(copied)
+            }
+            File(dest, ".image_selection_done").createNewFile()
+            try {
+                val metaFile = File(dest, "meta.json")
+                val json = JSONObject(metaFile.readText())
+                json.put("dupOf", source.folder.name)
+                metaFile.writeText(json.toString())
+            } catch (e: Exception) { /* 記錄來源失敗不影響沿用結果 */ }
+            source.folder.name
+        } catch (e: Exception) {
+            null
+        }
+    }
+}
+
 private const val SHARED_IMAGE_POOL_SIZE = 3
 // 【2026-09-13新增】AI辨識選圖上限獨立成自己的常數，跟SHARED_IMAGE_POOL_SIZE
 // （共用資料夾一次沿用幾張圖，跟這裡是不同語意）分開，避免改AI選圖張數時
@@ -1527,6 +1786,12 @@ private suspend fun runAutoSelectAndEditPipeline(
     // 供應商設定。
     val imageSelectProvider = GeminiApiPrefs.getImageSelectProvider(context)
 
+    // 【2026-10-13新增】同圖商品共用改圖結果的比對索引（見DuplicateImageReuse）。
+    val dupSince = DuplicateImageReuse.since(context)
+    val dupIndex = withContext(Dispatchers.IO) {
+        DuplicateImageReuse.buildIndex(products.firstOrNull()?.folder?.parentFile)
+    }
+
     products.forEachIndexed { idx, product ->
         val label = product.productName ?: product.folder.name
         val progressPrefix = "(${idx + 1}/${products.size}) $label"
@@ -1536,7 +1801,28 @@ private suspend fun runAutoSelectAndEditPipeline(
 
         val alreadyDone = product.selectionDone && product.imagePaths.isNotEmpty() &&
             product.imagePaths.all { isImageAiDone(it) }
-        if (!alreadyDone && ServerPrefs.isConfigured(context)) {
+
+        if (aiEnabled && !product.selectionDone && !product.skipAiEdit && !product.debgOnly) {
+            val reusedFrom = withContext(Dispatchers.IO) {
+                val hashes = DuplicateImageReuse.ensureHashes(product.folder, product.imagePaths)
+                val reused = if (product.capturedAt >= dupSince) {
+                    DuplicateImageReuse.tryReuse(product, hashes, dupIndex)
+                } else null
+                if (hashes.isNotEmpty() && dupIndex.none { it.folder.path == product.folder.path }) {
+                    dupIndex.add(DuplicateImageReuse.Entry(product.folder, hashes))
+                }
+                reused
+            }
+            if (reusedFrom != null) {
+                onStatus("$progressPrefix：沿用相同商品的改圖結果")
+                usedSharedProduct = true
+                currentImages = (1..20).mapNotNull { i ->
+                    listOf("jpg", "jpeg", "png").map { ext -> File(product.folder, "image_$i.$ext") }.firstOrNull { it.exists() }
+                }
+            }
+        }
+
+        if (!alreadyDone && !usedSharedProduct && ServerPrefs.isConfigured(context)) {
             val promoLink = try {
                 JSONObject(File(product.folder, "meta.json").readText()).optString("promoLink", "")
             } catch (e: Exception) {
@@ -1719,6 +2005,20 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
     LaunchedEffect(productsRefreshKey) {
         products = withContext(Dispatchers.IO) { loadCapturedProducts(captionQueueDir) }
     }
+    // 【2026-10-13新增】單張重新AI改圖（跑在App層級scope，見ReprocessTracker）每完成一筆，
+    // 就重新載入商品清單：剛改完的商品會依「最後改圖時間」自動跳到已AI改圖區第一位。
+    // 這兩個hook刻意放在進選圖畫面的提前return之前（見上面genListState的說明）。
+    val reprocessTick = ReprocessTracker.finishedTick.value
+    var seenReprocessTick by remember { mutableStateOf(reprocessTick) }
+    LaunchedEffect(reprocessTick) {
+        if (reprocessTick != seenReprocessTick) {
+            seenReprocessTick = reprocessTick
+            productsRefreshKey++
+        }
+    }
+    // 【2026-10-13新增】放大預覽的狀態提到畫面層級：記錄「開啟當下依畫面順序拍的商品
+    // 快照」＋起始商品/圖片，非null時顯示ProductPreviewDialog（上下滑換商品）。
+    var previewSession by remember { mutableStateOf<Triple<List<PreviewProduct>, Int, Int>?>(null) }
     var selectedIds by remember { mutableStateOf(setOf<String>()) }
     var bulkDeleteConfirmOpen by remember { mutableStateOf(false) }
     // 【2026-08-30新增】自動辨識選圖＋AI改圖流程的進行中狀態：isPreparing為true時
@@ -1870,9 +2170,47 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
     // 【2026-09-07新增】debgOnly（只用原圖+去背）跟skipAiEdit互斥，分組時一起歸進
     // 「只用原圖」這組顯示（兩者都是「跳過正常AI改圖」的概念，暫不另外拆一組）。
     val originalOnlyProducts = remember(products) { products.filter { it.skipAiEdit || it.debgOnly } }
-    val aiEditedProducts = remember(products) { products.filter { !it.skipAiEdit && !it.debgOnly && it.anyAiEdited } }
+    // 【2026-10-13修改】已AI改圖區改依「最後改圖時間」新到舊排序（時間相同維持原本的
+    // 擷取時間順序），手動重新改圖完成的商品會立刻跳到這一區第一位。
+    val aiEditedProducts = remember(products) {
+        products.filter { !it.skipAiEdit && !it.debgOnly && it.anyAiEdited }
+            .sortedByDescending { it.lastAiEditedAt }
+    }
     val pendingProducts = remember(products) { products.filter { !it.skipAiEdit && !it.debgOnly && !it.anyAiEdited } }
+    // 【2026-10-13新增】開啟預覽用的商品快照（依畫面上由上到下的順序，附分組名稱＋組內編號），
+    // 以及「某個商品在LazyColumn裡是第幾個item」的換算（跳出預覽時捲動定位用）。
+    fun buildPreviewProducts(): List<PreviewProduct> =
+        pendingProducts.mapIndexed { i, p -> PreviewProduct(p, "待處理", i + 1) } +
+            aiEditedProducts.mapIndexed { i, p -> PreviewProduct(p, "已AI改圖", i + 1) } +
+            originalOnlyProducts.mapIndexed { i, p -> PreviewProduct(p, "只用原圖", i + 1) }
+    fun lazyIndexOfProduct(folderName: String): Int? {
+        var idx = 1 // item 0 = 說明＋全選按鈕那一大塊
+        for (group in listOf(pendingProducts, aiEditedProducts, originalOnlyProducts)) {
+            if (group.isEmpty()) continue
+            idx += 1 // 分組標題
+            val pos = group.indexOfFirst { it.folder.name == folderName }
+            if (pos >= 0) return idx + pos
+            idx += group.size + 1 // 該組商品＋結尾Spacer
+        }
+        return null
+    }
     Box(modifier = Modifier.fillMaxSize()) {
+    previewSession?.let { (snapshot, startProduct, startImage) ->
+        ProductPreviewDialog(
+            products = snapshot,
+            startProductIndex = startProduct,
+            startImageIndex = startImage,
+            onDismiss = { lastFolderName ->
+                previewSession = null
+                // 跳出預覽後，清單定位到最後正在看的商品；已經完整顯示在畫面上就不動。
+                val target = lazyIndexOfProduct(lastFolderName)
+                if (target != null) {
+                    val visible = genListState.layoutInfo.visibleItemsInfo.any { it.index == target }
+                    if (!visible) genScrollScope.launch { genListState.scrollToItem(target) }
+                }
+            }
+        )
+    }
     Column(modifier = Modifier.fillMaxSize()) {
         SimpleTopBar(stringResource(R.string.simple_step2_title), onBack)
         LazyColumn(
@@ -1941,14 +2279,20 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                     Text("還沒選圖、還沒AI改圖、也沒設定只用原圖", fontSize = 11.sp, color = SimpleMuted)
                     Spacer(Modifier.height(6.dp))
                 }
-                items(pendingProducts, key = { it.folder.name }) { product ->
+                itemsIndexed(pendingProducts, key = { _, it -> it.folder.name }) { index, product ->
                     ProductSelectRow(
                         product = product,
+                        number = index + 1,
                         checked = selectedIds.contains(product.folder.name),
                         onCheckedChange = { checked ->
                             selectedIds = if (checked) selectedIds + product.folder.name else selectedIds - product.folder.name
                         },
                         onClickImages = { imagePickerFolder = product.folder },
+                        onPreview = { imageIndex ->
+                            val snapshot = buildPreviewProducts()
+                            val at = snapshot.indexOfFirst { it.item.folder.name == product.folder.name }
+                            if (at >= 0) previewSession = Triple(snapshot, at, imageIndex)
+                        },
                         onImagesChanged = { productsRefreshKey++ }
                     )
                     Spacer(Modifier.height(8.dp))
@@ -1962,14 +2306,20 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                     Text("已經送去AI換過背景，可以直接生成影片", fontSize = 11.sp, color = SimpleMuted)
                     Spacer(Modifier.height(6.dp))
                 }
-                items(aiEditedProducts, key = { it.folder.name }) { product ->
+                itemsIndexed(aiEditedProducts, key = { _, it -> it.folder.name }) { index, product ->
                     ProductSelectRow(
                         product = product,
+                        number = index + 1,
                         checked = selectedIds.contains(product.folder.name),
                         onCheckedChange = { checked ->
                             selectedIds = if (checked) selectedIds + product.folder.name else selectedIds - product.folder.name
                         },
                         onClickImages = { imagePickerFolder = product.folder },
+                        onPreview = { imageIndex ->
+                            val snapshot = buildPreviewProducts()
+                            val at = snapshot.indexOfFirst { it.item.folder.name == product.folder.name }
+                            if (at >= 0) previewSession = Triple(snapshot, at, imageIndex)
+                        },
                         onImagesChanged = { productsRefreshKey++ }
                     )
                     Spacer(Modifier.height(8.dp))
@@ -1983,14 +2333,20 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                     Text("勾了「只用原圖」，永遠跳過AI改圖，直接用原圖生成", fontSize = 11.sp, color = SimpleMuted)
                     Spacer(Modifier.height(6.dp))
                 }
-                items(originalOnlyProducts, key = { it.folder.name }) { product ->
+                itemsIndexed(originalOnlyProducts, key = { _, it -> it.folder.name }) { index, product ->
                     ProductSelectRow(
                         product = product,
+                        number = index + 1,
                         checked = selectedIds.contains(product.folder.name),
                         onCheckedChange = { checked ->
                             selectedIds = if (checked) selectedIds + product.folder.name else selectedIds - product.folder.name
                         },
                         onClickImages = { imagePickerFolder = product.folder },
+                        onPreview = { imageIndex ->
+                            val snapshot = buildPreviewProducts()
+                            val at = snapshot.indexOfFirst { it.item.folder.name == product.folder.name }
+                            if (at >= 0) previewSession = Triple(snapshot, at, imageIndex)
+                        },
                         onImagesChanged = { productsRefreshKey++ }
                     )
                     Spacer(Modifier.height(8.dp))
