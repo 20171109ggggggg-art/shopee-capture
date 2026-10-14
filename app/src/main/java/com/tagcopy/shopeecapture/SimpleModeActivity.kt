@@ -352,6 +352,22 @@ private fun buildDetailedResultText(context: Context, headerText: String, p: Ter
 }
 
 /**
+ * 【2026-10-15新增】筆電回報語音（Edge TTS）合成失敗時，整批已經中斷，這裡組成顯示在
+ * App畫面上的訊息：哪一支失敗、原因、怎麼處理，後面接原本的詳細清單。
+ */
+private fun buildTtsFailedText(context: Context, p: TermuxRunner.BatchProgress): String {
+    val failed = p.errorItems.lastOrNull()
+    val reason = failed?.second
+        ?.substringAfter("TTS_FAILED：", "")?.takeIf { it.isNotBlank() }
+        ?: failed?.second ?: "語音合成失敗"
+    val header = "語音生成失敗，已中斷批次（成功${p.okCount}支／跳過${p.skippedCount}支）\n" +
+        "失敗商品：${failed?.first ?: p.current}\n" +
+        "原因：$reason\n" +
+        "排除後重新按「開始生成影片」即可，已生成的影片會自動跳過。"
+    return buildDetailedResultText(context, header, p)
+}
+
+/**
  * 【2026-08-29新增】「生成影片」畫面的商品清單資料：讀取CaptionQueue底下每個商品資料夾的
  * 基本資訊（名稱、圖片清單、是否已經選過圖、是否已經有影片），給下面的勾選清單跟人工選圖畫面用。
  */
@@ -2100,6 +2116,7 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                     ),
                     initialProgress
                 )
+                initialProgress?.status == "error_tts_failed" -> buildTtsFailedText(context, initialProgress)
                 initialProgress?.status == "error_laptop_unreachable" -> context.getString(
                     R.string.simple_generate_laptop_unreachable,
                     initialProgress.completed, initialProgress.total
@@ -2141,6 +2158,11 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                         ),
                         p
                     )
+                    isRunning = false
+                    stopRequested = false
+                }
+                p?.status == "error_tts_failed" -> {
+                    resultText = buildTtsFailedText(context, p)
                     isRunning = false
                     stopRequested = false
                 }

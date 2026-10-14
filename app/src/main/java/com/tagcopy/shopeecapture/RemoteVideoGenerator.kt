@@ -151,6 +151,9 @@ object RemoteVideoGenerator {
         val startTime = System.currentTimeMillis()
         var stopped = false
         var laptopUnreachable = false
+        // 【2026-10-15新增】筆電回報語音合成失敗（訊息含TTS_FAILED）→ 整批中斷，
+        // 不繼續生成一堆沒聲音／有問題的影片。
+        var ttsAborted = false
 
         // 開始新一批之前，先清掉可能殘留的舊訊號/進度檔案，避免App第一次輪詢就讀到
         // 上一批留下的舊狀態、誤判目前這批的進度（跟舊版邏輯一致）。
@@ -191,8 +194,22 @@ object RemoteVideoGenerator {
             when (outcome) {
                 is GenOutcome.Ok -> okNames.add(name)
                 is GenOutcome.Skipped -> skippedNames.add(name)
-                is GenOutcome.Error -> errorItems.add(name to outcome.message)
+                is GenOutcome.Error -> {
+                    errorItems.add(name to outcome.message)
+                    if (outcome.message.contains("TTS_FAILED")) ttsAborted = true
+                }
                 null -> { /* 上面的catch區塊已經處理過 */ }
+            }
+
+            if (ttsAborted) {
+                appendVideoLog("[$name] 語音生成失敗，中斷整批")
+                writeProgress(
+                    captionQueueDir, total, idx + 1, name, "error_tts_failed",
+                    okNames.size, skippedNames.size, errorItems.size,
+                    okNames = okNames, skippedNames = skippedNames, errorItems = errorItems,
+                    elapsedSeconds = (System.currentTimeMillis() - startTime) / 1000.0
+                )
+                break
             }
 
             if (File(captionQueueDir, ".stop_signal").exists()) {
@@ -210,7 +227,7 @@ object RemoteVideoGenerator {
             }
         }
 
-        if (!stopped && !laptopUnreachable) {
+        if (!stopped && !laptopUnreachable && !ttsAborted) {
             writeProgress(
                 captionQueueDir, total, total, "", "done",
                 okNames.size, skippedNames.size, errorItems.size,
@@ -219,7 +236,7 @@ object RemoteVideoGenerator {
             )
         }
 
-        appendVideoLog("===== 批次結束：成功${okNames.size}／跳過${skippedNames.size}／失敗${errorItems.size}／停止=$stopped／筆電斷線=$laptopUnreachable =====")
+        appendVideoLog("===== 批次結束：成功${okNames.size}／跳過${skippedNames.size}／失敗${errorItems.size}／停止=$stopped／筆電斷線=$laptopUnreachable／語音失敗中斷=$ttsAborted =====")
 
         if (serverUrl.isNotBlank()) {
             backupDedupHistory(serverUrl)
