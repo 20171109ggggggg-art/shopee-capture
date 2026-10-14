@@ -2045,6 +2045,9 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
     // 快照」＋起始商品/圖片，非null時顯示ProductPreviewDialog（上下滑換商品）。
     var previewSession by remember { mutableStateOf<Triple<List<PreviewProduct>, Int, Int>?>(null) }
     var selectedIds by remember { mutableStateOf(setOf<String>()) }
+    // 【2026-10-15新增·一次性功能】強制重製已勾選商品的影片（修復先前語音失敗產生的無聲
+    // 影片）。不持久化，每次進入畫面預設關閉；用完後這個開關會移除。
+    var forceRegenerate by remember { mutableStateOf(false) }
     var bulkDeleteConfirmOpen by remember { mutableStateOf(false) }
     // 【2026-08-30新增】自動辨識選圖＋AI改圖流程的進行中狀態：isPreparing為true時
     // 按鈕顯示這個逐步文字（辨識圖片中/AI改圖中，見runAutoSelectAndEditPipeline），
@@ -2284,6 +2287,14 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                         }) {
                             Text("只選未改圖", fontSize = 13.sp, color = SimpleInk)
                         }
+                        // 【2026-10-15新增】只選「有任何一張改過圖、且還沒有影片」的商品
+                        TextButton(onClick = {
+                            selectedIds = products
+                                .filter { it.anyAiEdited && !it.hasVideo }
+                                .map { it.folder.name }.toSet()
+                        }) {
+                            Text("只選已改圖沒影片", fontSize = 13.sp, color = SimpleInk)
+                        }
                         // 【2026-09-07新增】批次刪除：勾選多個商品後按這顆，一次刪光勾選的商品
                         // （照片+影片），不用一個一個長按。防重複紀錄不受影響，沿用跟長按刪除
                         // 商品同一套邏輯。
@@ -2453,6 +2464,25 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                 Spacer(Modifier.height(16.dp))
             }
 
+            // 【2026-10-15新增·一次性】勾起來後，已勾選的商品即使已有影片也會重新生成
+            // （蓋掉舊的output.mp4；重製失敗時舊影片保留）。用來重製無聲影片。
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Checkbox(
+                    checked = forceRegenerate,
+                    onCheckedChange = { forceRegenerate = it },
+                    enabled = !isRunning && !isPreparing
+                )
+                Text(
+                    "重製已有影片（已勾選的商品一律重新生成）",
+                    fontSize = 13.sp,
+                    color = if (forceRegenerate) SimpleDanger else SimpleInk
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+
             BigActionButton(
                 text = when {
                     isPreparing -> preparingStatus.ifBlank { "處理中" }
@@ -2514,7 +2544,7 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                         // 任何輸出，那就是被系統砍掉的鐵證（正常結束/正常錯誤都會印出對應
                         // 訊息，不會憑空消失）。
                         val sent = try {
-                            RemoteVideoGenService.start(context, captionQueueDir, readyIds.toSet(), force = false)
+                            RemoteVideoGenService.start(context, captionQueueDir, readyIds.toSet(), force = forceRegenerate)
                             true
                         } catch (e: Exception) {
                             false
