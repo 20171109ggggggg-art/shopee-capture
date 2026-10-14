@@ -410,17 +410,23 @@ private fun findBackupFile(file: File): File? {
     return dir.listFiles { f -> f.name.startsWith(prefix) }?.firstOrNull()
 }
 
+private fun aiDoneMarkerTime(imageFile: File): Long =
+    File(imageFile.parentFile, ".ai_done_${imageFile.name}").lastModified()
+
 private fun isImageAiDone(imageFile: File): Boolean =
     File(imageFile.parentFile, ".ai_done_${imageFile.name}").exists() ||
         File(imageFile.parentFile, ".ai_processed").exists()
 
-private fun markImageAiDone(imageFile: File) {
+private fun markImageAiDone(imageFile: File, keepTime: Long = 0L) {
     try {
         val marker = File(imageFile.parentFile, ".ai_done_${imageFile.name}")
         marker.createNewFile()
-        // 【2026-10-13修正】createNewFile()在標記檔已存在時（重新AI改圖的情況）不會更新
-        // 檔案時間，導致「最後改圖時間」排序抓不到這次重改；每次都強制蓋成現在時間。
-        marker.setLastModified(System.currentTimeMillis())
+        // 【2026-10-14修改】標記檔時間代表「第一次改圖完成的時間」，已AI改圖區靠它排序，
+        // 讓待處理→已AI改圖的商品排最前面。已經在已AI改圖區的商品再次重新改圖，不能
+        // 改變順序（使用者要原地確認結果）：標記檔已存在時createNewFile()本來就不會動時間；
+        // 重新改圖會換檔名的情況（去背變.png、換候選圖）則由呼叫端傳入舊標記時間keepTime
+        // 蓋回去。
+        if (keepTime > 0L) marker.setLastModified(keepTime)
     } catch (e: Exception) { /* 標記失敗頂多下次多重跑一次這張，不影響這次改圖結果 */ }
 }
 
@@ -1012,11 +1018,12 @@ private fun EditedThumbnail(
                         val backup = backupFile
                         if (backup != null) {
                             val appContext = context.applicationContext
+                            val oldMarkerTime = aiDoneMarkerTime(file)
                             ReprocessTracker.launch(file) {
                                 val outputFile = File(file.parentFile, "${file.nameWithoutExtension}.png")
                                 RemoteVideoGenerator.removeBackground(appContext, backup, outputFile)
                                 if (outputFile.path != file.path) file.delete()
-                                markImageAiDone(outputFile)
+                                markImageAiDone(outputFile, oldMarkerTime)
                             }
                         }
                     }
@@ -1032,13 +1039,14 @@ private fun EditedThumbnail(
                     onClick = {
                         menuOpen = false
                         val appContext = context.applicationContext
+                        val oldMarkerTime = aiDoneMarkerTime(file)
                         ReprocessTracker.launch(file) {
                             val provider = GeminiApiPrefs.getImageEditProvider(appContext)
                             val apiKey = GeminiApiPrefs.getApiKey(appContext)
                             val openAiApiKey = GeminiApiPrefs.getOpenAiApiKey(appContext)
                             val editPrompt = GeminiApiPrefs.getPrompt(appContext)
                             aiEditSingleImage(appContext, file, provider, apiKey, openAiApiKey, editPrompt)
-                            markImageAiDone(file)
+                            markImageAiDone(file, oldMarkerTime)
                         }
                     }
                 )
@@ -1089,6 +1097,7 @@ private fun EditedThumbnail(
             onPick = { chosen ->
                 candidatePickerOpen = false
                 val appContext = context.applicationContext
+                val oldMarkerTime = aiDoneMarkerTime(file)
                 ReprocessTracker.launch(file) {
                     val newActiveFile = withContext(Dispatchers.IO) { swapToCandidateImage(file, chosen) }
                     if (newActiveFile != null) {
@@ -1097,7 +1106,7 @@ private fun EditedThumbnail(
                         val openAiApiKey = GeminiApiPrefs.getOpenAiApiKey(appContext)
                         val editPrompt = GeminiApiPrefs.getPrompt(appContext)
                         aiEditSingleImage(appContext, newActiveFile, provider, apiKey, openAiApiKey, editPrompt)
-                        markImageAiDone(newActiveFile)
+                        markImageAiDone(newActiveFile, oldMarkerTime)
                     }
                 }
             },
@@ -2170,8 +2179,9 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
     // 【2026-09-07新增】debgOnly（只用原圖+去背）跟skipAiEdit互斥，分組時一起歸進
     // 「只用原圖」這組顯示（兩者都是「跳過正常AI改圖」的概念，暫不另外拆一組）。
     val originalOnlyProducts = remember(products) { products.filter { it.skipAiEdit || it.debgOnly } }
-    // 【2026-10-13修改】已AI改圖區改依「最後改圖時間」新到舊排序（時間相同維持原本的
-    // 擷取時間順序），手動重新改圖完成的商品會立刻跳到這一區第一位。
+    // 【2026-10-13修改，2026-10-14調整】已AI改圖區改依標記檔時間（第一次改圖完成的時間）
+    // 新到舊排序：從待處理手動改完的商品會跳到這一區第一位；已經在這區的商品再重新
+    // 改圖，標記時間不變，位置不動。
     val aiEditedProducts = remember(products) {
         products.filter { !it.skipAiEdit && !it.debgOnly && it.anyAiEdited }
             .sortedByDescending { it.lastAiEditedAt }
