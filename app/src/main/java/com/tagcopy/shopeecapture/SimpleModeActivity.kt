@@ -1188,7 +1188,9 @@ private fun ProductSelectRow(
     // 【2026-10-13修改】放大預覽改由畫面層級統一管理（才能上下滑切換到別的商品），
     // 這裡只回報「點了這個商品的第幾張圖」。
     onPreview: (Int) -> Unit,
-    onImagesChanged: () -> Unit
+    onImagesChanged: () -> Unit,
+    // 【2026-10-15新增】重複組標籤（例如「重複#3・共4個」），沒有重複就是null。
+    dupLabel: String? = null
 ) {
     val context = LocalContext.current
     // 【2026-09-07新增】多選刪除照片：進入模式後點縮圖是切換選取，跟平常「點縮圖看
@@ -1221,6 +1223,9 @@ private fun ProductSelectRow(
                 fontSize = 13.sp, color = SimpleInk, fontWeight = FontWeight.Bold,
                 maxLines = 2
             )
+            if (dupLabel != null) {
+                Text(dupLabel, fontSize = 11.sp, color = SimpleAccent, fontWeight = FontWeight.Bold)
+            }
             Spacer(Modifier.height(8.dp))
             // 【2026-09-06新增】不用點進去，直接把這個商品目前的照片（AI改圖後的成果）
             // 全部排出來；長按單張可以換原圖/刪除，取代原本獨立的「檢查修圖結果」畫面。
@@ -1663,6 +1668,9 @@ private fun swapToCandidateImage(activeFile: File, candidateFile: File): File? {
  * 複製過來、標記完成，跳過辨識選圖和AI改圖。影片和腳本一樣各自生成，不共用。
  * 只套用在「功能上線之後才擷取」的新商品（capturedAt >= 第一次啟動新版的時間）。
  */
+/** 【2026-10-15新增】重複組：groupNo是組別編號，members是組內商品資料夾名稱（擷取時間舊到新）。 */
+private data class DupTag(val groupNo: Int, val members: List<String>)
+
 private object DuplicateImageReuse {
     private const val PREFS = "dup_image_reuse"
     private const val MAX_DISTANCE = 6
@@ -1746,6 +1754,47 @@ private object DuplicateImageReuse {
         val hit = a.count { x -> b.any { y -> java.lang.Long.bitCount(x xor y) <= MAX_DISTANCE } }
         val need = if (a.size <= 1 || b.size <= 1) 1 else 2
         return hit >= need
+    }
+
+    /** 讀已存的指紋（不會現算）。 */
+    fun loadHashes(folder: File): List<Long> = readHashes(folder) ?: emptyList()
+
+    /**
+     * 【2026-10-15新增】替清單裡的商品分「重複組」（跟自動沿用同一套比對規則，連鎖相連的
+     * 商品併成同一組）。還沒選圖的商品現算候選圖指紋並存進meta.json；已選圖的只讀之前
+     * 存好的指紋（選圖後候選圖已被移走，現算會算到改好的圖，不能用）。只回傳2個以上的組。
+     */
+    fun computeGroups(products: List<GenerateQueueItem>): Map<String, DupTag> {
+        val items = products.filter { !it.skipAiEdit && !it.debgOnly }.mapNotNull { p ->
+            val h = try {
+                if (!p.selectionDone) (if (p.imagePaths.isEmpty()) emptyList() else ensureHashes(p.folder, p.imagePaths)) else loadHashes(p.folder)
+            } catch (e: Exception) { emptyList() }
+            if (h.isEmpty()) null else p to h
+        }
+        val parent = IntArray(items.size) { it }
+        fun find(x: Int): Int {
+            var r = x
+            while (parent[r] != r) r = parent[r]
+            var c = x
+            while (parent[c] != r) { val n = parent[c]; parent[c] = r; c = n }
+            return r
+        }
+        for (i in items.indices) for (j in i + 1 until items.size) {
+            if (matches(items[i].second, items[j].second)) {
+                val a = find(i); val b = find(j)
+                if (a != b) parent[b] = a
+            }
+        }
+        val groups = items.indices.groupBy { find(it) }.values.filter { it.size >= 2 }
+            .map { idxs -> idxs.map { items[it].first } }
+            .sortedBy { g -> g.minOf { it.folder.name } }
+        val result = HashMap<String, DupTag>()
+        groups.forEachIndexed { gi, members ->
+            val names = members.sortedWith(compareBy({ it.capturedAt }, { it.folder.name })).map { it.folder.name }
+            val tag = DupTag(gi + 1, names)
+            names.forEach { result[it] = tag }
+        }
+        return result
     }
 
     /** 找到可沿用的來源商品就複製改好的圖過來，回傳來源資料夾名稱；沒有回傳null。 */
@@ -2020,6 +2069,14 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
     // productsRefreshKey遞增就觸發重新讀取，畫面先進去、資料非同步補上不擋UI。
     var products by remember { mutableStateOf<List<GenerateQueueItem>>(emptyList()) }
     var productsRefreshKey by remember { mutableStateOf(0) }
+    // 【2026-10-15新增】重複商品分組（資料夾名稱 -> 所屬重複組）。商品清單載入後在背景算
+    // 指紋比對；算完才更新，畫面先用原本的順序顯示，不擋UI。
+    var dupTags by remember { mutableStateOf<Map<String, DupTag>>(emptyMap()) }
+    LaunchedEffect(products) {
+        if (products.isNotEmpty()) {
+            dupTags = withContext(Dispatchers.IO) { DuplicateImageReuse.computeGroups(products) }
+        }
+    }
     // 【2026-09-21修正】genListState/genScrollScope原本宣告在「pickedProduct != null」
     // 提前return之後——進選圖畫面時會提前return，導致這兩個remember完全沒被執行到；
     // 從選圖畫面返回時，Compose的slot table對不上原本位置，等於視為全新的remember，
@@ -2207,11 +2264,38 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
     // 【2026-10-13修改，2026-10-14調整】已AI改圖區改依標記檔時間（第一次改圖完成的時間）
     // 新到舊排序：從待處理手動改完的商品會跳到這一區第一位；已經在這區的商品再重新
     // 改圖，標記時間不變，位置不動。
-    val aiEditedProducts = remember(products) {
-        products.filter { !it.skipAiEdit && !it.debgOnly && it.anyAiEdited }
-            .sortedByDescending { it.lastAiEditedAt }
+    // 【2026-10-15新增】同一重複組的商品在各區內排在一起（組出現在組內最前面那個商品的位置）。
+    fun groupAdjacent(list: List<GenerateQueueItem>): List<GenerateQueueItem> {
+        if (dupTags.isEmpty()) return list
+        val emitted = mutableSetOf<Int>()
+        val out = mutableListOf<GenerateQueueItem>()
+        for (p in list) {
+            val tag = dupTags[p.folder.name]
+            if (tag == null) { out.add(p); continue }
+            if (!emitted.add(tag.groupNo)) continue
+            out.addAll(list.filter { dupTags[it.folder.name]?.groupNo == tag.groupNo })
+        }
+        return out
     }
-    val pendingProducts = remember(products) { products.filter { !it.skipAiEdit && !it.debgOnly && !it.anyAiEdited } }
+    val aiEditedProducts = remember(products, dupTags) {
+        groupAdjacent(
+            products.filter { !it.skipAiEdit && !it.debgOnly && it.anyAiEdited }
+                .sortedByDescending { it.lastAiEditedAt }
+        )
+    }
+    val pendingProducts = remember(products, dupTags) {
+        groupAdjacent(products.filter { !it.skipAiEdit && !it.debgOnly && !it.anyAiEdited })
+    }
+    // 重複組裡「已經選圖＋全部照片都AI改完」的組別：組內其他未改圖商品可以直接沿用。
+    val doneDupGroups = remember(products, dupTags) {
+        products.filter { it.selectionDone && it.aiProcessed && !it.skipAiEdit && !it.debgOnly }
+            .mapNotNull { dupTags[it.folder.name]?.groupNo }.toSet()
+    }
+    fun dupLabelOf(p: GenerateQueueItem): String? {
+        val tag = dupTags[p.folder.name] ?: return null
+        val ready = tag.groupNo in doneDupGroups && !(p.selectionDone && p.aiProcessed)
+        return "重複#${tag.groupNo}・共${tag.members.size}個" + if (ready) "・已有改好的可沿用" else ""
+    }
     // 【2026-10-13新增】開啟預覽用的商品快照（依畫面上由上到下的順序，附分組名稱＋組內編號），
     // 以及「某個商品在LazyColumn裡是第幾個item」的換算（跳出預覽時捲動定位用）。
     fun buildPreviewProducts(): List<PreviewProduct> =
@@ -2283,7 +2367,23 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                             Text("全不選", fontSize = 13.sp, color = SimpleInk)
                         }
                         TextButton(onClick = {
-                            selectedIds = products.filter { !it.aiProcessed }.map { it.folder.name }.toSet()
+                            // 【2026-10-15修改】重複組的規則：組內還沒有任何一個改完 → 只勾第一個
+                            // （改完檢查沒問題後再按一次，其餘重複商品就會直接沿用，不再花AI費用）；
+                            // 組內已有改好的 → 其餘未改圖的全部勾選。沒有重複的商品照舊。
+                            val sinceT = DuplicateImageReuse.since(context)
+                            val ids = mutableSetOf<String>()
+                            val pickedGroups = mutableSetOf<Int>()
+                            for (p in pendingProducts + aiEditedProducts + originalOnlyProducts) {
+                                if (p.aiProcessed) continue
+                                val tag = dupTags[p.folder.name]
+                                when {
+                                    tag == null || p.capturedAt < sinceT || p.skipAiEdit || p.debgOnly ->
+                                        ids.add(p.folder.name)
+                                    tag.groupNo in doneDupGroups -> ids.add(p.folder.name)
+                                    pickedGroups.add(tag.groupNo) -> ids.add(p.folder.name)
+                                }
+                            }
+                            selectedIds = ids
                         }) {
                             Text("只選未改圖", fontSize = 13.sp, color = SimpleInk)
                         }
@@ -2336,7 +2436,8 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                             val at = snapshot.indexOfFirst { it.item.folder.name == product.folder.name }
                             if (at >= 0) previewSession = Triple(snapshot, at, imageIndex)
                         },
-                        onImagesChanged = { productsRefreshKey++ }
+                        onImagesChanged = { productsRefreshKey++ },
+                        dupLabel = dupLabelOf(product)
                     )
                     Spacer(Modifier.height(8.dp))
                 }
@@ -2363,7 +2464,8 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                             val at = snapshot.indexOfFirst { it.item.folder.name == product.folder.name }
                             if (at >= 0) previewSession = Triple(snapshot, at, imageIndex)
                         },
-                        onImagesChanged = { productsRefreshKey++ }
+                        onImagesChanged = { productsRefreshKey++ },
+                        dupLabel = dupLabelOf(product)
                     )
                     Spacer(Modifier.height(8.dp))
                 }
@@ -2390,7 +2492,8 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                             val at = snapshot.indexOfFirst { it.item.folder.name == product.folder.name }
                             if (at >= 0) previewSession = Triple(snapshot, at, imageIndex)
                         },
-                        onImagesChanged = { productsRefreshKey++ }
+                        onImagesChanged = { productsRefreshKey++ },
+                        dupLabel = dupLabelOf(product)
                     )
                     Spacer(Modifier.height(8.dp))
                 }
