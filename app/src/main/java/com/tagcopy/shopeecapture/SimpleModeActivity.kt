@@ -403,7 +403,10 @@ private data class GenerateQueueItem(
     // 【2026-10-13新增】這個商品「最後一次完成AI改圖」的時間（取各張照片.ai_done_標記檔
     // 的最新修改時間），給「已AI改圖」區排序用：剛改完的商品排最前面，不用再從
     // 擷取時間排序的清單裡翻找。沒有任何標記檔（舊資料）就是0，排在最後面。
-    val lastAiEditedAt: Long = 0L
+    val lastAiEditedAt: Long = 0L,
+    // 【2026-10-15新增】這個商品的圖是沿用哪個商品改好的圖（meta.json的dupOf，資料夾名稱），
+    // 沒有沿用就是空字串。給清單標籤顯示「沿用自…」，方便發現誤判。
+    val dupOf: String = ""
 )
 
 /**
@@ -595,6 +598,7 @@ private fun loadCapturedProducts(root: File): List<GenerateQueueItem> {
                 aiProcessed = images.isNotEmpty() && images.all { isImageAiDone(it) },
                 skipAiEdit = File(dir, ".skip_ai_edit").exists(),
                 debgOnly = File(dir, ".skip_ai_edit_debg").exists(),
+                dupOf = metaJson?.optString("dupOf", "") ?: "",
                 anyAiEdited = images.any { isImageAiDone(it) },
                 // capturedAt讀不到（例如更早期沒有這個欄位的舊資料）就退回folder.lastModified()，
                 // 至少不會讓這幾筆舊資料整批消失或排序整個亂掉，只是行為退回原本那樣。
@@ -1673,7 +1677,7 @@ private data class DupTag(val groupNo: Int, val members: List<String>)
 
 private object DuplicateImageReuse {
     private const val PREFS = "dup_image_reuse"
-    private const val MAX_DISTANCE = 6
+    private const val MAX_DISTANCE = 4
 
     class Entry(val folder: File, val hashes: List<Long>)
 
@@ -1750,9 +1754,25 @@ private object DuplicateImageReuse {
         return images.isNotEmpty() && images.all { isImageAiDone(it) }
     }
 
+    // 【2026-10-15修正】原本把純白/純黑/大面積單色的圖（規格文字頁、橘色色塊banner、黑邊圖）
+    // 也拿來比對：這種圖的指紋幾乎全0或全1，彼此距離很近，導致完全不同的商品被誤判成重複
+    // （實測SSD隨身碟跟PS Portal被分成同一組）。改成：①先排除「資訊量太低」的指紋
+    // （1的位元數不在12~52之間）；②門檻6→4；③兩邊的圖一對一配對（同一張圖不能被重複算）；
+    // ④對得上的張數至少要有較少那邊（有效指紋數）的40%，且至少2張（只有1張時1張就算）。
+    private fun informative(h: Long): Boolean = java.lang.Long.bitCount(h) in 12..52
+
     private fun matches(a: List<Long>, b: List<Long>): Boolean {
-        val hit = a.count { x -> b.any { y -> java.lang.Long.bitCount(x xor y) <= MAX_DISTANCE } }
-        val need = if (a.size <= 1 || b.size <= 1) 1 else 2
+        val ia = a.filter { informative(it) }
+        val ib = b.filter { informative(it) }
+        if (ia.isEmpty() || ib.isEmpty()) return false
+        val used = BooleanArray(ib.size)
+        var hit = 0
+        for (x in ia) {
+            val j = ib.indices.firstOrNull { !used[it] && java.lang.Long.bitCount(x xor ib[it]) <= MAX_DISTANCE }
+            if (j != null) { used[j] = true; hit++ }
+        }
+        val small = minOf(ia.size, ib.size)
+        val need = if (small <= 1) 1 else maxOf(2, Math.ceil(small * 0.4).toInt())
         return hit >= need
     }
 
@@ -2292,9 +2312,17 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
             .mapNotNull { dupTags[it.folder.name]?.groupNo }.toSet()
     }
     fun dupLabelOf(p: GenerateQueueItem): String? {
-        val tag = dupTags[p.folder.name] ?: return null
-        val ready = tag.groupNo in doneDupGroups && !(p.selectionDone && p.aiProcessed)
-        return "重複#${tag.groupNo}・共${tag.members.size}個" + if (ready) "・已有改好的可沿用" else ""
+        val parts = mutableListOf<String>()
+        val tag = dupTags[p.folder.name]
+        if (tag != null) {
+            val ready = tag.groupNo in doneDupGroups && !(p.selectionDone && p.aiProcessed)
+            parts.add("重複#${tag.groupNo}・共${tag.members.size}個" + if (ready) "・已有改好的可沿用" else "")
+        }
+        if (p.dupOf.isNotBlank()) {
+            val srcName = products.firstOrNull { it.folder.name == p.dupOf }?.productName ?: p.dupOf
+            parts.add("沿用自：" + srcName.take(18))
+        }
+        return if (parts.isEmpty()) null else parts.joinToString("\n")
     }
     // 【2026-10-13新增】開啟預覽用的商品快照（依畫面上由上到下的順序，附分組名稱＋組內編號），
     // 以及「某個商品在LazyColumn裡是第幾個item」的換算（跳出預覽時捲動定位用）。
