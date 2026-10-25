@@ -406,7 +406,14 @@ private data class GenerateQueueItem(
     val lastAiEditedAt: Long = 0L,
     // 【2026-10-15新增】這個商品的圖是沿用哪個商品改好的圖（meta.json的dupOf，資料夾名稱），
     // 沒有沿用就是空字串。給清單標籤顯示「沿用自…」，方便發現誤判。
-    val dupOf: String = ""
+    val dupOf: String = "",
+    // 【2026-10-25新增】手動重複分組：dupManual是組別id（空字串＝沒有手動分組），dupMaster是這個
+    // 商品是不是該組的主商品，dupExclude＝使用者按過「取消重複」，自動比對不再把它併進任何組。
+    val dupManual: String = "",
+    val dupMaster: Boolean = false,
+    val dupExclude: Boolean = false,
+    // 【2026-10-25新增】這個商品的圖是在「人工選圖」畫面手動選的（.manual_selected標記）。
+    val manualSelected: Boolean = false
 )
 
 /**
@@ -599,6 +606,10 @@ private fun loadCapturedProducts(root: File): List<GenerateQueueItem> {
                 skipAiEdit = File(dir, ".skip_ai_edit").exists(),
                 debgOnly = File(dir, ".skip_ai_edit_debg").exists(),
                 dupOf = metaJson?.optString("dupOf", "") ?: "",
+                dupManual = metaJson?.optString("dupManual", "") ?: "",
+                dupMaster = metaJson?.optBoolean("dupMaster", false) ?: false,
+                dupExclude = metaJson?.optBoolean("dupExclude", false) ?: false,
+                manualSelected = File(dir, ".manual_selected").exists(),
                 anyAiEdited = images.any { isImageAiDone(it) },
                 // capturedAt讀不到（例如更早期沒有這個欄位的舊資料）就退回folder.lastModified()，
                 // 至少不會讓這幾筆舊資料整批消失或排序整個亂掉，只是行為退回原本那樣。
@@ -920,6 +931,11 @@ private object ReprocessTracker {
         appScope.launch {
             try {
                 block()
+                // 【2026-10-25新增】這個商品改完圖後，把新圖同步給沿用它的商品（dupOf指向它、
+                // 且沒被使用者個別再修改過的）。
+                file.parentFile?.let { dir ->
+                    withContext(Dispatchers.IO) { DuplicateImageReuse.syncFollowers(dir) }
+                }
             } catch (e: Exception) {
                 /* 單張失敗不影響其他工作，保留現有圖片 */
             } finally {
@@ -1286,7 +1302,7 @@ private fun ProductSelectRow(
             Spacer(Modifier.height(6.dp))
             Text(
                 buildString {
-                    if (product.selectionDone) append("已選圖")
+                    if (product.selectionDone) append(if (product.manualSelected) "已選圖（手選）" else "已選圖")
                     // 【2026-09-07新增】debgOnly走的是去背，不是AI改圖，狀態文字要分開講，
                     // 不然「已AI改圖」會讓人誤以為背景是AI生成的情境圖，其實只是單純去背。
                     if (product.debgOnly) {
@@ -1398,15 +1414,24 @@ private fun ProductSelectRow(
  * 沒打勾的圖片直接刪除——只有這裡選定的圖片會留下來，之後生成影片只會用到這幾張。
  */
 @Composable
-private fun ImageSelectionContent(context: Context, product: GenerateQueueItem, onDone: () -> Unit) {
+private fun ImageSelectionContent(
+    context: Context,
+    product: GenerateQueueItem,
+    // 【2026-10-25新增】逐一手選模式時顯示進度（例如「(2/8)」），一般單獨進來是null。
+    queueLabel: String?,
+    onDone: () -> Unit,
+    // 確認選圖後呼叫（逐一手選模式用來跳下一個商品）；一般模式等同onDone。
+    onConfirmed: () -> Unit
+) {
     // 預設全不選：使用者自己挑要保留的幾張，比全選後再取消不要的更符合預期。
-    var chosen by remember { mutableStateOf(emptySet<String>()) }
+    // 【2026-10-25修改】改成依「點選順序」記錄：第1個點的圖會變成image_1（影片只用第1張圖）。
+    var chosenOrder by remember { mutableStateOf(listOf<String>()) }
     var errorText by remember { mutableStateOf<String?>(null) }
 
     androidx.activity.compose.BackHandler(enabled = true) { onDone() }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        SimpleTopBar(product.productName ?: "選擇圖片", onDone)
+        SimpleTopBar((queueLabel?.let { "$it " } ?: "") + (product.productName ?: "選擇圖片"), onDone)
         Column(
             modifier = Modifier
                 .padding(horizontal = 20.dp)
@@ -1414,7 +1439,7 @@ private fun ImageSelectionContent(context: Context, product: GenerateQueueItem, 
         ) {
             InstructionCard(
                 lines = listOf(
-                    "點選圖片可以打勾／取消，只有打勾的圖片會保留下來，其餘直接刪除（預設全部不勾選）",
+                    "點選圖片可以打勾／取消，只有打勾的圖片會保留下來（預設全部不勾選）。圖上的數字是點選順序，第1個點的圖就是影片用的主圖",
                     if (GeminiApiPrefs.isEnabled(context))
                         "確認選圖後不會馬上處理，全部商品選完後到浮球按「AI改圖」，會一次背景批次處理"
                     else
@@ -1430,7 +1455,8 @@ private fun ImageSelectionContent(context: Context, product: GenerateQueueItem, 
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(product.imagePaths) { file ->
-                    val isChosen = chosen.contains(file.name)
+                    val chosenPos = chosenOrder.indexOf(file.name)
+                    val isChosen = chosenPos >= 0
                     val decodeResult = remember(file.path) { decodeSampledBitmap(file.path, 120) }
                     val bitmap = decodeResult.first
                     val errorReason = decodeResult.second
@@ -1439,7 +1465,7 @@ private fun ImageSelectionContent(context: Context, product: GenerateQueueItem, 
                             .size(120.dp)
                             .background(Color(0xFFE0DCD4))
                             .clickable {
-                                chosen = if (isChosen) chosen - file.name else chosen + file.name
+                                chosenOrder = if (isChosen) chosenOrder - file.name else chosenOrder + file.name
                             }
                     ) {
                         if (bitmap != null) {
@@ -1478,7 +1504,8 @@ private fun ImageSelectionContent(context: Context, product: GenerateQueueItem, 
                         ) {
                             if (isChosen) {
                                 Text(
-                                    "✓", color = Color.White, fontSize = 14.sp,
+                                    "${chosenPos + 1}", color = Color.White, fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
                                     modifier = Modifier.align(Alignment.Center)
                                 )
                             }
@@ -1497,12 +1524,12 @@ private fun ImageSelectionContent(context: Context, product: GenerateQueueItem, 
             BigActionButton(
                 text = "確認選圖",
                 color = SimpleInk,
-                enabled = chosen.isNotEmpty(),
+                enabled = chosenOrder.isNotEmpty(),
                 onClick = {
                     errorText = null
                     try {
-                        applyImageSelection(product.folder, product.imagePaths, chosen)
-                        onDone()
+                        applyImageSelection(product.folder, product.imagePaths, chosenOrder, manual = true)
+                        onConfirmed()
                     } catch (e: Exception) {
                         errorText = "處理失敗：${e.message}"
                     }
@@ -1529,51 +1556,63 @@ private fun ImageSelectionContent(context: Context, product: GenerateQueueItem, 
 private fun applyImageSelection(
     folder: File,
     allImages: List<File>,
-    chosenNames: Set<String>
+    // 【2026-10-25修改】傳List時依List順序重新編號（手選：點選順序＝新編號順序）；
+    // 傳Set（AI自動選圖）維持原本依檔案編號由小到大。
+    chosenNames: Collection<String>,
+    // true＝使用者在人工選圖畫面手動選的，寫.manual_selected標記；AI自動選圖會把這個標記清掉。
+    manual: Boolean = false
 ) {
-    val kept = mutableListOf<File>()
+    val chosenSet = chosenNames.toSet()
+    val kept: List<File> = if (chosenNames is List<*>) {
+        chosenNames.mapNotNull { n -> allImages.firstOrNull { it.name == n } }
+    } else {
+        allImages.filter { it.name in chosenSet }
+    }
     for (file in allImages) {
-        if (file.name !in chosenNames) {
-            // 【2026-09-13修正】原本沒被選中的候選圖直接刪除，改成用.candidate_前綴
-            // 標記保留在原資料夾（不重新命名檔名裡的編號，只加前綴），供「從候選圖
-            // 選一張改圖代替」功能使用；改名失敗（極少見）保守起見直接刪除，避免
-            // 殘留成一般圖片被loadCapturedProducts()誤判成正式使用中的圖。
+        if (file.name !in chosenSet) {
+            // 【2026-09-13修正】沒被選中的候選圖用.candidate_前綴保留在原資料夾，供「從候選圖
+            // 選一張改圖代替」使用；改名失敗（極少見）保守起見直接刪除，避免殘留成一般圖片。
             val candidateFile = File(file.parentFile, ".candidate_${file.name}")
             if (!file.renameTo(candidateFile)) {
                 file.delete()
             }
             File(file.parentFile, ".orig_${file.name}").delete()
             File(file.parentFile, ".ai_done_${file.name}").delete()
-        } else {
-            kept.add(file)
         }
     }
 
-    // 重新編號：kept是依原本編號由小到大排的，第k個（0-index）的目標編號是k+1，
-    // 一定 <= 它原本的編號（因為前面最多k個檔案被跳過/已重新命名挪走），所以依序
-    // 處理不會發生「要改的目標檔名還被別的檔案佔用」的衝突，不需要額外用暫存檔名。
-    // 【2026-09-06調整】改名的同時把對應的.orig_備份也一併改名（保留備份跟照片的
-    // 對應關係，不然重新編號後.orig_開頭的備份會對不到新檔名，變成孤兒檔案）；
-    // 不管有沒有實際改名，這張的.ai_done_標記都直接清掉——選圖結果變了，每張照片
-    // 各自的「已改圖」標記不再有效，要重新排進下一次AI改圖批次（跟原本整個商品
-    // 共用一個`.ai_processed`標記時的邏輯一致，只是現在改成逐張處理）。
+    // 重新編號：選圖結果變了，每張照片各自的「已改圖」標記不再有效（清掉，重新排進下一次
+    // AI改圖批次）。【2026-10-25修改】因為現在可以依點選順序編號（新編號不一定<=原編號），
+    // 改成兩階段：先全部改成暫存檔名、再改成最終image_N，避免目標檔名還被別的檔案佔用。
+    // .orig_備份跟著照片一起改名，維持對應關係。
+    val tempFiles = mutableListOf<Triple<File, File?, String>>() // 暫存圖、暫存備份、副檔名
     kept.forEachIndexed { index, file ->
-        val newIndex = index + 1
         val ext = file.extension.ifBlank { "jpg" }
-        val newFile = File(folder, "image_$newIndex.$ext")
-        val oldBackup = File(folder, ".orig_${file.name}")
         File(folder, ".ai_done_${file.name}").delete()
-        if (file.path != newFile.path) {
-            file.renameTo(newFile)
-            if (oldBackup.exists()) {
-                oldBackup.renameTo(File(folder, ".orig_${newFile.name}"))
-            }
+        val tmp = File(folder, ".sel_tmp_$index.$ext")
+        if (!file.renameTo(tmp)) {
+            file.copyTo(tmp, overwrite = true)
+            file.delete()
         }
+        val oldBackup = File(folder, ".orig_${file.name}")
+        var tmpBackup: File? = null
+        if (oldBackup.exists()) {
+            val tb = File(folder, ".sel_tmpb_$index")
+            if (oldBackup.renameTo(tb)) tmpBackup = tb
+        }
+        tempFiles.add(Triple(tmp, tmpBackup, ext))
+    }
+    tempFiles.forEachIndexed { index, (tmp, tmpBackup, ext) ->
+        val newFile = File(folder, "image_${index + 1}.$ext")
+        tmp.renameTo(newFile)
+        tmpBackup?.renameTo(File(folder, ".orig_${newFile.name}"))
     }
 
     File(folder, ".image_selection_done").createNewFile()
-    // 舊版遺留的商品層級.ai_processed標記（這個功能上線前處理過的商品）也一併清掉，
-    // 避免isImageAiDone()的向下相容判斷把重新選圖後的照片誤判成已經改過。
+    val manualMarker = File(folder, ".manual_selected")
+    if (manual) manualMarker.createNewFile() else manualMarker.delete()
+    // 舊版遺留的商品層級.ai_processed標記也一併清掉，避免isImageAiDone()的向下相容判斷把
+    // 重新選圖後的照片誤判成已經改過。
     File(folder, ".ai_processed").delete()
 }
 
@@ -1673,7 +1712,13 @@ private fun swapToCandidateImage(activeFile: File, candidateFile: File): File? {
  * 只套用在「功能上線之後才擷取」的新商品（capturedAt >= 第一次啟動新版的時間）。
  */
 /** 【2026-10-15新增】重複組：groupNo是組別編號，members是組內商品資料夾名稱（擷取時間舊到新）。 */
-private data class DupTag(val groupNo: Int, val members: List<String>)
+private data class DupTag(
+    val groupNo: Int,
+    val members: List<String>,
+    // 【2026-10-25新增】manual＝使用者手動分的組；master＝組內主商品的資料夾名稱（沒指定是null）。
+    val manual: Boolean = false,
+    val master: String? = null
+)
 
 private object DuplicateImageReuse {
     private const val PREFS = "dup_image_reuse"
@@ -1738,7 +1783,12 @@ private object DuplicateImageReuse {
     fun buildIndex(root: File?): MutableList<Entry> {
         val list = mutableListOf<Entry>()
         root?.listFiles { f -> f.isDirectory }?.forEach { dir ->
-            readHashes(dir)?.takeIf { it.isNotEmpty() }?.let { list.add(Entry(dir, it)) }
+            // 【2026-10-25】按過「取消重複」或已手動分組的商品，不參與自動比對。
+            val skip = try {
+                val m = JSONObject(File(dir, "meta.json").readText())
+                m.optBoolean("dupExclude", false) || m.optString("dupManual", "").isNotBlank()
+            } catch (e: Exception) { false }
+            if (!skip) readHashes(dir)?.takeIf { it.isNotEmpty() }?.let { list.add(Entry(dir, it)) }
         }
         return list
     }
@@ -1776,6 +1826,8 @@ private object DuplicateImageReuse {
         return hit >= need
     }
 
+    fun sourceReady(folder: File): Boolean = isSourceReady(folder)
+
     /** 讀已存的指紋（不會現算）。 */
     fun loadHashes(folder: File): List<Long> = readHashes(folder) ?: emptyList()
 
@@ -1785,12 +1837,22 @@ private object DuplicateImageReuse {
      * 存好的指紋（選圖後候選圖已被移走，現算會算到改好的圖，不能用）。只回傳2個以上的組。
      */
     fun computeGroups(products: List<GenerateQueueItem>): Map<String, DupTag> {
-        val items = products.filter { !it.skipAiEdit && !it.debgOnly }.mapNotNull { p ->
-            val h = try {
-                if (!p.selectionDone) (if (p.imagePaths.isEmpty()) emptyList() else ensureHashes(p.folder, p.imagePaths)) else loadHashes(p.folder)
-            } catch (e: Exception) { emptyList() }
-            if (h.isEmpty()) null else p to h
-        }
+        val result = HashMap<String, DupTag>()
+        val groupsOut = mutableListOf<Triple<List<GenerateQueueItem>, Boolean, String?>>()
+
+        // ① 手動分組：同一個dupManual id就是同一組，不看圖片指紋。
+        products.filter { !it.skipAiEdit && !it.debgOnly && it.dupManual.isNotBlank() }
+            .groupBy { it.dupManual }.values.filter { it.size >= 2 }
+            .forEach { members -> groupsOut.add(Triple(members, true, members.firstOrNull { it.dupMaster }?.folder?.name)) }
+
+        // ② 自動比對：排除手動分組的、按過「取消重複」的商品。
+        val items = products.filter { !it.skipAiEdit && !it.debgOnly && it.dupManual.isBlank() && !it.dupExclude }
+            .mapNotNull { p ->
+                val h = try {
+                    if (!p.selectionDone) (if (p.imagePaths.isEmpty()) emptyList() else ensureHashes(p.folder, p.imagePaths)) else loadHashes(p.folder)
+                } catch (e: Exception) { emptyList() }
+                if (h.isEmpty()) null else p to h
+            }
         val parent = IntArray(items.size) { it }
         fun find(x: Int): Int {
             var r = x
@@ -1805,16 +1867,122 @@ private object DuplicateImageReuse {
                 if (a != b) parent[b] = a
             }
         }
-        val groups = items.indices.groupBy { find(it) }.values.filter { it.size >= 2 }
-            .map { idxs -> idxs.map { items[it].first } }
-            .sortedBy { g -> g.minOf { it.folder.name } }
-        val result = HashMap<String, DupTag>()
-        groups.forEachIndexed { gi, members ->
-            val names = members.sortedWith(compareBy({ it.capturedAt }, { it.folder.name })).map { it.folder.name }
-            val tag = DupTag(gi + 1, names)
+        items.indices.groupBy { find(it) }.values.filter { it.size >= 2 }
+            .forEach { idxs -> groupsOut.add(Triple(idxs.map { items[it].first }, false, null)) }
+
+        groupsOut.sortedBy { g -> g.first.minOf { it.folder.name } }.forEachIndexed { gi, g ->
+            val members = g.first
+            val manual = g.second
+            val master = g.third
+            val names = members.sortedWith(
+                compareBy({ if (it.folder.name == master) 0 else 1 }, { it.capturedAt }, { it.folder.name })
+            ).map { it.folder.name }
+            val tag = DupTag(gi + 1, names, manual, master)
             names.forEach { result[it] = tag }
         }
         return result
+    }
+
+    // ===== 2026-10-25新增：手動重複相關 =====
+
+    /** 讀改meta.json：block裡直接改JSONObject，寫回失敗回傳false。 */
+    fun editMeta(folder: File, block: (JSONObject) -> Unit): Boolean = try {
+        val metaFile = File(folder, "meta.json")
+        val json = JSONObject(metaFile.readText())
+        block(json)
+        metaFile.writeText(json.toString())
+        true
+    } catch (e: Exception) { false }
+
+    /** 手動分組的商品要沿用誰的圖：優先主商品，其次組內任何一個已經全部改完的。 */
+    fun manualSource(target: GenerateQueueItem, all: List<GenerateQueueItem>): File? {
+        if (target.dupManual.isBlank()) return null
+        val others = all.filter { it.dupManual == target.dupManual && it.folder.path != target.folder.path }
+        return (others.filter { it.dupMaster } + others.filter { !it.dupMaster })
+            .firstOrNull { isSourceReady(it.folder) }?.folder
+    }
+
+    /** 標記一組商品為手動重複：每個商品寫同一個dupManual id，master是主商品，並清掉dupExclude。 */
+    fun markManualGroup(folders: List<File>, master: File): String {
+        val id = "m" + System.currentTimeMillis()
+        folders.forEach { f ->
+            editMeta(f) { json ->
+                json.put("dupManual", id)
+                json.put("dupMaster", f.path == master.path)
+                json.remove("dupExclude")
+            }
+        }
+        return id
+    }
+
+    /** 取消重複：移出手動分組，並標記自動比對也不要再併進任何組。已複製來的圖維持原樣。 */
+    fun unmarkGroup(folders: List<File>) {
+        folders.forEach { f ->
+            editMeta(f) { json ->
+                json.remove("dupManual")
+                json.remove("dupMaster")
+                json.put("dupExclude", true)
+            }
+        }
+    }
+
+    /**
+     * 把來源商品改好的圖整組複製到目標商品（覆蓋目標目前的圖）。第一次複製時目標原本的圖
+     * 改名放進候選圖池；之後同步（目標的dupOf已經是這個來源）則直接刪掉舊的複製品，
+     * 不再塞進候選圖池，避免候選圖池被改過的圖污染。成功回傳true。
+     */
+    fun copyFromSource(sourceFolder: File, dest: File): Boolean {
+        return try {
+            val alreadyFollower = try {
+                JSONObject(File(dest, "meta.json").readText()).optString("dupOf", "") == sourceFolder.name
+            } catch (e: Exception) { false }
+            val oldMarkers = HashMap<String, Long>()
+            currentImagesOf(dest).forEach { f ->
+                oldMarkers[f.nameWithoutExtension] = aiDoneMarkerTime(f)
+                if (alreadyFollower) f.delete()
+                else if (!f.renameTo(File(dest, ".candidate_${f.name}"))) f.delete()
+            }
+            dest.listFiles { f -> f.name.startsWith(".orig_image_") || f.name.startsWith(".ai_done_image_") }
+                ?.forEach { it.delete() }
+            File(dest, ".ai_processed").delete()
+            File(dest, ".manual_selected").delete()
+            currentImagesOf(sourceFolder).forEach { src ->
+                val copied = File(dest, src.name)
+                src.copyTo(copied, overwrite = true)
+                findBackupFile(src)?.let { backup ->
+                    backup.copyTo(File(dest, ".orig_${src.nameWithoutExtension}.${backup.extension}"), overwrite = true)
+                }
+                val old = oldMarkers[src.nameWithoutExtension] ?: 0L
+                markImageAiDone(copied, if (old > 0L) old else 0L)
+            }
+            File(dest, ".image_selection_done").createNewFile()
+            editMeta(dest) { json ->
+                json.put("dupOf", sourceFolder.name)
+                json.put("dupSyncedAt", System.currentTimeMillis())
+            }
+            true
+        } catch (e: Exception) { false }
+    }
+
+    /**
+     * 主商品（或任何被別人沿用的商品）再次修改圖片後，把新圖同步給沿用它的商品：
+     * 找出meta.json的dupOf指向這個商品的所有商品，已經被使用者個別再修改過的跳過
+     * （圖片檔修改時間晚於dupSyncedAt超過3秒）。回傳同步了幾個。
+     */
+    fun syncFollowers(sourceFolder: File): Int {
+        val root = sourceFolder.parentFile ?: return 0
+        var n = 0
+        root.listFiles { f -> f.isDirectory && f.path != sourceFolder.path }?.forEach { dir ->
+            try {
+                val meta = JSONObject(File(dir, "meta.json").readText())
+                if (meta.optString("dupOf", "") != sourceFolder.name) return@forEach
+                val syncedAt = meta.optLong("dupSyncedAt", 0L)
+                val touched = syncedAt > 0L && currentImagesOf(dir).any { it.lastModified() > syncedAt + 3000L }
+                if (touched) return@forEach
+                if (isSourceReady(sourceFolder) && copyFromSource(sourceFolder, dir)) n++
+            } catch (e: Exception) { /* 單一商品同步失敗不影響其他 */ }
+        }
+        return n
     }
 
     /** 找到可沿用的來源商品就複製改好的圖過來，回傳來源資料夾名稱；沒有回傳null。 */
@@ -1823,35 +1991,7 @@ private object DuplicateImageReuse {
         val source = index.firstOrNull { e ->
             e.folder.path != target.folder.path && isSourceReady(e.folder) && matches(targetHashes, e.hashes)
         } ?: return null
-        return try {
-            val dest = target.folder
-            // 目標商品原本擷取的圖改名放進候選圖池（.candidate_），之後仍可用「從候選圖選一張
-            // 改圖代替」；同時避免殘留成一般圖片被誤當成使用中的圖。
-            currentImagesOf(dest).forEach { f ->
-                if (!f.renameTo(File(dest, ".candidate_${f.name}"))) f.delete()
-            }
-            dest.listFiles { f -> f.name.startsWith(".orig_image_") || f.name.startsWith(".ai_done_image_") }
-                ?.forEach { it.delete() }
-            File(dest, ".ai_processed").delete()
-            currentImagesOf(source.folder).forEach { src ->
-                val copied = File(dest, src.name)
-                src.copyTo(copied, overwrite = true)
-                findBackupFile(src)?.let { backup ->
-                    backup.copyTo(File(dest, ".orig_${src.nameWithoutExtension}.${backup.extension}"), overwrite = true)
-                }
-                markImageAiDone(copied)
-            }
-            File(dest, ".image_selection_done").createNewFile()
-            try {
-                val metaFile = File(dest, "meta.json")
-                val json = JSONObject(metaFile.readText())
-                json.put("dupOf", source.folder.name)
-                metaFile.writeText(json.toString())
-            } catch (e: Exception) { /* 記錄來源失敗不影響沿用結果 */ }
-            source.folder.name
-        } catch (e: Exception) {
-            null
-        }
+        return if (copyFromSource(source.folder, target.folder)) source.folder.name else null
     }
 }
 
@@ -1886,7 +2026,14 @@ private suspend fun runAutoSelectAndEditPipeline(
         DuplicateImageReuse.buildIndex(products.firstOrNull()?.folder?.parentFile)
     }
 
-    products.forEachIndexed { idx, product ->
+    // 【2026-10-25新增】手動重複組：主商品先處理，其餘成員排後面，這樣主商品改完圖，
+    // 同一批裡的其他成員才能直接沿用。
+    val allItems = withContext(Dispatchers.IO) {
+        products.firstOrNull()?.folder?.parentFile?.let { loadCapturedProducts(it) } ?: emptyList()
+    }
+    val ordered = products.sortedBy { if (it.dupManual.isNotBlank() && !it.dupMaster) 1 else 0 }
+
+    ordered.forEachIndexed { idx, product ->
         val label = product.productName ?: product.folder.name
         val progressPrefix = "(${idx + 1}/${products.size}) $label"
         var currentImages = product.imagePaths
@@ -1896,7 +2043,27 @@ private suspend fun runAutoSelectAndEditPipeline(
         val alreadyDone = product.selectionDone && product.imagePaths.isNotEmpty() &&
             product.imagePaths.all { isImageAiDone(it) }
 
-        if (aiEnabled && !product.selectionDone && !product.skipAiEdit && !product.debgOnly) {
+        // 【2026-10-25新增】手動重複組的成員：組內已有改好的圖（主商品優先）就直接複製過來，
+        // 不管這個商品之前選過圖（允許覆蓋）；自己已經全部改完的不覆蓋。
+        if (product.dupManual.isNotBlank() && !product.skipAiEdit && !product.debgOnly &&
+            !(product.selectionDone && product.aiProcessed)
+        ) {
+            val manualSrc = withContext(Dispatchers.IO) {
+                val src = DuplicateImageReuse.manualSource(product, allItems)
+                if (src != null && DuplicateImageReuse.copyFromSource(src, product.folder)) src else null
+            }
+            if (manualSrc != null) {
+                onStatus("$progressPrefix：沿用手動重複商品的改圖結果")
+                usedSharedProduct = true
+                currentImages = (1..20).mapNotNull { i ->
+                    listOf("jpg", "jpeg", "png").map { ext -> File(product.folder, "image_$i.$ext") }.firstOrNull { it.exists() }
+                }
+            }
+        }
+
+        if (aiEnabled && !product.selectionDone && !product.skipAiEdit && !product.debgOnly &&
+            !usedSharedProduct && !product.dupExclude && product.dupManual.isBlank()
+        ) {
             val reusedFrom = withContext(Dispatchers.IO) {
                 val hashes = DuplicateImageReuse.ensureHashes(product.folder, product.imagePaths)
                 val reused = if (product.capturedAt >= dupSince) {
@@ -2136,6 +2303,12 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
     var prepareErrors by remember { mutableStateOf(emptyList<Pair<String, String>>()) }
     val coroutineScope = rememberCoroutineScope()
     var imagePickerFolder by remember { mutableStateOf<File?>(null) }
+    // 【2026-10-25新增】逐一手選模式的佇列（商品資料夾名稱，依畫面順序）；空＝一般單獨進選圖畫面。
+    var manualQueue by remember { mutableStateOf<List<String>>(emptyList()) }
+    // 【2026-10-25新增】「標記為重複」對話框：開關、選的主商品、操作結果訊息。
+    var markDupDialogOpen by remember { mutableStateOf(false) }
+    var markDupMaster by remember { mutableStateOf("") }
+    var dupActionMessage by remember { mutableStateOf("") }
     val pickedProduct = imagePickerFolder?.let { picked -> products.find { it.folder.path == picked.path } }
     // 【2026-09-05新增，2026-09-06調整】「開始修改圖片」跟「開始生成影片」拆開成兩個
     // 按鈕：前者只跑選圖＋AI改圖（runAutoSelectAndEditPipeline），不接著生成影片，
@@ -2259,14 +2432,30 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
     }
 
     if (pickedProduct != null) {
-        ImageSelectionContent(
-            context = context,
-            product = pickedProduct,
-            onDone = {
-                imagePickerFolder = null
-                productsRefreshKey++
-            }
-        )
+        val qIdx = manualQueue.indexOf(pickedProduct.folder.name)
+        // key：逐一手選時換商品要整個重新建立畫面，不然上一個商品的勾選狀態會殘留。
+        key(pickedProduct.folder.name) {
+            ImageSelectionContent(
+                context = context,
+                product = pickedProduct,
+                queueLabel = if (qIdx >= 0) "(${qIdx + 1}/${manualQueue.size})" else null,
+                onDone = {
+                    imagePickerFolder = null
+                    manualQueue = emptyList()
+                    productsRefreshKey++
+                },
+                onConfirmed = {
+                    val next = if (qIdx >= 0) manualQueue.drop(qIdx + 1).firstOrNull() else null
+                    if (next != null) {
+                        imagePickerFolder = File(pickedProduct.folder.parentFile, next)
+                    } else {
+                        imagePickerFolder = null
+                        manualQueue = emptyList()
+                    }
+                    productsRefreshKey++
+                }
+            )
+        }
         return
     }
 
@@ -2293,7 +2482,9 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
             val tag = dupTags[p.folder.name]
             if (tag == null) { out.add(p); continue }
             if (!emitted.add(tag.groupNo)) continue
-            out.addAll(list.filter { dupTags[it.folder.name]?.groupNo == tag.groupNo })
+            val members = list.filter { dupTags[it.folder.name]?.groupNo == tag.groupNo }
+            // 手動分組有主商品時，主商品排組內第一個。
+            out.addAll(if (tag.master != null) members.sortedBy { if (it.folder.name == tag.master) 0 else 1 } else members)
         }
         return out
     }
@@ -2316,7 +2507,11 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
         val tag = dupTags[p.folder.name]
         if (tag != null) {
             val ready = tag.groupNo in doneDupGroups && !(p.selectionDone && p.aiProcessed)
-            parts.add("重複#${tag.groupNo}・共${tag.members.size}個" + if (ready) "・已有改好的可沿用" else "")
+            val isMaster = tag.master == p.folder.name
+            parts.add(
+                "重複#${tag.groupNo}" + (if (tag.manual) "（手動）" else "") + "・共${tag.members.size}個" +
+                    (if (isMaster) "・★主商品" else if (ready) "・已有改好的可沿用" else "")
+            )
         }
         if (p.dupOf.isNotBlank()) {
             val srcName = products.firstOrNull { it.folder.name == p.dupOf }?.productName ?: p.dupOf
@@ -2387,12 +2582,16 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                     // 【2026-09-06新增】全選/全不選：原本要一個一個點打勾框，商品一多很花時間。
                     // 這排按鈕只動selectedIds這個勾選狀態，不碰縮圖/預覽相關的任何東西，
                     // 不會影響長按選單或單點放大預覽。
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // 【2026-10-25修改】按鈕變多，第一排改成可左右滑動、文字不換行；新功能放第二排。
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.horizontalScroll(rememberScrollState())
+                    ) {
                         TextButton(onClick = { selectedIds = products.map { it.folder.name }.toSet() }) {
-                            Text("全選", fontSize = 13.sp, color = SimpleInk)
+                            Text("全選", fontSize = 13.sp, color = SimpleInk, maxLines = 1, softWrap = false)
                         }
                         TextButton(onClick = { selectedIds = emptySet() }) {
-                            Text("全不選", fontSize = 13.sp, color = SimpleInk)
+                            Text("全不選", fontSize = 13.sp, color = SimpleInk, maxLines = 1, softWrap = false)
                         }
                         TextButton(onClick = {
                             // 【2026-10-15修改】重複組的規則：組內還沒有任何一個改完 → 只勾第一個
@@ -2405,7 +2604,8 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                                 if (p.aiProcessed) continue
                                 val tag = dupTags[p.folder.name]
                                 when {
-                                    tag == null || p.capturedAt < sinceT || p.skipAiEdit || p.debgOnly ->
+                                    // 手動分組的商品不受「v1.097之後才擷取」限制
+                                    tag == null || (!tag.manual && p.capturedAt < sinceT) || p.skipAiEdit || p.debgOnly ->
                                         ids.add(p.folder.name)
                                     tag.groupNo in doneDupGroups -> ids.add(p.folder.name)
                                     pickedGroups.add(tag.groupNo) -> ids.add(p.folder.name)
@@ -2413,7 +2613,7 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                             }
                             selectedIds = ids
                         }) {
-                            Text("只選未改圖", fontSize = 13.sp, color = SimpleInk)
+                            Text("只選未改圖", fontSize = 13.sp, color = SimpleInk, maxLines = 1, softWrap = false)
                         }
                         // 【2026-10-15新增】只選「有任何一張改過圖、且還沒有影片」的商品
                         TextButton(onClick = {
@@ -2421,7 +2621,15 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                                 .filter { it.anyAiEdited && !it.hasVideo }
                                 .map { it.folder.name }.toSet()
                         }) {
-                            Text("只選已改圖沒影片", fontSize = 13.sp, color = SimpleInk)
+                            Text("只選已改圖沒影片", fontSize = 13.sp, color = SimpleInk, maxLines = 1, softWrap = false)
+                        }
+                        // 【2026-10-25新增】只選「手動選過圖、還沒有影片」的商品
+                        TextButton(onClick = {
+                            selectedIds = products
+                                .filter { it.manualSelected && !it.hasVideo }
+                                .map { it.folder.name }.toSet()
+                        }) {
+                            Text("只選手選沒影片", fontSize = 13.sp, color = SimpleInk, maxLines = 1, softWrap = false)
                         }
                         // 【2026-09-07新增】批次刪除：勾選多個商品後按這顆，一次刪光勾選的商品
                         // （照片+影片），不用一個一個長按。防重複紀錄不受影響，沿用跟長按刪除
@@ -2430,8 +2638,71 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
                             onClick = { bulkDeleteConfirmOpen = true },
                             enabled = selectedIds.isNotEmpty()
                         ) {
-                            Text("刪除", fontSize = 13.sp, color = SimpleDanger)
+                            Text("刪除", fontSize = 13.sp, color = SimpleDanger, maxLines = 1, softWrap = false)
                         }
+                    }
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.horizontalScroll(rememberScrollState())
+                    ) {
+                        // 【2026-10-25新增】逐一手選：依畫面順序，一個接一個進人工選圖畫面，
+                        // 確認後自動跳下一個。重複組只帶主商品（或第一個），已有改好的組整組跳過
+                        // （它們會直接沿用）。
+                        TextButton(onClick = {
+                            val queue = mutableListOf<File>()
+                            val seen = mutableSetOf<Int>()
+                            for (p in pendingProducts) {
+                                if (p.selectionDone || p.imagePaths.isEmpty()) continue
+                                val tag = dupTags[p.folder.name]
+                                if (tag != null) {
+                                    if (tag.groupNo in doneDupGroups) continue
+                                    if (!seen.add(tag.groupNo)) continue
+                                }
+                                queue.add(p.folder)
+                            }
+                            if (queue.isNotEmpty()) {
+                                manualQueue = queue.map { it.name }
+                                imagePickerFolder = queue.first()
+                            } else {
+                                dupActionMessage = "沒有需要手選圖片的待處理商品"
+                            }
+                        }) {
+                            Text("逐一手選", fontSize = 13.sp, color = SimpleAccent, maxLines = 1, softWrap = false)
+                        }
+                        // 【2026-10-25新增】把勾選的商品標記成同一組重複，並指定主商品。
+                        TextButton(
+                            onClick = {
+                                val sel = products.filter { it.folder.name in selectedIds && !it.skipAiEdit && !it.debgOnly }
+                                markDupMaster = (sel.firstOrNull { it.selectionDone && it.aiProcessed }
+                                    ?: sel.firstOrNull { it.dupMaster }
+                                    ?: sel.firstOrNull())?.folder?.name ?: ""
+                                markDupDialogOpen = true
+                            },
+                            enabled = selectedIds.size >= 2
+                        ) {
+                            Text("標記為重複", fontSize = 13.sp, color = SimpleAccent, maxLines = 1, softWrap = false)
+                        }
+                        // 【2026-10-25新增】取消勾選商品的重複分組（包含自動誤判的），之後自動比對也不再併它。
+                        TextButton(
+                            onClick = {
+                                val folders = products.filter {
+                                    it.folder.name in selectedIds && (dupTags[it.folder.name] != null || it.dupManual.isNotBlank())
+                                }.map { it.folder }
+                                if (folders.isNotEmpty()) {
+                                    coroutineScope.launch {
+                                        withContext(Dispatchers.IO) { DuplicateImageReuse.unmarkGroup(folders) }
+                                        dupActionMessage = "已取消${folders.size}個商品的重複分組"
+                                        productsRefreshKey++
+                                    }
+                                }
+                            },
+                            enabled = selectedIds.isNotEmpty()
+                        ) {
+                            Text("取消重複", fontSize = 13.sp, color = SimpleInk, maxLines = 1, softWrap = false)
+                        }
+                    }
+                    if (dupActionMessage.isNotEmpty()) {
+                        Text(dupActionMessage, fontSize = 12.sp, color = SimpleMuted)
                     }
                     Spacer(Modifier.height(8.dp))
                 }
@@ -2529,6 +2800,77 @@ private fun GenerateVideoScreen(context: Context, onBack: () -> Unit) {
 
             item {
             Spacer(Modifier.height(20.dp))
+
+            if (markDupDialogOpen) {
+                val dupSelected = products.filter { it.folder.name in selectedIds && !it.skipAiEdit && !it.debgOnly }
+                val hasOverwrite = dupSelected.any { it.folder.name != markDupMaster && it.selectionDone && !it.aiProcessed }
+                AlertDialog(
+                    onDismissRequest = { markDupDialogOpen = false },
+                    title = { Text("標記${dupSelected.size}個商品為重複") },
+                    text = {
+                        Column {
+                            Text("選一個主商品。主商品改完圖後，其他商品會直接沿用它的圖；主商品之後再次修改，也會同步給沒被單獨修改過的成員。", fontSize = 13.sp)
+                            Spacer(Modifier.height(8.dp))
+                            dupSelected.forEachIndexed { i, p ->
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { markDupMaster = p.folder.name }
+                                ) {
+                                    RadioButton(
+                                        selected = markDupMaster == p.folder.name,
+                                        onClick = { markDupMaster = p.folder.name }
+                                    )
+                                    Text(
+                                        "${i + 1}. ${p.productName ?: p.folder.name}" +
+                                            (if (p.selectionDone && p.aiProcessed) "（已改圖）" else ""),
+                                        fontSize = 12.sp, maxLines = 2
+                                    )
+                                }
+                            }
+                            if (hasOverwrite) {
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    "注意：已選好圖但還沒改圖的成員，圖片會被主商品改好的圖覆蓋（原本的圖進候選圖池）。已經自己改完圖的成員不會被覆蓋。",
+                                    fontSize = 12.sp, color = SimpleDanger
+                                )
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(
+                            enabled = dupSelected.size >= 2 && markDupMaster.isNotBlank(),
+                            onClick = {
+                                markDupDialogOpen = false
+                                val members = dupSelected
+                                val masterName = markDupMaster
+                                coroutineScope.launch {
+                                    val copied = withContext(Dispatchers.IO) {
+                                        val master = members.first { it.folder.name == masterName }
+                                        DuplicateImageReuse.markManualGroup(members.map { it.folder }, master.folder)
+                                        var n = 0
+                                        if (DuplicateImageReuse.sourceReady(master.folder)) {
+                                            members.filter { it.folder.name != masterName && !(it.selectionDone && it.aiProcessed) }
+                                                .forEach { m -> if (DuplicateImageReuse.copyFromSource(master.folder, m.folder)) n++ }
+                                        }
+                                        n
+                                    }
+                                    dupActionMessage = if (copied > 0) {
+                                        "已標記為重複，${copied}個商品已沿用主商品改好的圖"
+                                    } else {
+                                        "已標記為重複，主商品改完圖後其他商品會自動沿用"
+                                    }
+                                    productsRefreshKey++
+                                }
+                            }
+                        ) { Text("確定") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { markDupDialogOpen = false }) { Text("取消") }
+                    }
+                )
+            }
 
             if (bulkDeleteConfirmOpen) {
                 AlertDialog(
