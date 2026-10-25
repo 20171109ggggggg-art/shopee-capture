@@ -11,6 +11,15 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
@@ -21,6 +30,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed as gridItemsIndexed
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
@@ -705,27 +715,125 @@ private fun AsyncThumbnailImage(
  */
 @Composable
 private fun FullScreenAsyncImage(file: File, modifier: Modifier = Modifier) {
-    val cacheKey = remember(file.path, file.lastModified(), file.length()) {
-        "${file.path}|${file.lastModified()}|${file.length()}|full"
+    // 【2026-10-26修改】改成可縮放：雙指縮放、放大後單指拖曳、雙擊放大/還原。
+    // 解析度提高到2048（字太小時放大才看得清楚），且不放進共用的縮圖快取（避免大圖塞爆記憶體）。
+    var bitmap by remember(file.path, file.lastModified(), file.length()) {
+        mutableStateOf<android.graphics.Bitmap?>(null)
     }
-    var bitmap by remember(cacheKey) { mutableStateOf(thumbnailCache.get(cacheKey)) }
-    LaunchedEffect(cacheKey) {
+    LaunchedEffect(file.path, file.lastModified(), file.length()) {
         if (bitmap == null) {
-            val decoded = withContext(Dispatchers.IO) { decodeSampledBitmap(file.path, 1080).first }
-            if (decoded != null) {
-                thumbnailCache.put(cacheKey, decoded)
-                bitmap = decoded
-            }
+            bitmap = withContext(Dispatchers.IO) { decodeSampledBitmap(file.path, 2048).first }
         }
     }
-    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+    var scale by remember(file.path) { mutableStateOf(1f) }
+    var offsetX by remember(file.path) { mutableStateOf(0f) }
+    var offsetY by remember(file.path) { mutableStateOf(0f) }
+    Box(
+        modifier = modifier
+            .clipToBounds()
+            .pointerInput(file.path) {
+                detectTapGestures(onDoubleTap = {
+                    if (scale > 1.05f) {
+                        scale = 1f; offsetX = 0f; offsetY = 0f
+                    } else {
+                        scale = 3f
+                    }
+                })
+            }
+            .pointerInput(file.path) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    do {
+                        val event = awaitPointerEvent()
+                        val multi = event.changes.size > 1
+                        // 沒放大且單指時不攔截，讓外層HorizontalPager/VerticalPager正常滑動切換圖片
+                        if (multi || scale > 1.01f) {
+                            val zoom = event.calculateZoom()
+                            val pan = event.calculatePan()
+                            val newScale = (scale * zoom).coerceIn(1f, 6f)
+                            scale = newScale
+                            if (newScale <= 1.01f) {
+                                offsetX = 0f; offsetY = 0f
+                            } else {
+                                val maxX = size.width * (newScale - 1f) / 2f
+                                val maxY = size.height * (newScale - 1f) / 2f
+                                offsetX = (offsetX + pan.x).coerceIn(-maxX, maxX)
+                                offsetY = (offsetY + pan.y).coerceIn(-maxY, maxY)
+                            }
+                            event.changes.forEach { if (it.positionChanged()) it.consume() }
+                        }
+                    } while (event.changes.any { it.pressed })
+                }
+            },
+        contentAlignment = Alignment.Center
+    ) {
         bitmap?.let {
             Image(
                 bitmap = it.asImageBitmap(),
                 contentDescription = null,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer(
+                        scaleX = scale, scaleY = scale,
+                        translationX = offsetX, translationY = offsetY
+                    ),
                 contentScale = ContentScale.Fit
             )
+        }
+    }
+}
+
+/**
+ * 【2026-10-26新增】選圖畫面的全螢幕放大檢視：左右滑切換、雙指縮放，
+ * 右下角按鈕可以直接打勾/取消（順序數字同選圖畫面）。
+ */
+@Composable
+private fun SelectionPreviewDialog(
+    files: List<File>,
+    initialIndex: Int,
+    chosenOrder: List<String>,
+    onToggle: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val pagerState = rememberPagerState(initialPage = initialIndex.coerceIn(0, (files.size - 1).coerceAtLeast(0))) { files.size }
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+            HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
+                FullScreenAsyncImage(file = files[page], modifier = Modifier.fillMaxSize().padding(8.dp))
+            }
+            val cur = files[pagerState.currentPage.coerceIn(0, files.size - 1)]
+            val pos = chosenOrder.indexOf(cur.name)
+            Text(
+                "${pagerState.currentPage + 1} / ${files.size}　雙指縮放、雙擊放大",
+                color = Color.White, fontSize = 13.sp,
+                modifier = Modifier.align(Alignment.TopStart).padding(start = 16.dp, top = 20.dp)
+            )
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(12.dp)
+                    .size(32.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Color.White.copy(alpha = 0.2f))
+                    .clickable { onDismiss() },
+                contentAlignment = Alignment.Center
+            ) {
+                Text("✕", color = Color.White, fontSize = 16.sp)
+            }
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 28.dp)
+                    .clip(RoundedCornerShape(24.dp))
+                    .background(if (pos >= 0) SimpleAccent else Color.White.copy(alpha = 0.25f))
+                    .clickable { onToggle(cur.name) }
+                    .padding(horizontal = 28.dp, vertical = 12.dp)
+            ) {
+                Text(
+                    if (pos >= 0) "已選第${pos + 1}張（點一下取消）" else "選這張",
+                    color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold
+                )
+            }
         }
     }
 }
@@ -1427,8 +1535,21 @@ private fun ImageSelectionContent(
     // 【2026-10-25修改】改成依「點選順序」記錄：第1個點的圖會變成image_1（影片只用第1張圖）。
     var chosenOrder by remember { mutableStateOf(listOf<String>()) }
     var errorText by remember { mutableStateOf<String?>(null) }
+    var previewIndex by remember { mutableStateOf<Int?>(null) }
 
     androidx.activity.compose.BackHandler(enabled = true) { onDone() }
+
+    previewIndex?.let { idx ->
+        SelectionPreviewDialog(
+            files = product.imagePaths,
+            initialIndex = idx,
+            chosenOrder = chosenOrder,
+            onToggle = { name ->
+                chosenOrder = if (chosenOrder.contains(name)) chosenOrder - name else chosenOrder + name
+            },
+            onDismiss = { previewIndex = null }
+        )
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         SimpleTopBar((queueLabel?.let { "$it " } ?: "") + (product.productName ?: "選擇圖片"), onDone)
@@ -1439,7 +1560,7 @@ private fun ImageSelectionContent(
         ) {
             InstructionCard(
                 lines = listOf(
-                    "點選圖片可以打勾／取消，只有打勾的圖片會保留下來（預設全部不勾選）。圖上的數字是點選順序，第1個點的圖就是影片用的主圖",
+                    "點右上角的圓圈可以打勾／取消，只有打勾的圖片會保留下來（預設全部不勾選）。圓圈裡的數字是點選順序，第1個點的圖就是影片用的主圖。點圖片本身可以放大檢視",
                     if (GeminiApiPrefs.isEnabled(context))
                         "確認選圖後不會馬上處理，全部商品選完後到浮球按「AI改圖」，會一次背景批次處理"
                     else
@@ -1454,7 +1575,7 @@ private fun ImageSelectionContent(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(product.imagePaths) { file ->
+                gridItemsIndexed(product.imagePaths) { imgIdx, file ->
                     val chosenPos = chosenOrder.indexOf(file.name)
                     val isChosen = chosenPos >= 0
                     val decodeResult = remember(file.path) { decodeSampledBitmap(file.path, 120) }
@@ -1464,9 +1585,7 @@ private fun ImageSelectionContent(
                         modifier = Modifier
                             .size(120.dp)
                             .background(Color(0xFFE0DCD4))
-                            .clickable {
-                                chosenOrder = if (isChosen) chosenOrder - file.name else chosenOrder + file.name
-                            }
+                            .clickable { previewIndex = imgIdx }
                     ) {
                         if (bitmap != null) {
                             Image(
@@ -1485,21 +1604,23 @@ private fun ImageSelectionContent(
                                 modifier = Modifier.align(Alignment.Center).padding(4.dp)
                             )
                         }
-                        if (!isChosen) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .background(Color.Black.copy(alpha = 0.55f))
-                            )
-                        }
                         Box(
                             modifier = Modifier
                                 .align(Alignment.TopEnd)
-                                .padding(4.dp)
-                                .size(22.dp)
+                                .padding(2.dp)
+                                .size(36.dp)
+                                .clickable {
+                                    chosenOrder = if (isChosen) chosenOrder - file.name else chosenOrder + file.name
+                                },
+                            contentAlignment = Alignment.TopEnd
+                        ) {
+                        Box(
+                            modifier = Modifier
+                                .padding(2.dp)
+                                .size(24.dp)
                                 .background(
                                     if (isChosen) SimpleAccent else Color.White,
-                                    RoundedCornerShape(11.dp)
+                                    RoundedCornerShape(12.dp)
                                 )
                         ) {
                             if (isChosen) {
@@ -1509,6 +1630,7 @@ private fun ImageSelectionContent(
                                     modifier = Modifier.align(Alignment.Center)
                                 )
                             }
+                        }
                         }
                     }
                 }
