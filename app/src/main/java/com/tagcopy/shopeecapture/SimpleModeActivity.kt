@@ -1536,8 +1536,29 @@ private fun ImageSelectionContent(
     var chosenOrder by remember { mutableStateOf(listOf<String>()) }
     var errorText by remember { mutableStateOf<String?>(null) }
     var previewIndex by remember { mutableStateOf<Int?>(null) }
+    var deleteProductConfirm by remember { mutableStateOf(false) }
 
     androidx.activity.compose.BackHandler(enabled = true) { onDone() }
+
+    if (deleteProductConfirm) {
+        AlertDialog(
+            onDismissRequest = { deleteProductConfirm = false },
+            title = { Text("刪除這個商品？") },
+            text = {
+                Text("「${product.productName ?: product.folder.name}」的照片和影片都會刪除。防重複紀錄會保留，之後不會重複擷取到同一個商品。")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    deleteProductConfirm = false
+                    product.folder.deleteRecursively()
+                    onConfirmed()
+                }) { Text("刪除", color = SimpleDanger) }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteProductConfirm = false }) { Text("取消") }
+            }
+        )
+    }
 
     previewIndex?.let { idx ->
         SelectionPreviewDialog(
@@ -1657,6 +1678,14 @@ private fun ImageSelectionContent(
                     }
                 }
             )
+            // 【2026-10-26新增】找不到適合的圖時，直接刪除整個商品（逐一手選模式會接著跳下一個）
+            Spacer(Modifier.height(12.dp))
+            OutlinedButton(
+                onClick = { deleteProductConfirm = true },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("刪除此商品（找不到適合的圖）", color = SimpleDanger)
+            }
             Spacer(Modifier.height(24.dp))
         }
     }

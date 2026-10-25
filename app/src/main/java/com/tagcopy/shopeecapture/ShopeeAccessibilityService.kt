@@ -425,9 +425,20 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 appendDebugLog("  → 下載式圖片擷取發生例外，改用截圖版本：${e.message}")
                 null
             }
+            // 【2026-10-26修改】下載版要「夠完整」才取代截圖版：log顯示下載常常只成功一部分
+            // （例如9張只下載到1張），原本只要不是0張就整批取代，導致截圖版成功的9張被丟掉。
+            // 規則：下載張數 >= 截圖張數的80%（無條件進位）才採用；否則保留張數較多的那一版。
             if (!downloaded.isNullOrEmpty()) {
-                appendDebugLog("商品：${productName ?: "未知"} | 改用分享面板下載鈕擷取到原圖 ${downloaded.size} 張（取代截圖版本）")
-                galleryImages = downloaded
+                val need = Math.ceil(galleryImages.size * 0.8).toInt()
+                if (downloaded.size >= need) {
+                    appendDebugLog("商品：${productName ?: "未知"} | 改用分享面板下載鈕擷取到原圖 ${downloaded.size} 張（取代截圖版本 ${galleryImages.size} 張）")
+                    galleryImages = downloaded
+                } else if (downloaded.size > galleryImages.size) {
+                    appendDebugLog("商品：${productName ?: "未知"} | 下載版 ${downloaded.size} 張雖不足截圖版80%但比截圖版 ${galleryImages.size} 張多，採用下載版")
+                    galleryImages = downloaded
+                } else {
+                    appendDebugLog("商品：${productName ?: "未知"} | 下載版只有 ${downloaded.size} 張（截圖版 ${galleryImages.size} 張，門檻 $need 張），保留截圖版")
+                }
             }
         }
         // 截圖版跟下載版兩種擷取都試過後，圖片張數仍是0張：不繼續往下走複製連結/複製資訊，
@@ -3583,9 +3594,12 @@ class ShopeeAccessibilityService : AccessibilityService() {
     /** 查詢相簿裡「指定時間之後」新增的最新一張圖片，回傳它的 content Uri（讀不到就回傳 null）。 */
     private fun queryLatestImageUriAfter(afterTimeMs: Long): Uri? {        val collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
         val projection = arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DATE_ADDED)
-        val selection = "${MediaStore.Images.Media.DATE_ADDED} >= ?"
+        // 【2026-10-26修改】同時比對DATE_MODIFIED：同一張圖之前已下載過、檔案被覆寫時，
+        // MediaStore可能只更新修改時間、不新增一筆（疑似造成「點擊後逾時沒偵測到新圖」）。
+        val selection = "${MediaStore.Images.Media.DATE_ADDED} >= ? OR ${MediaStore.Images.Media.DATE_MODIFIED} >= ?"
         // MediaStore 的 DATE_ADDED 是「秒」為單位，click 時間是毫秒，這裡要換算
-        val selectionArgs = arrayOf((afterTimeMs / 1000).toString())
+        val sec = (afterTimeMs / 1000).toString()
+        val selectionArgs = arrayOf(sec, sec)
         val sortOrder = "${MediaStore.Images.Media.DATE_ADDED} DESC"
         return try {
             contentResolver.query(collection, projection, selection, selectionArgs, sortOrder)?.use { cursor ->
@@ -3596,6 +3610,53 @@ class ShopeeAccessibilityService : AccessibilityService() {
             }
         } catch (e: Exception) {
             null
+        }
+    }
+
+    /**
+     * 【2026-10-26新增】下載逾時的診斷輸出：點下載鈕後等不到相簿新圖時，把可能的原因線索全印到log——
+     * 點擊是否成功、相簿最新5筆（檔名/路徑/加入與修改時間）、點擊後畫面上的提示文字（例如已儲存/失敗/權限）。
+     */
+    private fun logDownloadTimeoutDiagnostics(index: Int, clickOk: Boolean, clickTimeMs: Long) {
+        try {
+            appendDebugLog("     【逾時診斷】第 $index 張：點擊performAction回傳=$clickOk，點擊時間(秒)=${clickTimeMs / 1000}，現在(秒)=${System.currentTimeMillis() / 1000}")
+            val proj = arrayOf(
+                MediaStore.Images.Media._ID,
+                MediaStore.Images.Media.DISPLAY_NAME,
+                MediaStore.Images.Media.DATE_ADDED,
+                MediaStore.Images.Media.DATE_MODIFIED,
+                MediaStore.Images.Media.RELATIVE_PATH
+            )
+            contentResolver.query(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI, proj, null, null,
+                "${MediaStore.Images.Media.DATE_ADDED} DESC"
+            )?.use { c ->
+                var n = 0
+                while (c.moveToNext() && n < 5) {
+                    appendDebugLog(
+                        "        相簿最新#${n + 1}：${c.getString(1)} added=${c.getLong(2)} modified=${c.getLong(3)} path=${c.getString(4)}"
+                    )
+                    n++
+                }
+                appendDebugLog("        （相簿共 ${c.count} 張圖）")
+            }
+            val root = rootInActiveWindow
+            val texts = mutableListOf<String>()
+            fun walk(node: AccessibilityNodeInfo?, depth: Int) {
+                if (node == null || depth > 12 || texts.size >= 25) return
+                val t = node.text?.toString()?.trim()
+                if (!t.isNullOrEmpty() && t.length <= 40 &&
+                    (t.contains("儲存") || t.contains("下載") || t.contains("失敗") || t.contains("權限") ||
+                        t.contains("存") || t.contains("已") || t.contains("無法") || t.contains("允許"))
+                ) {
+                    texts.add(t)
+                }
+                for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
+            }
+            walk(root, 0)
+            appendDebugLog("        目前畫面套件=${root?.packageName}，含提示字樣的文字：${texts.distinct()}")
+        } catch (e: Exception) {
+            appendDebugLog("     【逾時診斷】輸出失敗：${e.javaClass.simpleName} ${e.message}")
         }
     }
 
@@ -3642,6 +3703,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         appendDebugLog("  → 下載式圖片擷取：偵測到共 $rawTotal 張（實際下載前 $downloadCount 張），開始逐張點下載鈕")
         val screenWidth = resources.displayMetrics.widthPixels
         val images = mutableListOf<Bitmap>()
+        var timeoutDiagCount = 0
         // 每次都重新抓「當下畫面」再重找 scrollView，避免沿用舊 root/舊節點引用（可能已經過期）。
         // 關鍵修正：容器搜尋範圍務必限定在分享面板專屬的 scrollView 底下，不能搜整個畫面 root——
         // 背景商品詳情頁自己也有輪播跟「X/N」頁碼，範圍沒限定住會抓錯到背景頁那組完全不相干的節點。
@@ -3732,10 +3794,13 @@ class ShopeeAccessibilityService : AccessibilityService() {
                 continue
             }
             val clickTime = System.currentTimeMillis()
-            downloadBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            val clickOk = downloadBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             val uri = waitForNewImageUri(clickTime)
             if (uri == null) {
                 appendDebugLog("  → 下載式圖片擷取：第 $index 張點擊後逾時沒偵測到相簿新圖，放棄這張")
+                // 每個商品只印前2次逾時的診斷，避免log爆量
+                timeoutDiagCount++
+                if (timeoutDiagCount <= 2) logDownloadTimeoutDiagnostics(index, clickOk, clickTime)
                 delay(DOWNLOAD_BETWEEN_IMAGES_DELAY_MS)
                 continue
             }
