@@ -1640,6 +1640,7 @@ class ShopeeAccessibilityService : AccessibilityService() {
         }
 
         appendDebugLog("===== 上架自動化結束：成功 $successCount／失敗 $failCount／跳過無效 $skippedInvalidCount，原因=$reason =====")
+        if (successCount > 0) UploadHistory.record(this, successCount)
         onEvent(UploadEvent.Finished(successCount, failCount, reason))
 
         // 【2026-08-28新增】蝦皮批次跑完後，若這次有任何一支成功上架（代表有新的FB候選商品
@@ -4936,5 +4937,38 @@ class ShopeeAccessibilityService : AccessibilityService() {
             System.currentTimeMillis()
         )
         return CaptureResult.Success(product, baseDir.absolutePath)
+    }
+}
+
+
+/** 蝦皮上架批次紀錄：每批結束（至少成功1支）存一筆「時間＋成功數量」，只保留最新5筆。 */
+object UploadHistory {
+    data class Entry(val timeMs: Long, val count: Int)
+
+    private const val PREF = "upload_history"
+    private const val KEY = "records"
+    private const val MAX = 5
+
+    fun record(context: Context, count: Int) {
+        try {
+            val list = (listOf(Entry(System.currentTimeMillis(), count)) + load(context)).take(MAX)
+            context.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit()
+                .putString(KEY, list.joinToString(";") { "${it.timeMs},${it.count}" }).apply()
+        } catch (_: Exception) {
+        }
+    }
+
+    fun load(context: Context): List<Entry> {
+        return try {
+            val raw = context.getSharedPreferences(PREF, Context.MODE_PRIVATE).getString(KEY, "") ?: ""
+            raw.split(";").mapNotNull {
+                val p = it.split(",")
+                val t = p.getOrNull(0)?.toLongOrNull()
+                val c = p.getOrNull(1)?.toIntOrNull()
+                if (t != null && c != null) Entry(t, c) else null
+            }.sortedByDescending { it.timeMs }.take(MAX)
+        } catch (_: Exception) {
+            emptyList()
+        }
     }
 }

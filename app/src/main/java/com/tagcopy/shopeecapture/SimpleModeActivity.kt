@@ -3506,6 +3506,18 @@ private fun UploadScreen(context: Context, onBack: () -> Unit) {
                 stringResource(R.string.simple_pending_count, pendingCount),
                 fontSize = 15.sp, fontWeight = FontWeight.Bold, color = SimpleInk
             )
+            Spacer(Modifier.height(12.dp))
+            val uploadHistory = remember { UploadHistory.load(context) }
+            Text("已上傳紀錄（最近5筆）", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = SimpleInk)
+            Spacer(Modifier.height(4.dp))
+            if (uploadHistory.isEmpty()) {
+                Text("尚無紀錄", fontSize = 13.sp, color = SimpleInk)
+            } else {
+                val historyFmt = remember { java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault()) }
+                uploadHistory.forEach { e ->
+                    Text("${historyFmt.format(java.util.Date(e.timeMs))}　上架 ${e.count} 支", fontSize = 13.sp, color = SimpleInk)
+                }
+            }
             Spacer(Modifier.height(24.dp))
 
             val accessibilityOn = isAccessibilityServiceEnabled(context)
